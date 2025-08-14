@@ -8,8 +8,8 @@ lenguaje de programacion
 
 ### necesario
 
-https://github.com/llvm/llvm-project/releases/download/llvmorg-16.0.6/LLVM-16.0.6-win64.exe
-
  Rust
 
-path: C:\Program Files\LLVM
+
+
+herramienta para crear programas. Hacklang ya no es una idea, es un lenguaje funcional y Turing completo.

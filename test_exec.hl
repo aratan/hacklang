@@ -1,0 +1,13 @@
+print "Ejecutando el comando 'dir'...";
+
+let directory_listing = exec("dir");
+
+print "--- Salida del comando 'dir' ---";
+print directory_listing;
+print "---------------------------------";
+
+let ping_output = exec("ping -n 1 google.com");
+
+print "--- Salida del comando 'ping' ---";
+print ping_output;
+print "---------------------------------";

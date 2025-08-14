@@ -1,0 +1,9 @@
+let data = ["Iteracion", 0, "Iteracion", 1, "Iteracion", 2];
+let i = 0;
+
+while (i < 6) {
+  print data[i];
+  i = i + 1;
+} 
+
+print "Bucle finalizado!";

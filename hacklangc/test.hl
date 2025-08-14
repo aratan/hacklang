@@ -1,0 +1,6 @@
+let a = 10;
+let b = 25 * 2;
+let resultado = a + b;
+print resultado;
+let otra_cosa = resultado / 10;
+print otra_cosa;

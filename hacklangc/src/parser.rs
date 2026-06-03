@@ -72,26 +72,19 @@ impl Parser {
                     if *self.current_token() == Token::ParenOpen {
                         self.advance();
                         let args = self.parse_comma_list(Token::ParenClose)?;
-                        Ok(Statement::Print(PrintStatement {
-                            value: Expression::FunctionCall {
-                                func: Box::new(Expression::Identifier(ident)),
-                                args,
-                            },
-                        }))
-                    } else if *self.current_token() == Token::ParenOpen {
-                        self.advance();
-                        let args = self.parse_comma_list(Token::ParenClose)?;
+                        let call_expr = Expression::FunctionCall {
+                            func: Box::new(Expression::Identifier(ident)),
+                            args,
+                        };
                         Ok(Statement::Let(LetStatement {
-                            name: ident,
-                            value: Expression::FunctionCall {
-                                func: Box::new(Expression::Identifier(ident)),
-                                args,
-                            },
+                            name: format!("_temp_{ident}"),
+                            value: call_expr,
                         }))
                     } else {
+                        let id_clone = ident.clone();
                         Ok(Statement::Let(LetStatement {
-                            name: ident,
-                            value: Expression::Identifier(ident),
+                            name: id_clone.clone(),
+                            value: Expression::Identifier(id_clone),
                         }))
                     }
                 }

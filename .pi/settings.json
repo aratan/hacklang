@@ -1,0 +1,30 @@
+{
+	"subagents": {
+		"agentOverrides": {
+			"context-builder": {
+				"model": "llama-cpp/Qwen3.6-35B-A3B"
+			},
+			"delegate": {
+				"model": "llama-cpp/Qwen3.6-35B-A3B"
+			},
+			"oracle": {
+				"model": "llama-cpp/Qwen3.6-35B-A3B"
+			},
+			"planner": {
+				"model": "llama-cpp/Qwen3.6-35B-A3B"
+			},
+			"researcher": {
+				"model": "llama-cpp/Qwen3.6-35B-A3B"
+			},
+			"reviewer": {
+				"model": "llama-cpp/Qwen3.6-35B-A3B"
+			},
+			"scout": {
+				"model": "llama-cpp/Qwen3.6-35B-A3B"
+			},
+			"worker": {
+				"model": "llama-cpp/Qwen3.6-35B-A3B"
+			}
+		}
+	}
+}

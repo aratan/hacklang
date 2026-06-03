@@ -27,10 +27,29 @@ pub enum Token {
     Slash,
     Equals,
     Semicolon,
+    ParenOpen,
+    ParenClose,
     Identifier(String),
     Number(Number),
+    String(String),
     Let,
     Print,
+    While,
+    If,
+    
+    // Operadores de comparación
+    Less,
+    Greater,
+    Tilde,      // ~= para ~= (similar a ~=)
+    Caret,      // ^ para !=
+    
+    // Operadores adicionales
+    Question,   // ?
+    Colon,      // :
+    Pipe,       // |
+    Comma,      // ,
+    At,         // @
+    
     Eof,
 }
 
@@ -99,6 +118,54 @@ impl Lexer {
                     let number = self.read_number();
                     tokens.push(Token::Number(Number(number)));
                 }
+                '"' => {
+                    let string = self.read_string();
+                    tokens.push(Token::String(string));
+                }
+                '(' => {
+                    tokens.push(Token::ParenOpen);
+                    self.position += 1;
+                }
+                ')' => {
+                    tokens.push(Token::ParenClose);
+                    self.position += 1;
+                }
+                '<' => {
+                    tokens.push(Token::Less);
+                    self.position += 1;
+                }
+                '>' => {
+                    tokens.push(Token::Greater);
+                    self.position += 1;
+                }
+                '~' => {
+                    tokens.push(Token::Tilde);
+                    self.position += 1;
+                }
+                '^' => {
+                    tokens.push(Token::Caret);
+                    self.position += 1;
+                }
+                '?' => {
+                    tokens.push(Token::Question);
+                    self.position += 1;
+                }
+                ':' => {
+                    tokens.push(Token::Colon);
+                    self.position += 1;
+                }
+                '|' => {
+                    tokens.push(Token::Pipe);
+                    self.position += 1;
+                }
+                ',' => {
+                    tokens.push(Token::Comma);
+                    self.position += 1;
+                }
+                '@' => {
+                    tokens.push(Token::At);
+                    self.position += 1;
+                }
                 _ => {
                     panic!("Carácter inesperado: {} en posición {}", c, self.position);
                 }
@@ -119,6 +186,20 @@ impl Lexer {
             self.position += 1;
         }
         self.input[start..self.position].to_string()
+    }
+
+    fn read_string(&mut self) -> String {
+        self.position += 1; // skip opening quote
+        let start = self.position;
+        while self.position < self.chars.len() {
+            let c = self.chars[self.position];
+            if c == '"' {
+                self.position += 1; // skip closing quote
+                break;
+            }
+            self.position += 1;
+        }
+        self.input[start..self.position - 1].to_string()
     }
 
     // --- FUNCIÓN MEJORADA ---

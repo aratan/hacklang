@@ -6,6 +6,7 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Number(f64),
+    String(String),
 }
 
 pub struct Evaluator {
@@ -39,6 +40,7 @@ impl Evaluator {
         let value = self.eval_expression(&stmt.value)?;
         match value {
             Value::Number(num) => println!("{}", num),
+            Value::String(s) => println!("{}", s),
         }
         Ok(())
     }
@@ -46,6 +48,7 @@ impl Evaluator {
     fn eval_expression(&self, expr: &Expression) -> Result<Value, String> {
         match expr {
             Expression::NumberLiteral(num) => Ok(Value::Number(*num)),
+            Expression::StringLiteral(s) => Ok(Value::String(s.clone())),
             Expression::Identifier(name) => {
                 self.variables
                     .get(name)
@@ -68,6 +71,18 @@ impl Evaluator {
                             }
                         }
                         _ => Err(format!("Operador no soportado: {:?}", operator)),
+                    },
+                    (Value::String(l), Value::String(r)) => match operator {
+                        Token::Plus => Ok(Value::String(format!("{}{}", l, r))),
+                        _ => Err(format!("Operador no soportado para strings: {:?}", operator)),
+                    },
+                    (Value::String(l), Value::Number(r)) => match operator {
+                        Token::Plus => Ok(Value::String(format!("{}{}", l, r))),
+                        _ => Err(format!("Operador no soportado entre string y número: {:?}", operator)),
+                    },
+                    (Value::Number(l), Value::String(r)) => match operator {
+                        Token::Plus => Ok(Value::String(format!("{}{}", l, r))),
+                        _ => Err(format!("Operador no soportado entre número y string: {:?}", operator)),
                     },
                 }
             }

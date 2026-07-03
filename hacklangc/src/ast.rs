@@ -3,7 +3,7 @@
 // Es el "puente" entre el Parser y el Evaluador.
 
 // Importamos el Token de nuestro nuevo lexer, ya que la expresión Infix lo necesita.
-use crate::lexer::{Token, Number};
+use crate::lexer::Token;
 
 // Un Programa es la raíz de nuestro AST, contiene una lista de sentencias.
 #[derive(Debug)]

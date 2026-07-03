@@ -110,6 +110,8 @@ impl Lexer {
                     let token = match ident.as_str() {
                         "let" => Token::Let,
                         "print" => Token::Print,
+                        "while" => Token::While,
+                        "if" => Token::If,
                         _ => Token::Identifier(ident),
                     };
                     tokens.push(token);

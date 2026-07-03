@@ -61,6 +61,7 @@ impl Parser {
             Token::Print => self.parse_print_statement(),
             Token::ParenOpen => self.parse_block_statement(),
             Token::While => self.parse_while_statement(),
+            Token::If => self.parse_if_statement(),
             Token::Identifier(name) => {
                 let next = self.peek_ahead(1);
                 if next == Some(&Token::Equals) {
@@ -73,7 +74,7 @@ impl Parser {
                         self.advance();
                         let args = self.parse_comma_list(Token::ParenClose)?;
                         let call_expr = Expression::FunctionCall {
-                            func: Box::new(Expression::Identifier(ident)),
+                            func: Box::new(Expression::Identifier(ident.clone())),
                             args,
                         };
                         Ok(Statement::Let(LetStatement {
@@ -169,7 +170,11 @@ impl Parser {
         
         let false_body = if *self.current_token() == Token::ParenOpen {
             self.advance(); // consume (
-            Some(self.parse_block()?)
+            let body = self.parse_block()?;
+            if *self.current_token() == Token::ParenClose {
+                self.advance(); // consume )
+            }
+            Some(body)
         } else {
             None
         };
@@ -261,9 +266,9 @@ impl Parser {
                 self.advance(); // consume :
                 let false_branch = self.parse_expression(Precedence::Lowest)?;
                 left_expr = Expression::Ternary {
-                    condition: Box::new(true_branch),
-                    true_branch,
-                    false_branch,
+                    condition: Box::new(left_expr),
+                    true_branch: Box::new(true_branch),
+                    false_branch: Box::new(false_branch),
                 };
             }
         }
@@ -363,7 +368,7 @@ impl Parser {
             }
             let key = self.parse_expression(Precedence::Lowest)?;
             if *self.current_token() != Token::Colon {
-                return Err(format!("Se esperaba ':' después de '{}'", key));
+                return Err(format!("Se esperaba ':' después de '{:?}'", key));
             }
             self.advance();
             let value = self.parse_expression(Precedence::Lowest)?;

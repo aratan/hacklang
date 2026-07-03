@@ -94,8 +94,16 @@ impl Lexer {
                     self.position += 1;
                 }
                 '/' => {
-                    tokens.push(Token::Slash);
-                    self.position += 1;
+                    // Soporte para comentarios de línea //
+                    if self.position + 1 < self.chars.len() && self.chars[self.position + 1] == '/' {
+                        self.position += 2; // skip //
+                        while self.position < self.chars.len() && self.chars[self.position] != '\n' {
+                            self.position += 1;
+                        }
+                    } else {
+                        tokens.push(Token::Slash);
+                        self.position += 1;
+                    }
                 }
                 '=' => {
                     tokens.push(Token::Equals);
@@ -226,5 +234,147 @@ impl Lexer {
                 panic!("Error léxico: '{}' no es un número válido.", number_str);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_empty_input() {
+        let mut lexer = Lexer::new(String::new());
+        let tokens = lexer.tokenize();
+        assert_eq!(tokens, vec![Token::Eof]);
+    }
+
+    #[test]
+    fn test_whitespace_only() {
+        let mut lexer = Lexer::new("   \n\t  ".to_string());
+        let tokens = lexer.tokenize();
+        assert_eq!(tokens, vec![Token::Eof]);
+    }
+
+    #[test]
+    fn test_keywords() {
+        let mut lexer = Lexer::new("let print while if".to_string());
+        let tokens = lexer.tokenize();
+        assert_eq!(tokens, vec![
+            Token::Let,
+            Token::Print,
+            Token::While,
+            Token::If,
+            Token::Eof,
+        ]);
+    }
+
+    #[test]
+    fn test_identifiers() {
+        let mut lexer = Lexer::new("foo bar _tmp x42".to_string());
+        let tokens = lexer.tokenize();
+        assert_eq!(tokens, vec![
+            Token::Identifier("foo".to_string()),
+            Token::Identifier("bar".to_string()),
+            Token::Identifier("_tmp".to_string()),
+            Token::Identifier("x42".to_string()),
+            Token::Eof,
+        ]);
+    }
+
+    #[test]
+    fn test_numbers() {
+        let mut lexer = Lexer::new("42 3.14 0".to_string());
+        let tokens = lexer.tokenize();
+        assert_eq!(tokens, vec![
+            Token::Number(Number(42.0)),
+            Token::Number(Number(3.14)),
+            Token::Number(Number(0.0)),
+            Token::Eof,
+        ]);
+    }
+
+    #[test]
+    fn test_strings() {
+        let mut lexer = Lexer::new(r#""hello" "world""#.to_string());
+        let tokens = lexer.tokenize();
+        assert_eq!(tokens, vec![
+            Token::String("hello".to_string()),
+            Token::String("world".to_string()),
+            Token::Eof,
+        ]);
+    }
+
+    #[test]
+    fn test_operators() {
+        let mut lexer = Lexer::new("+ - * / < > ~ ^".to_string());
+        let tokens = lexer.tokenize();
+        assert_eq!(tokens, vec![
+            Token::Plus,
+            Token::Minus,
+            Token::Star,
+            Token::Slash,
+            Token::Less,
+            Token::Greater,
+            Token::Tilde,
+            Token::Caret,
+            Token::Eof,
+        ]);
+    }
+
+    #[test]
+    fn test_special_chars() {
+        let mut lexer = Lexer::new("= ; ( ) ? : | , @".to_string());
+        let tokens = lexer.tokenize();
+        assert_eq!(tokens, vec![
+            Token::Equals,
+            Token::Semicolon,
+            Token::ParenOpen,
+            Token::ParenClose,
+            Token::Question,
+            Token::Colon,
+            Token::Pipe,
+            Token::Comma,
+            Token::At,
+            Token::Eof,
+        ]);
+    }
+
+    #[test]
+    fn test_program_tokens() {
+        let src = "let x = 42; print x;";
+        let mut lexer = Lexer::new(src.to_string());
+        let tokens = lexer.tokenize();
+        assert_eq!(tokens, vec![
+            Token::Let,
+            Token::Identifier("x".to_string()),
+            Token::Equals,
+            Token::Number(Number(42.0)),
+            Token::Semicolon,
+            Token::Print,
+            Token::Identifier("x".to_string()),
+            Token::Semicolon,
+            Token::Eof,
+        ]);
+    }
+
+    #[test]
+    fn test_while_if_tokens() {
+        let src = "while (i < 10) ( print i; )";
+        let mut lexer = Lexer::new(src.to_string());
+        let tokens = lexer.tokenize();
+        assert_eq!(tokens, vec![
+            Token::While,
+            Token::ParenOpen,
+            Token::Identifier("i".to_string()),
+            Token::Less,
+            Token::Number(Number(10.0)),
+            Token::ParenClose,
+            Token::ParenOpen,
+            Token::Print,
+            Token::Identifier("i".to_string()),
+            Token::Semicolon,
+            Token::ParenClose,
+            Token::Eof,
+        ]);
     }
 }

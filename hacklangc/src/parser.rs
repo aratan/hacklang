@@ -33,8 +33,8 @@ impl Parser {
         precedences.insert(Token::Greater, Precedence::Comparison);
         precedences.insert(Token::Tilde, Precedence::Comparison);
         precedences.insert(Token::Caret, Precedence::Comparison);
-        precedences.insert(Token::Question, Precedence::Ternary);
-        precedences.insert(Token::Colon, Precedence::Ternary);
+        // Do NOT register Question or Colon here: ternary is handled by a separate
+        // check after the infix loop, not as infix operators.
 
         Parser {
             tokens,
@@ -56,6 +56,23 @@ impl Parser {
     }
 
     fn parse_statement(&mut self) -> Result<Statement, String> {
+        // First, try to handle Identifier(name) without a long-lived match borrow.
+        // We check for the Identifier case here to avoid the borrow-checker conflict
+        // between the match on self.current_token() and mutable self calls.
+        if let Token::Identifier(name) = self.current_token() {
+            let ident_name = name.clone();
+            let next = self.peek_ahead(1).cloned();
+            if next == Some(Token::Equals) {
+                self.advance(); // consume the identifier
+                self.advance(); // consume =
+                let value = self.parse_expression(Precedence::Lowest)?;
+                if *self.current_token() == Token::Semicolon {
+                    self.advance();
+                }
+                return Ok(Statement::Let(LetStatement { name: ident_name, value }));
+            }
+        }
+
         match self.current_token() {
             Token::Let => self.parse_let_statement(),
             Token::Print => self.parse_print_statement(),
@@ -63,31 +80,32 @@ impl Parser {
             Token::While => self.parse_while_statement(),
             Token::If => self.parse_if_statement(),
             Token::Identifier(name) => {
-                let next = self.peek_ahead(1);
-                if next == Some(&Token::Equals) {
-                    self.parse_let_statement()
-                } else {
-                    // Puede ser llamada a función o index
-                    let ident = name.clone();
+                // Called a function: func(args) or bare identifier: foo
+                let ident = name.clone();
+                self.advance();
+                if *self.current_token() == Token::ParenOpen {
                     self.advance();
-                    if *self.current_token() == Token::ParenOpen {
-                        self.advance();
-                        let args = self.parse_comma_list(Token::ParenClose)?;
-                        let call_expr = Expression::FunctionCall {
-                            func: Box::new(Expression::Identifier(ident.clone())),
-                            args,
-                        };
-                        Ok(Statement::Let(LetStatement {
-                            name: format!("_temp_{ident}"),
-                            value: call_expr,
-                        }))
-                    } else {
-                        let id_clone = ident.clone();
-                        Ok(Statement::Let(LetStatement {
-                            name: id_clone.clone(),
-                            value: Expression::Identifier(id_clone),
-                        }))
+                    let args = self.parse_comma_list(Token::ParenClose)?;
+                    if *self.current_token() == Token::ParenClose {
+                        self.advance(); // consume )
                     }
+                    if *self.current_token() == Token::Semicolon {
+                        self.advance(); // consume ;
+                    }
+                    let call_expr = Expression::FunctionCall {
+                        func: Box::new(Expression::Identifier(ident.clone())),
+                        args,
+                    };
+                    Ok(Statement::Let(LetStatement {
+                        name: format!("_temp_{ident}"),
+                        value: call_expr,
+                    }))
+                } else {
+                    let id_clone = ident.clone();
+                    Ok(Statement::Let(LetStatement {
+                        name: id_clone.clone(),
+                        value: Expression::Identifier(id_clone),
+                    }))
                 }
             }
             Token::Pipe => self.parse_lambda_statement(),
@@ -168,7 +186,19 @@ impl Parser {
         let true_body = self.parse_block()?;
         self.advance(); // consume )
         
-        let false_body = if *self.current_token() == Token::ParenOpen {
+        let false_body = if *self.current_token() == Token::Identifier("else".to_string()) {
+            self.advance(); // consume else
+            if *self.current_token() == Token::ParenOpen {
+                self.advance(); // consume (
+                let body = self.parse_block()?;
+                if *self.current_token() == Token::ParenClose {
+                    self.advance(); // consume )
+                }
+                Some(body)
+            } else {
+                return Err("Se esperaba '(' después de 'else'".to_string());
+            }
+        } else if *self.current_token() == Token::ParenOpen {
             self.advance(); // consume (
             let body = self.parse_block()?;
             if *self.current_token() == Token::ParenClose {
@@ -409,5 +439,234 @@ impl Parser {
 
     fn peek_ahead(&self, offset: usize) -> Option<&Token> {
         self.tokens.get(self.position + offset)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(source: &str) -> Program {
+        let mut lexer = crate::lexer::Lexer::new(source.to_string());
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(tokens);
+        parser.parse_program()
+    }
+
+    #[test]
+    fn test_parse_let_number() {
+        let program = parse("let x = 42;");
+        assert_eq!(program.statements.len(), 1);
+        match &program.statements[0] {
+            Statement::Let(stmt) => {
+                assert_eq!(stmt.name, "x");
+                assert_eq!(stmt.value, Expression::NumberLiteral(42.0));
+            }
+            other => panic!("expected Let, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_let_string() {
+        let program = parse(r#"let s = "hello";"#);
+        assert_eq!(program.statements.len(), 1);
+        match &program.statements[0] {
+            Statement::Let(stmt) => {
+                assert_eq!(stmt.name, "s");
+                assert_eq!(stmt.value, Expression::StringLiteral("hello".to_string()));
+            }
+            other => panic!("expected Let, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_let_from_identifier() {
+        // Parser also accepts `x = 10;` as a let (without explicit 'let')
+        let program = parse("x = 10;");
+        assert_eq!(program.statements.len(), 1);
+        match &program.statements[0] {
+            Statement::Let(stmt) => {
+                assert_eq!(stmt.name, "x");
+                assert_eq!(stmt.value, Expression::NumberLiteral(10.0));
+            }
+            other => panic!("expected Let, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_print() {
+        let program = parse("print 42;");
+        assert_eq!(program.statements.len(), 1);
+        match &program.statements[0] {
+            Statement::Print(stmt) => {
+                assert_eq!(stmt.value, Expression::NumberLiteral(42.0));
+            }
+            other => panic!("expected Print, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_while() {
+        let program = parse("while (i < 10) ( print i; )");
+        assert_eq!(program.statements.len(), 1);
+        match &program.statements[0] {
+            Statement::While(stmt) => {
+                assert_eq!(
+                    stmt.condition,
+                    Expression::Infix {
+                        left: Box::new(Expression::Identifier("i".to_string())),
+                        operator: Token::Less,
+                        right: Box::new(Expression::NumberLiteral(10.0)),
+                    }
+                );
+                assert_eq!(stmt.body.len(), 1);
+                assert!(matches!(stmt.body[0], Statement::Print(_)));
+            }
+            other => panic!("expected While, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_if() {
+        let program = parse("if (a > b) ( print a; )");
+        assert_eq!(program.statements.len(), 1);
+        match &program.statements[0] {
+            Statement::If(stmt) => {
+                assert!(matches!(stmt.condition, Expression::Infix { .. }));
+                assert_eq!(stmt.true_body.len(), 1);
+                assert!(stmt.false_body.is_none());
+            }
+            other => panic!("expected If, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_if_else() {
+        let program = parse("if (a > b) ( print a; ) else ( print b; )");
+        assert_eq!(program.statements.len(), 1);
+        match &program.statements[0] {
+            Statement::If(stmt) => {
+                assert_eq!(stmt.true_body.len(), 1);
+                assert!(stmt.false_body.is_some());
+                assert_eq!(stmt.false_body.as_ref().unwrap().len(), 1);
+            }
+            other => panic!("expected If, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_ternary_in_let() {
+        let program = parse("let x = (a > b) ? a : b;");
+        assert_eq!(program.statements.len(), 1);
+        match &program.statements[0] {
+            Statement::Let(stmt) => {
+                assert!(matches!(stmt.value, Expression::Ternary { .. }));
+                if let Expression::Ternary { ref condition, ref true_branch, ref false_branch } = stmt.value {
+                    assert!(matches!(condition.as_ref(), Expression::Infix { .. }));
+                    assert!(matches!(true_branch.as_ref(), Expression::Identifier(name) if name == "a"));
+                    assert!(matches!(false_branch.as_ref(), Expression::Identifier(name) if name == "b"));
+                }
+            }
+            other => panic!("expected Let, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_lambda() {
+        let program = parse("let add = |x, y| x + y;");
+        assert_eq!(program.statements.len(), 1);
+        match &program.statements[0] {
+            Statement::Let(stmt) => {
+                assert_eq!(stmt.name, "add");
+                assert!(matches!(stmt.value, Expression::Lambda { .. }));
+                if let Expression::Lambda { ref params, ref body } = stmt.value {
+                    assert_eq!(params.len(), 2);
+                    assert_eq!(params[0], "x");
+                    assert_eq!(params[1], "y");
+                    assert!(matches!(
+                        body.as_ref(),
+                        Expression::Infix { operator: Token::Plus, .. }
+                    ));
+                }
+            }
+            other => panic!("expected Let, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_function_call() {
+        // Parser wraps f(...) in a Let with name _temp_f
+        let program = parse("add(1, 2);");
+        assert_eq!(program.statements.len(), 1);
+        match &program.statements[0] {
+            Statement::Let(stmt) => {
+                assert!(stmt.name.starts_with("_temp_"));
+                assert!(matches!(stmt.value, Expression::FunctionCall { .. }));
+                if let Expression::FunctionCall { ref func, ref args } = stmt.value {
+                    assert!(matches!(func.as_ref(), Expression::Identifier(name) if name == "add"));
+                    assert_eq!(args.len(), 2);
+                }
+            }
+            other => panic!("expected Let, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_grouped_expression_in_block() {
+        // (2 + 3) * 4; → inside a block → parsed as block
+        // Actually bare infix is handled differently — test via let
+        let program = parse("let x = (2 + 3) * 4;");
+        assert_eq!(program.statements.len(), 1);
+        match &program.statements[0] {
+            Statement::Let(stmt) => {
+                // (2 + 3) * 4 should be Infix { *, left: Infix { +, 2, 3 }, right: 4 }
+                assert!(matches!(stmt.value, Expression::Infix { operator: Token::Star, .. }));
+                if let Expression::Infix { ref left, operator: _, ref right } = stmt.value {
+                    assert!(matches!(left.as_ref(), Expression::Infix { operator: Token::Plus, .. }));
+                    assert_eq!(right.as_ref(), &Expression::NumberLiteral(4.0));
+                }
+            }
+            other => panic!("expected Let, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_precedence_via_let() {
+        // 2 + 3 * 4 → 2 + (3 * 4)
+        let program = parse("let x = 2 + 3 * 4;");
+        match &program.statements[0] {
+            Statement::Let(stmt) => {
+                assert!(matches!(stmt.value, Expression::Infix { operator: Token::Plus, .. }));
+                if let Expression::Infix { ref left, operator: _, ref right } = stmt.value {
+                    assert_eq!(left.as_ref(), &Expression::NumberLiteral(2.0));
+                    assert!(matches!(right.as_ref(), Expression::Infix { operator: Token::Star, .. }));
+                }
+            }
+            other => panic!("expected Let, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_block() {
+        let program = parse("( let x = 1; let y = 2; )");
+        assert_eq!(program.statements.len(), 1);
+        match &program.statements[0] {
+            Statement::Block(stmts) => {
+                assert_eq!(stmts.len(), 2);
+            }
+            other => panic!("expected Block, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_empty_input() {
+        let program = parse("");
+        assert_eq!(program.statements.len(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error de Análisis Sintáctico")]
+    fn test_parse_unexpected_token() {
+        parse("let = 42;");
     }
 }

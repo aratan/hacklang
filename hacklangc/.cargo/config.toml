@@ -1,4 +1,8 @@
-[build]
-target = "x86_64-pc-windows-gnu"
-[target.x86_64-pc-windows-gnu]
-linker = "C:/ProgramData/mingw64/mingw64/bin/x86_64-w64-mingw32-gcc.exe"
+# Default target for this system (auto-detected by cargo)
+# Remove the fixed target to use the host target by default.
+# [build]
+# target = "x86_64-pc-windows-gnu"
+
+# Cross-compilation helpers (uncomment when building for Windows)
+# [target.x86_64-pc-windows-gnu]
+# linker = "C:/ProgramData/mingw64/mingw64/bin/x86_64-w64-mingw32-gcc.exe"

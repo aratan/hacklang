@@ -2,3 +2,6 @@
 # Local Pi runtime state
 .atl/
 *.exe
+# SQLite databases
+mydatabase.db
+*.db

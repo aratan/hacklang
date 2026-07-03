@@ -1,3 +1,17 @@
 let a = 100;
 let b = 50;
-(a > b) ? { print a; } : { print b; };
+
+// if / else
+if (a > b) (
+  print "a > b es VERDADERO";
+) else (
+  print "a > b es FALSO";
+)
+
+// Ternario con expresiones (no blocks)
+print (a > b) ? a : b;
+
+// if sin else
+if (a > b) (
+  print "Solo if, sin else, funciona!";
+)

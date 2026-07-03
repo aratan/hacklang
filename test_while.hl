@@ -1,9 +1,6 @@
-let data = ["Iteracion", 0, "Iteracion", 1, "Iteracion", 2];
 let i = 0;
-
-while (i < 6) {
-  print data[i];
+while (i < 3) (
+  print i;
   i = i + 1;
-} 
-
-print "Bucle finalizado!";
+)
+print "While finalizado!";

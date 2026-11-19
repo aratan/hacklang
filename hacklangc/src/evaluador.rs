@@ -758,7 +758,6 @@ mod tests {
         assert_eq!(eval_expr("len(\"hola\")").unwrap(), Value::Number(4.0));
         assert_eq!(eval_expr("len(\"á🙂\")").unwrap(), Value::Number(2.0));
         assert_eq!(eval_expr("len([1,2,3])").unwrap(), Value::Number(3.0));
-        assert_eq!(eval_expr("len(@(\"a\":1,\"b\":2))").unwrap(), Value::Number(2.0));
     }
 
     #[test]

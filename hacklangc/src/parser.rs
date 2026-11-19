@@ -44,15 +44,16 @@ impl Parser {
     }
 
     // El método principal que construye el árbol completo.
-    pub fn parse_program(&mut self) -> Program {
+    pub fn parse_program(&mut self) -> Result<Program, String> {
         let mut statements = Vec::new();
         while !self.is_at_end() {
-            match self.parse_statement() {
-                Ok(stmt) => statements.push(stmt),
-                Err(e) => panic!("Error de Análisis Sintáctico: {}", e),
+            if *self.current_token() == Token::Semicolon {
+                self.advance();
+                continue;
             }
+            statements.push(self.parse_statement()?);
         }
-        Program { statements }
+        Ok(Program { statements })
     }
 
     fn parse_statement(&mut self) -> Result<Statement, String> {
@@ -66,16 +67,33 @@ impl Parser {
                 self.advance(); // consume the identifier
                 self.advance(); // consume =
                 let value = self.parse_expression(Precedence::Lowest)?;
-                if *self.current_token() == Token::Semicolon {
-                    self.advance();
+                if *self.current_token() == Token::Semicolon { self.advance(); }
+                return Ok(Statement::Assign(AssignStatement { name: ident_name, value }));
+            }
+            if next == Some(Token::BracketOpen) {
+                self.advance(); // consume identifier
+                self.advance(); // consume [
+                let index = self.parse_expression(Precedence::Lowest)?;
+                if *self.current_token() != Token::BracketClose {
+                    return Err("Se esperaba ']' en la asignación por índice".to_string());
                 }
-                return Ok(Statement::Let(LetStatement { name: ident_name, value }));
+                self.advance();
+                if *self.current_token() != Token::Equals {
+                    return Err("Se esperaba '=' después del índice".to_string());
+                }
+                self.advance();
+                let value = self.parse_expression(Precedence::Lowest)?;
+                if *self.current_token() == Token::Semicolon { self.advance(); }
+                return Ok(Statement::IndexAssign(IndexAssignStatement { name: ident_name, index, value }));
             }
         }
 
         match self.current_token() {
             Token::Let => self.parse_let_statement(),
             Token::Print => self.parse_print_statement(),
+            Token::Return => self.parse_return_statement(),
+            Token::Break => self.parse_loop_control_statement(false),
+            Token::Continue => self.parse_loop_control_statement(true),
             Token::ParenOpen => self.parse_block_statement(),
             Token::While => self.parse_while_statement(),
             Token::If => self.parse_if_statement(),
@@ -139,6 +157,27 @@ impl Parser {
         Ok(Statement::Let(LetStatement { name, value }))
     }
 
+    fn parse_loop_control_statement(&mut self, is_continue: bool) -> Result<Statement, String> {
+        self.advance();
+        if *self.current_token() == Token::Semicolon {
+            self.advance();
+        }
+        if is_continue {
+            Ok(Statement::Continue)
+        } else {
+            Ok(Statement::Break)
+        }
+    }
+
+    fn parse_return_statement(&mut self) -> Result<Statement, String> {
+        self.advance(); // consume 'return'
+        let value = self.parse_expression(Precedence::Lowest)?;
+        if *self.current_token() == Token::Semicolon {
+            self.advance();
+        }
+        Ok(Statement::Return(value))
+    }
+
     fn parse_print_statement(&mut self) -> Result<Statement, String> {
         self.advance(); // consume 'print'
         let value = self.parse_expression(Precedence::Lowest)?;
@@ -166,44 +205,61 @@ impl Parser {
 
     fn parse_while_statement(&mut self) -> Result<Statement, String> {
         self.advance(); // consume 'while'
-        let condition = self.parse_expression(Precedence::Lowest)?;
         if *self.current_token() != Token::ParenOpen {
-            return Err("Se esperaba '(' después de la condición".to_string());
+            return Err("Se esperaba '(' antes de la condición del while".to_string());
         }
-        self.advance(); // consume (
+        self.advance();
+        let condition = self.parse_expression(Precedence::Lowest)?;
+        if *self.current_token() != Token::ParenClose {
+            return Err("Se esperaba ')' después de la condición del while".to_string());
+        }
+        self.advance();
+
+        if *self.current_token() != Token::ParenOpen {
+            return Err("Se esperaba '(' antes del cuerpo del while".to_string());
+        }
+        self.advance();
         let body = self.parse_block()?;
         if *self.current_token() != Token::ParenClose {
             return Err("Se esperaba ')' al final del while".to_string());
         }
-        self.advance(); // consume )
+        self.advance();
         Ok(Statement::While(WhileStatement { condition, body }))
     }
 
     fn parse_if_statement(&mut self) -> Result<Statement, String> {
         self.advance(); // consume 'if'
+        if *self.current_token() != Token::ParenOpen {
+            return Err("Se esperaba '(' antes de la condición del if".to_string());
+        }
+        self.advance();
         let condition = self.parse_expression(Precedence::Lowest)?;
-        self.advance(); // consume (
+        if *self.current_token() != Token::ParenClose {
+            return Err("Se esperaba ')' después de la condición del if".to_string());
+        }
+        self.advance();
+
+        if *self.current_token() != Token::ParenOpen {
+            return Err("Se esperaba '(' antes del cuerpo del if".to_string());
+        }
+        self.advance();
         let true_body = self.parse_block()?;
-        self.advance(); // consume )
-        
+        if *self.current_token() != Token::ParenClose {
+            return Err("Se esperaba ')' al final del bloque if".to_string());
+        }
+        self.advance();
+
         let false_body = if *self.current_token() == Token::Identifier("else".to_string()) {
-            self.advance(); // consume else
-            if *self.current_token() == Token::ParenOpen {
-                self.advance(); // consume (
-                let body = self.parse_block()?;
-                if *self.current_token() == Token::ParenClose {
-                    self.advance(); // consume )
-                }
-                Some(body)
-            } else {
+            self.advance();
+            if *self.current_token() != Token::ParenOpen {
                 return Err("Se esperaba '(' después de 'else'".to_string());
             }
-        } else if *self.current_token() == Token::ParenOpen {
-            self.advance(); // consume (
+            self.advance();
             let body = self.parse_block()?;
-            if *self.current_token() == Token::ParenClose {
-                self.advance(); // consume )
+            if *self.current_token() != Token::ParenClose {
+                return Err("Se esperaba ')' al final del bloque else".to_string());
             }
+            self.advance();
             Some(body)
         } else {
             None
@@ -226,7 +282,17 @@ impl Parser {
         }
         self.advance(); // consume |
 
-        let body = self.parse_expression(Precedence::Lowest)?;
+        let body = if *self.current_token() == Token::ParenOpen {
+            self.advance();
+            let statements = self.parse_block()?;
+            if *self.current_token() != Token::ParenClose {
+                return Err("Se esperaba ')' al cerrar el cuerpo de la función".to_string());
+            }
+            self.advance();
+            Expression::Block(statements)
+        } else {
+            self.parse_expression(Precedence::Lowest)?
+        };
 
         if *self.current_token() == Token::Semicolon {
             self.advance();
@@ -270,6 +336,35 @@ impl Parser {
         // Parsea la parte "prefijo" (un número, una variable, un paréntesis)
         let mut left_expr = self.parse_prefix()?;
 
+        // Operaciones postfix: indexación y llamadas sobre cualquier expresión.
+        loop {
+            if *self.current_token() == Token::BracketOpen {
+                self.advance();
+                let index = self.parse_expression(Precedence::Lowest)?;
+                if *self.current_token() != Token::BracketClose {
+                    return Err("Se esperaba ']' después del índice".to_string());
+                }
+                self.advance();
+                left_expr = Expression::Index {
+                    target: Box::new(left_expr),
+                    index: Box::new(index),
+                };
+            } else if *self.current_token() == Token::ParenOpen {
+                self.advance();
+                let args = self.parse_comma_list(Token::ParenClose)?;
+                if *self.current_token() != Token::ParenClose {
+                    return Err("Se esperaba ')' al cerrar la llamada".to_string());
+                }
+                self.advance();
+                left_expr = Expression::FunctionCall {
+                    func: Box::new(left_expr),
+                    args,
+                };
+            } else {
+                break;
+            }
+        }
+
         // Mientras el siguiente token sea un operador con más "fuerza"...
         while *self.current_token() != Token::Semicolon && precedence < self.get_precedence(self.current_token()) {
             let operator = self.current_token().clone();
@@ -310,12 +405,24 @@ impl Parser {
     fn parse_prefix(&mut self) -> Result<Expression, String> {
         let token = self.current_token().clone();
         match token {
+            Token::True => {
+                self.advance();
+                Ok(Expression::BoolLiteral(true))
+            }
+            Token::False => {
+                self.advance();
+                Ok(Expression::BoolLiteral(false))
+            }
             Token::Identifier(name) => {
                 self.advance();
                 // Verificar si es llamada a función
                 if !self.is_at_end() && *self.current_token() == Token::ParenOpen {
                     self.advance();
                     let args = self.parse_comma_list(Token::ParenClose)?;
+                    if *self.current_token() != Token::ParenClose {
+                        return Err("Se esperaba ')' al cerrar la llamada".to_string());
+                    }
+                    self.advance();
                     Ok(Expression::FunctionCall {
                         func: Box::new(Expression::Identifier(name)),
                         args,
@@ -350,8 +457,27 @@ impl Parser {
                     return Err("Se esperaba '|' después de los parámetros".to_string());
                 }
                 self.advance();
-                let body = self.parse_expression(Precedence::Lowest)?;
+                let body = if *self.current_token() == Token::ParenOpen {
+                    self.advance();
+                    let statements = self.parse_block()?;
+                    if *self.current_token() != Token::ParenClose {
+                        return Err("Se esperaba ')' al cerrar el cuerpo de la función".to_string());
+                    }
+                    self.advance();
+                    Expression::Block(statements)
+                } else {
+                    self.parse_expression(Precedence::Lowest)?
+                };
                 Ok(Expression::Lambda { params, body: Box::new(body) })
+            }
+            Token::BracketOpen => {
+                self.advance();
+                let items = self.parse_comma_list(Token::BracketClose)?;
+                if *self.current_token() != Token::BracketClose {
+                    return Err("Se esperaba ']' al cerrar el array".to_string());
+                }
+                self.advance();
+                Ok(Expression::Array(items))
             }
             Token::At => {
                 // Mapa: @{ "key": value }
@@ -361,6 +487,10 @@ impl Parser {
                 }
                 self.advance();
                 let pairs = self.parse_map_entries()?;
+                if *self.current_token() != Token::ParenClose {
+                    return Err("Se esperaba ')' al cerrar el mapa".to_string());
+                }
+                self.advance();
                 Ok(Expression::Map(pairs))
             }
             _ => Err(format!(
@@ -448,9 +578,9 @@ mod tests {
 
     fn parse(source: &str) -> Program {
         let mut lexer = crate::lexer::Lexer::new(source.to_string());
-        let tokens = lexer.tokenize();
+        let tokens = lexer.tokenize().unwrap();
         let mut parser = Parser::new(tokens);
-        parser.parse_program()
+        parser.parse_program().unwrap()
     }
 
     #[test]
@@ -481,15 +611,15 @@ mod tests {
 
     #[test]
     fn test_parse_let_from_identifier() {
-        // Parser also accepts `x = 10;` as a let (without explicit 'let')
+        // Assignment is distinct from a declaration and updates an existing binding.
         let program = parse("x = 10;");
         assert_eq!(program.statements.len(), 1);
         match &program.statements[0] {
-            Statement::Let(stmt) => {
+            Statement::Assign(stmt) => {
                 assert_eq!(stmt.name, "x");
                 assert_eq!(stmt.value, Expression::NumberLiteral(10.0));
             }
-            other => panic!("expected Let, got {:?}", other),
+            other => panic!("expected Assign, got {:?}", other),
         }
     }
 
@@ -594,6 +724,21 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_call_on_parenthesized_expression() {
+        let program = parse("let result = (factory)(2);");
+        match &program.statements[0] {
+            Statement::Let(stmt) => match &stmt.value {
+                Expression::FunctionCall { func, args } => {
+                    assert_eq!(func.as_ref(), &Expression::Identifier("factory".to_string()));
+                    assert_eq!(args.len(), 1);
+                }
+                other => panic!("expected FunctionCall, got {:?}", other),
+            },
+            other => panic!("expected Let, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn test_parse_function_call() {
         // Parser wraps f(...) in a Let with name _temp_f
         let program = parse("add(1, 2);");
@@ -665,8 +810,11 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error de Análisis Sintáctico")]
-    fn test_parse_unexpected_token() {
-        parse("let = 42;");
+    fn test_parse_unexpected_token_returns_error() {
+        let mut lexer = crate::lexer::Lexer::new("let = 42;".to_string());
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let error = parser.parse_program().unwrap_err();
+        assert!(error.contains("nombre de variable"));
     }
 }

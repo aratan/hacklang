@@ -15,7 +15,12 @@ pub struct Program {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Statement {
     Let(LetStatement),
+    Assign(AssignStatement),
+    IndexAssign(IndexAssignStatement),
     Print(PrintStatement),
+    Return(Expression),
+    Break,
+    Continue,
     Block(Vec<Statement>), // Bloque { stmt; stmt; ... }
     While(WhileStatement),
     If(IfStatement),
@@ -29,6 +34,7 @@ pub enum Expression {
     
     // Un literal numérico. Lo guardamos como f64 directamente, como espera el evaluador.
     NumberLiteral(f64),
+    BoolLiteral(bool),
     
     // Un literal de cadena de texto. ej: `"Hola Mundo"`
     StringLiteral(String),
@@ -52,6 +58,8 @@ pub enum Expression {
         params: Vec<String>,
         body: Box<Expression>,
     },
+    // Bloque de varias sentencias usado como cuerpo de una función.
+    Block(Vec<Statement>),
     
     // Llamada a función: func(a, b)
     FunctionCall {
@@ -77,6 +85,19 @@ pub enum Expression {
 #[derive(Debug, Clone, PartialEq)]
 pub struct LetStatement {
     pub name: String,
+    pub value: Expression,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AssignStatement {
+    pub name: String,
+    pub value: Expression,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IndexAssignStatement {
+    pub name: String,
+    pub index: Expression,
     pub value: Expression,
 }
 

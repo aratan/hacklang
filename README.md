@@ -50,7 +50,12 @@ classDiagram
     class Statement {
         <<enum>>
         Let(LetStatement)
+        Assign(AssignStatement)
+        IndexAssign(IndexAssignStatement)
         Print(PrintStatement)
+        Return(Expression)
+        Break
+        Continue
         Block(Vec~Statement~)
         While(WhileStatement)
         If(IfStatement)
@@ -58,11 +63,13 @@ classDiagram
     class Expression {
         <<enum>>
         NumberLiteral(f64)
+        BoolLiteral(bool)
         StringLiteral(String)
         Identifier(String)
         Infix
         Ternary
         Lambda
+        Block(Vec~Statement~)
         FunctionCall
         Array(Vec~Expression~)
         Map(Vec~(Expression, Expression)~)
@@ -77,7 +84,11 @@ classDiagram
     class Value {
         <<enum>>
         Number(f64)
+        Bool(bool)
         String(String)
+        Array(Vec<Value>)
+        Map(Vec<(Value, Value)>)
+        Function
     }
 
     Lexer ..> Token : produce
@@ -117,9 +128,9 @@ cargo run ../test.hl
 
 ## Metodología
 
-### Pipeline de 3 fases
+### Pipeline de ejecución
 
-HackLang sigue el patrón clásico de **interprete sin IR** (Intermediate Representation). El código fuente pasa por exactamente 3 fases, una tras otra, sin transformaciones intermedias:
+HackLang sigue el patrón clásico de **intérprete sin IR** (Intermediate Representation). El flujo principal pasa por tres fases: lexer, parser y evaluador. No hay generación de código ni una representación intermedia adicional:
 
 ```
 Source (.hl)  ──[Lexer]──▶  Tokens  ──[Parser]──▶  AST  ──[Evaluator]──▶  Output
@@ -200,20 +211,30 @@ El parser de sentencias usa **Recursive Descent**: una función por cada constru
 El evaluador actúa como un **Visitor** pero sin el patrón clásico de doble dispatch — Rust lo resuelve con `match` sobre el enum del AST:
 
 ```rust
-fn run_stmt(&mut self, stmt: &Statement) -> Result<(), String> {
+fn run_stmt(&mut self, stmt: &Statement) -> Result<Flow, String> {
     match stmt {
-        Statement::Let(l)    => self.eval_let(l),
-        Statement::Print(p)  => self.eval_print(p),
-        Statement::Block(ss) => { for s in ss { self.run_stmt(s)?; } Ok(()) }
-        Statement::While(w)  => { /* loop hasta que condition sea false */ }
-        Statement::If(i)     => { /* eval condition → branch */ }
+        Statement::Let(l)       => self.eval_let(l).map(|_| Flow::Continue),
+        Statement::Return(expr) => self.eval_expression(expr).map(Flow::Return),
+        Statement::Break         => Ok(Flow::Break),
+        Statement::Continue      => Ok(Flow::LoopContinue),
+        Statement::Block(ss)     => { /* propaga Return, Break y Continue */ }
+        Statement::While(w)      => { /* consume Break/Continue y propaga Return */ }
+        Statement::If(i)         => { /* evalúa condición y propaga el flujo */ }
+        // Assign, IndexAssign y Print también producen Flow::Continue.
     }
 }
 ```
 
-### Environment como HashMap
+### Entornos léxicos y closures
 
-El estado del programa (variables) se almacena en un `HashMap<String, Value>` dentro del `Evaluator`. No hay scoping anidado ni closures — es un único ámbito global.
+El runtime mantiene un arena de entornos (`Vec<Environment>`). Cada entorno contiene un `HashMap<String, Value>` y un enlace opcional a su entorno padre. Las variables se resuelven recorriendo esa cadena, desde el ámbito actual hacia los padres.
+
+- `let` crea o reemplaza una vinculación en el ámbito actual.
+- La asignación `x = ...` actualiza la vinculación existente más cercana.
+- Los bloques, ramas, bucles y llamadas crean nuevos entornos.
+- Una lambda captura el identificador estable del entorno donde se define. No clona todas las variables: ve también las modificaciones posteriores y puede ser recursiva.
+- Los bloques, ramas, bucles y llamadas crean entornos con padre léxico.
+- El recolector mark-and-sweep recupera frames no alcanzables y reutiliza sus IDs. Los valores contenidos siguen bajo gestión de memoria de Rust.
 
 ## Principios Aplicados
 
@@ -226,17 +247,9 @@ Cada decisión de diseño se tomó preguntando "¿esto añade complejidad sin ne
 - **Sin genéricos ni macros complejas**: el evaluador es código plano con `match`.
 - **Sin lifetimes complejas**: se clona lo necesario (`s.clone()`, `name.clone()`) en lugar de tejer referencias.
 
-### YAGNI (You Aren't Gonna Need It) — stubs con error claro
+### YAGNI (You Aren't Gonna Need It)
 
-Las features que no están implementadas devuelven un error explícito en lugar de valores basura o infraestructura completa:
-
-```rust
-Expression::Lambda { .. }       => Err("Lambda not implemented".to_string()),
-Expression::FunctionCall { .. } => Err("FunctionCall not implemented".to_string()),
-Expression::Array(_)            => Err("Array not implemented".to_string()),
-```
-
-Esto evita construir el sistema de closures, tipado, etc., hasta que sea realmente necesario.
+El runtime implementa primero las construcciones necesarias para ejecutar programas pequeños: funciones, closures léxicas, arrays, mapas e indexación. Las características que aún no existen deben fallar explícitamente; no deben simularse con valores por defecto ni con resultados silenciosos.
 
 ### DRY — con límites
 
@@ -255,13 +268,44 @@ fn evaluate(&mut self, program: &Program) -> Result<(), String> {
 }
 ```
 
-La única excepción son errores léxicos irrecuperables (`panic!` en el lexer), porque un token mal formado no permite continuar el análisis.
+El lexer y el parser devuelven `Result`: los caracteres desconocidos, las cadenas sin cerrar y los errores sintácticos llegan al CLI como mensajes controlados, sin provocar un `panic!`.
 
 ## Estado
 
 | Componente | Estado |
 |---|---|
-| **Lexer** | ✅ Completo |
-| **Parser** | ✅ Completo (infix, ternario, lambdas, arrays, mapas, indexación) |
-| **Evaluador** | ⚠️ Parcial — lambdas, arrays, mapas, index y llamadas son stubs |
-| **Tests** | ❌ Pendientes |
+| **Lexer** | ✅ Tokenización, palabras clave, operadores, cadenas y errores recuperables |
+| **Parser** | ✅ Expresiones, ternario, lambdas, llamadas postfix, bloques, arrays, mapas e indexación |
+| **Evaluador** | ✅ Evaluación de expresiones, booleanos, sentencias, ámbitos léxicos y colecciones |
+| **Funciones** | ✅ Lambdas, closures léxicas, recursividad, llamadas de primera clase y aridad |
+| **Control de flujo** | ✅ `return`, `break` y `continue` |
+| **Memoria** | ✅ Mark-and-sweep de frames de entorno; los demás valores los gestiona Rust |
+| **Tipos estáticos** | ⏳ No implementados; el runtime usa comprobación dinámica con valores booleanos nativos |
+| **Tests** | ✅ CI: 80 pruebas aprobadas en la revisión de closures devueltas |
+
+
+## Funcionalidad del runtime (rama en desarrollo)
+
+- Las lambdas se evalúan como funciones y capturan el ID estable del entorno léxico donde se definen.
+- Las llamadas comprueban el número de argumentos y ejecutan el cuerpo en un entorno local cuyo padre es el entorno capturado.
+- Los cuerpos de función admiten varias sentencias y `return` explícito.
+- `return` se propaga a través de bloques, ramas y bucles; `break` y `continue` controlan el bucle más cercano.
+- Los arrays admiten literales, lectura por índice y actualización de posiciones existentes.
+- Los mapas admiten claves y valores evaluados, lectura por clave y alta o actualización de entradas.
+- La indexación de cadenas devuelve el carácter solicitado.
+- Los errores al evaluar condiciones de `while` se propagan; ya no se convierten silenciosamente en una condición falsa.
+
+Limitaciones actuales: la asignación por índice solo admite como destino una variable identificada directamente (no indexación anidada); los mapas se representan como pares ordenados. El lenguaje todavía no tiene un sistema de tipos estáticos: los tipos se comprueban durante la evaluación y las condiciones aceptan booleanos nativos y mantienen la conversión dinámica de números, cadenas y colecciones por compatibilidad. Las comparaciones numéricas producen `true` o `false`, no `1` o `0`.
+
+
+## Modelo de memoria y ejecución
+
+- **Stack (pila):** la evaluación de expresiones y las llamadas a funciones usan recursión de Rust; por tanto, la pila de llamadas real es la pila nativa del proceso. Los bucles del lenguaje se ejecutan iterativamente. HackLang todavía no tiene una VM ni una pila de operandos propia.
+- **Heap (montículo):** el AST usa `Box` para nodos recursivos y `Vec` para listas; cadenas, mapas y tablas de variables usan estructuras propiedad de Rust. El arena de entornos también vive en el heap. Un recolector mark-and-sweep recupera frames no alcanzables y reutiliza sus posiciones; no es un GC general de objetos, porque los valores los gestiona Rust.
+- **Closures:** guardan un ID de entorno, no una copia completa del `HashMap`. La cadena de entornos proporciona el alcance léxico y permite recursividad.
+- **Liberación:** Rust libera automáticamente los valores cuando se destruye el evaluador. El arena recolecta frames inalcanzables después de cada sentencia, incluyendo el seguimiento de closures contenidas en valores y de closures devueltas temporalmente. No hay un garbage collector general para todos los objetos: Rust gestiona la vida de cadenas, arrays, mapas y AST.
+
+
+### Errores léxicos y sintácticos
+
+El lexer expone `tokenize() -> Result<Vec<Token>, String>` y el parser `parse_program() -> Result<Program, String>`. Un carácter desconocido, una cadena sin cerrar o una sentencia mal formada produce un error recuperable que el ejecutable muestra al usuario. Las pruebas cubren también cadenas Unicode para evitar errores al confundir índices de caracteres con índices de bytes.

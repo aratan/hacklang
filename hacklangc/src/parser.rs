@@ -181,44 +181,61 @@ impl Parser {
 
     fn parse_while_statement(&mut self) -> Result<Statement, String> {
         self.advance(); // consume 'while'
-        let condition = self.parse_expression(Precedence::Lowest)?;
         if *self.current_token() != Token::ParenOpen {
-            return Err("Se esperaba '(' después de la condición".to_string());
+            return Err("Se esperaba '(' antes de la condición del while".to_string());
         }
-        self.advance(); // consume (
+        self.advance();
+        let condition = self.parse_expression(Precedence::Lowest)?;
+        if *self.current_token() != Token::ParenClose {
+            return Err("Se esperaba ')' después de la condición del while".to_string());
+        }
+        self.advance();
+
+        if *self.current_token() != Token::ParenOpen {
+            return Err("Se esperaba '(' antes del cuerpo del while".to_string());
+        }
+        self.advance();
         let body = self.parse_block()?;
         if *self.current_token() != Token::ParenClose {
             return Err("Se esperaba ')' al final del while".to_string());
         }
-        self.advance(); // consume )
+        self.advance();
         Ok(Statement::While(WhileStatement { condition, body }))
     }
 
     fn parse_if_statement(&mut self) -> Result<Statement, String> {
         self.advance(); // consume 'if'
+        if *self.current_token() != Token::ParenOpen {
+            return Err("Se esperaba '(' antes de la condición del if".to_string());
+        }
+        self.advance();
         let condition = self.parse_expression(Precedence::Lowest)?;
-        self.advance(); // consume (
+        if *self.current_token() != Token::ParenClose {
+            return Err("Se esperaba ')' después de la condición del if".to_string());
+        }
+        self.advance();
+
+        if *self.current_token() != Token::ParenOpen {
+            return Err("Se esperaba '(' antes del cuerpo del if".to_string());
+        }
+        self.advance();
         let true_body = self.parse_block()?;
-        self.advance(); // consume )
-        
+        if *self.current_token() != Token::ParenClose {
+            return Err("Se esperaba ')' al final del bloque if".to_string());
+        }
+        self.advance();
+
         let false_body = if *self.current_token() == Token::Identifier("else".to_string()) {
-            self.advance(); // consume else
-            if *self.current_token() == Token::ParenOpen {
-                self.advance(); // consume (
-                let body = self.parse_block()?;
-                if *self.current_token() == Token::ParenClose {
-                    self.advance(); // consume )
-                }
-                Some(body)
-            } else {
+            self.advance();
+            if *self.current_token() != Token::ParenOpen {
                 return Err("Se esperaba '(' después de 'else'".to_string());
             }
-        } else if *self.current_token() == Token::ParenOpen {
-            self.advance(); // consume (
+            self.advance();
             let body = self.parse_block()?;
-            if *self.current_token() == Token::ParenClose {
-                self.advance(); // consume )
+            if *self.current_token() != Token::ParenClose {
+                return Err("Se esperaba ')' al final del bloque else".to_string());
             }
+            self.advance();
             Some(body)
         } else {
             None

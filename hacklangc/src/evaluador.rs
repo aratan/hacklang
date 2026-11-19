@@ -567,4 +567,22 @@ mod tests {
         assert_eq!(ev.get_var("result"), Some(&Value::Number(120.0)));
     }
 
+    #[test]
+    fn test_assign_array_index() {
+        let ev = eval_program("let values = [1, 2]; values[0] = 9; let result = values[0];").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(9.0)));
+    }
+
+    #[test]
+    fn test_assign_map_index_and_insert_key() {
+        let ev = eval_program("let config = @(\"port\": 80); config[\"port\"] = 8080; config[\"host\"] = \"localhost\"; let result = config[\"port\"];").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(8080.0)));
+    }
+
+    #[test]
+    fn test_assign_array_index_out_of_range() {
+        let result = eval_program("let values = [1]; values[3] = 9;");
+        assert!(result.unwrap_err().contains("fuera de rango"));
+    }
+
 }

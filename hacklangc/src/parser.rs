@@ -20,10 +20,19 @@ pub struct Parser {
     tokens: Vec<Token>,
     position: usize,
     precedences: HashMap<Token, Precedence>,
+    compact: bool,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
+        Self::with_mode(tokens, false)
+    }
+
+    pub fn new_compact(tokens: Vec<Token>) -> Self {
+        Self::with_mode(tokens, true)
+    }
+
+    fn with_mode(tokens: Vec<Token>, compact: bool) -> Self {
         let mut precedences = HashMap::new();
         precedences.insert(Token::Plus, Precedence::Sum);
         precedences.insert(Token::Minus, Precedence::Sum);
@@ -40,6 +49,7 @@ impl Parser {
             tokens,
             position: 0,
             precedences,
+            compact,
         }
     }
 
@@ -63,6 +73,13 @@ impl Parser {
         if let Token::Identifier(name) = self.current_token() {
             let ident_name = name.clone();
             let next = self.peek_ahead(1).cloned();
+            if next == Some(Token::DeclareAssign) {
+                self.advance();
+                self.advance();
+                let value = self.parse_expression(Precedence::Lowest)?;
+                if *self.current_token() == Token::Semicolon { self.advance(); }
+                return Ok(Statement::Let(LetStatement { name: ident_name, value }));
+            }
             if next == Some(Token::Equals) {
                 self.advance(); // consume the identifier
                 self.advance(); // consume =
@@ -94,7 +111,8 @@ impl Parser {
             Token::Return => self.parse_return_statement(),
             Token::Break => self.parse_loop_control_statement(false),
             Token::Continue => self.parse_loop_control_statement(true),
-            Token::ParenOpen => self.parse_block_statement(),
+            Token::ParenOpen if !self.compact => self.parse_block_statement(),
+            Token::BraceOpen if self.compact => self.parse_block_statement(),
             Token::While => self.parse_while_statement(),
             Token::If => self.parse_if_statement(),
             Token::Identifier(name) => {
@@ -187,89 +205,64 @@ impl Parser {
         Ok(Statement::Print(PrintStatement { value }))
     }
 
+    fn block_delimiters(&self) -> (Token, Token) {
+        if self.compact { (Token::BraceOpen, Token::BraceClose) }
+        else { (Token::ParenOpen, Token::ParenClose) }
+    }
+
     fn parse_block_statement(&mut self) -> Result<Statement, String> {
-        self.advance(); // consume (
-        let mut stmts = Vec::new();
-        while !self.is_at_end() && *self.current_token() != Token::ParenClose {
-            let stmt = self.parse_statement()?;
-            stmts.push(stmt);
-            if *self.current_token() == Token::Semicolon {
-                self.advance();
-            }
-        }
-        if *self.current_token() == Token::ParenClose {
-            self.advance();
-        }
+        let (open, close) = self.block_delimiters();
+        if *self.current_token() != open { return Err(format!("Se esperaba '{open:?}' al abrir el bloque")); }
+        self.advance();
+        let stmts = self.parse_block()?;
+        if *self.current_token() != close { return Err(format!("Se esperaba '{close:?}' al cerrar el bloque")); }
+        self.advance();
         Ok(Statement::Block(stmts))
     }
 
-    fn parse_while_statement(&mut self) -> Result<Statement, String> {
-        self.advance(); // consume 'while'
-        if *self.current_token() != Token::ParenOpen {
-            return Err("Se esperaba '(' antes de la condición del while".to_string());
+    fn parse_control_condition(&mut self, keyword: &str) -> Result<Expression, String> {
+        if self.compact {
+            let condition = self.parse_expression(Precedence::Lowest)?;
+            if *self.current_token() != Token::BraceOpen {
+                return Err(format!("Se esperaba '{{' después de la condición de {keyword}"));
+            }
+            Ok(condition)
+        } else {
+            if *self.current_token() != Token::ParenOpen { return Err(format!("Se esperaba '(' antes de la condición de {keyword}")); }
+            self.advance();
+            let condition = self.parse_expression(Precedence::Lowest)?;
+            if *self.current_token() != Token::ParenClose { return Err(format!("Se esperaba ')' después de la condición de {keyword}")); }
+            self.advance();
+            Ok(condition)
         }
-        self.advance();
-        let condition = self.parse_expression(Precedence::Lowest)?;
-        if *self.current_token() != Token::ParenClose {
-            return Err("Se esperaba ')' después de la condición del while".to_string());
-        }
-        self.advance();
+    }
 
-        if *self.current_token() != Token::ParenOpen {
-            return Err("Se esperaba '(' antes del cuerpo del while".to_string());
-        }
+    fn parse_control_body(&mut self, keyword: &str) -> Result<Vec<Statement>, String> {
+        let (open, close) = self.block_delimiters();
+        if *self.current_token() != open { return Err(format!("Se esperaba '{open:?}' antes del cuerpo de {keyword}")); }
         self.advance();
         let body = self.parse_block()?;
-        if *self.current_token() != Token::ParenClose {
-            return Err("Se esperaba ')' al final del while".to_string());
-        }
+        if *self.current_token() != close { return Err(format!("Se esperaba '{close:?}' al final del cuerpo de {keyword}")); }
         self.advance();
+        Ok(body)
+    }
+
+    fn parse_while_statement(&mut self) -> Result<Statement, String> {
+        self.advance();
+        let condition = self.parse_control_condition("while")?;
+        let body = self.parse_control_body("while")?;
         Ok(Statement::While(WhileStatement { condition, body }))
     }
 
     fn parse_if_statement(&mut self) -> Result<Statement, String> {
-        self.advance(); // consume 'if'
-        if *self.current_token() != Token::ParenOpen {
-            return Err("Se esperaba '(' antes de la condición del if".to_string());
-        }
         self.advance();
-        let condition = self.parse_expression(Precedence::Lowest)?;
-        if *self.current_token() != Token::ParenClose {
-            return Err("Se esperaba ')' después de la condición del if".to_string());
-        }
-        self.advance();
-
-        if *self.current_token() != Token::ParenOpen {
-            return Err("Se esperaba '(' antes del cuerpo del if".to_string());
-        }
-        self.advance();
-        let true_body = self.parse_block()?;
-        if *self.current_token() != Token::ParenClose {
-            return Err("Se esperaba ')' al final del bloque if".to_string());
-        }
-        self.advance();
-
+        let condition = self.parse_control_condition("if")?;
+        let true_body = self.parse_control_body("if")?;
         let false_body = if *self.current_token() == Token::Identifier("else".to_string()) {
             self.advance();
-            if *self.current_token() != Token::ParenOpen {
-                return Err("Se esperaba '(' después de 'else'".to_string());
-            }
-            self.advance();
-            let body = self.parse_block()?;
-            if *self.current_token() != Token::ParenClose {
-                return Err("Se esperaba ')' al final del bloque else".to_string());
-            }
-            self.advance();
-            Some(body)
-        } else {
-            None
-        };
-
-        Ok(Statement::If(IfStatement {
-            condition,
-            true_body,
-            false_body,
-        }))
+            Some(self.parse_control_body("else")?)
+        } else { None };
+        Ok(Statement::If(IfStatement { condition, true_body, false_body }))
     }
 
     // --- Sentencia Lambda: |x, y| { cuerpo } ---
@@ -282,12 +275,11 @@ impl Parser {
         }
         self.advance(); // consume |
 
-        let body = if *self.current_token() == Token::ParenOpen {
+        let (block_open, block_close) = self.block_delimiters();
+        let body = if *self.current_token() == block_open {
             self.advance();
             let statements = self.parse_block()?;
-            if *self.current_token() != Token::ParenClose {
-                return Err("Se esperaba ')' al cerrar el cuerpo de la función".to_string());
-            }
+            if *self.current_token() != block_close { return Err(format!("Se esperaba '{block_close:?}' al cerrar el cuerpo de la función")); }
             self.advance();
             Expression::Block(statements)
         } else {
@@ -480,16 +472,12 @@ impl Parser {
                 Ok(Expression::Array(items))
             }
             Token::At => {
-                // Mapa: @{ "key": value }
                 self.advance();
-                if *self.current_token() != Token::ParenOpen {
-                    return Err("Se esperaba '(' después de '@'".to_string());
-                }
+                let (open, close) = if self.compact { (Token::BraceOpen, Token::BraceClose) } else { (Token::ParenOpen, Token::ParenClose) };
+                if *self.current_token() != open { return Err(format!("Se esperaba '{open:?}' después de '@'")); }
                 self.advance();
-                let pairs = self.parse_map_entries()?;
-                if *self.current_token() != Token::ParenClose {
-                    return Err("Se esperaba ')' al cerrar el mapa".to_string());
-                }
+                let pairs = self.parse_map_entries_with_close(close.clone())?;
+                if *self.current_token() != close { return Err(format!("Se esperaba '{close:?}' al cerrar el mapa")); }
                 self.advance();
                 Ok(Expression::Map(pairs))
             }
@@ -520,8 +508,12 @@ impl Parser {
 
     // parsea entradas de mapa key:value separadas por comas
     fn parse_map_entries(&mut self) -> Result<Vec<(Expression, Expression)>, String> {
+        self.parse_map_entries_with_close(Token::ParenClose)
+    }
+
+    fn parse_map_entries_with_close(&mut self, close: Token) -> Result<Vec<(Expression, Expression)>, String> {
         let mut items = Vec::new();
-        while !self.is_at_end() && *self.current_token() != Token::ParenClose {
+        while !self.is_at_end() && *self.current_token() != close {
             if *self.current_token() == Token::Comma {
                 self.advance();
                 continue;
@@ -542,7 +534,8 @@ impl Parser {
 
     fn parse_block(&mut self) -> Result<Vec<Statement>, String> {
         let mut stmts = Vec::new();
-        while !self.is_at_end() && *self.current_token() != Token::ParenClose {
+        let (_, close) = self.block_delimiters();
+        while !self.is_at_end() && *self.current_token() != close {
             let stmt = self.parse_statement()?;
             stmts.push(stmt);
             if *self.current_token() == Token::Semicolon {

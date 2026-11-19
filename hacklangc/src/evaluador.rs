@@ -346,6 +346,19 @@ impl Evaluator {
                 Ok(Value::Number(0.0))
             }
             Expression::FunctionCall { func, args } => {
+                if let Expression::Identifier(name) = func.as_ref() {
+                    if name == "len" {
+                        if args.len() != 1 {
+                            return Err(format!("len() esperaba 1 argumento y recibió {}", args.len()));
+                        }
+                        return match self.eval_expression(&args[0])? {
+                            Value::String(value) => Ok(Value::Number(value.chars().count() as f64)),
+                            Value::Array(values) => Ok(Value::Number(values.len() as f64)),
+                            Value::Map(entries) => Ok(Value::Number(entries.len() as f64)),
+                            other => Err(format!("len() no admite el valor {:?}", other)),
+                        };
+                    }
+                }
                 let function = self.eval_expression(func)?;
                 let (params, body, captured_env) = match function {
                     Value::Function { params, body, captured_env } => (params, body, captured_env),
@@ -738,6 +751,20 @@ mod tests {
     fn test_function_arity_error() {
         let result = eval_program("let add = |a, b| a + b; let result = add(1);");
         assert!(result.unwrap_err().contains("esperaba 2 argumentos"));
+    }
+
+    #[test]
+    fn builtin_len_handles_unicode_strings_arrays_and_maps() {
+        assert_eq!(eval_expr("len(\"hola\")").unwrap(), Value::Number(4.0));
+        assert_eq!(eval_expr("len(\"á🙂\")").unwrap(), Value::Number(2.0));
+        assert_eq!(eval_expr("len([1,2,3])").unwrap(), Value::Number(3.0));
+        assert_eq!(eval_expr("len(@{\"a\":1,\"b\":2})").unwrap(), Value::Number(2.0));
+    }
+
+    #[test]
+    fn builtin_len_rejects_unsupported_values_and_wrong_arity() {
+        assert!(eval_expr("len(1)").unwrap_err().contains("no admite"));
+        assert!(eval_expr("len()").unwrap_err().contains("esperaba 1 argumento"));
     }
 
     #[test]

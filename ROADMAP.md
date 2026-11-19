@@ -40,7 +40,8 @@ HackLang es un lenguaje de programación de propósito general. Debe permitir co
 - Medir rendimiento con benchmarks antes y después.
 
 ### P3 — Biblioteca estándar
-- Strings: longitud Unicode, slicing definido, búsqueda, split/join, trim y conversiones.
+- Strings: `len(string)` ya implementado con conteo de caracteres Unicode; faltan slicing definido, búsqueda, split/join, trim y conversiones.
+- Colecciones: `len(array)` y `len(map)` ya implementados; faltan más operaciones estándar.
 - Codificación: hex, Base64 y UTF-8 con errores explícitos.
 - Regex con motor seguro frente a patrones patológicos (preferiblemente sin backtracking exponencial).
 - Hashing y checksums: SHA-256 y algoritmos adicionales según necesidad; distinguir hashes de contraseñas de hashes rápidos.

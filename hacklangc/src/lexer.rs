@@ -251,14 +251,14 @@ mod tests {
     #[test]
     fn test_whitespace_only() {
         let mut lexer = Lexer::new("   \n\t  ".to_string());
-        let tokens = lexer.tokenize();
+        let tokens = lexer.tokenize().unwrap();
         assert_eq!(tokens, vec![Token::Eof]);
     }
 
     #[test]
     fn test_keywords() {
         let mut lexer = Lexer::new("let print while if".to_string());
-        let tokens = lexer.tokenize();
+        let tokens = lexer.tokenize().unwrap();
         assert_eq!(tokens, vec![
             Token::Let,
             Token::Print,
@@ -271,7 +271,7 @@ mod tests {
     #[test]
     fn test_identifiers() {
         let mut lexer = Lexer::new("foo bar _tmp x42".to_string());
-        let tokens = lexer.tokenize();
+        let tokens = lexer.tokenize().unwrap();
         assert_eq!(tokens, vec![
             Token::Identifier("foo".to_string()),
             Token::Identifier("bar".to_string()),
@@ -284,7 +284,7 @@ mod tests {
     #[test]
     fn test_numbers() {
         let mut lexer = Lexer::new("42 3.14 0".to_string());
-        let tokens = lexer.tokenize();
+        let tokens = lexer.tokenize().unwrap();
         assert_eq!(tokens, vec![
             Token::Number(Number(42.0)),
             Token::Number(Number(3.14)),
@@ -296,7 +296,7 @@ mod tests {
     #[test]
     fn test_strings() {
         let mut lexer = Lexer::new(r#""hello" "world""#.to_string());
-        let tokens = lexer.tokenize();
+        let tokens = lexer.tokenize().unwrap();
         assert_eq!(tokens, vec![
             Token::String("hello".to_string()),
             Token::String("world".to_string()),
@@ -307,7 +307,7 @@ mod tests {
     #[test]
     fn test_operators() {
         let mut lexer = Lexer::new("+ - * / < > ~ ^".to_string());
-        let tokens = lexer.tokenize();
+        let tokens = lexer.tokenize().unwrap();
         assert_eq!(tokens, vec![
             Token::Plus,
             Token::Minus,
@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn test_special_chars() {
         let mut lexer = Lexer::new("= ; ( ) ? : | , @".to_string());
-        let tokens = lexer.tokenize();
+        let tokens = lexer.tokenize().unwrap();
         assert_eq!(tokens, vec![
             Token::Equals,
             Token::Semicolon,
@@ -343,7 +343,7 @@ mod tests {
     fn test_program_tokens() {
         let src = "let x = 42; print x;";
         let mut lexer = Lexer::new(src.to_string());
-        let tokens = lexer.tokenize();
+        let tokens = lexer.tokenize().unwrap();
         assert_eq!(tokens, vec![
             Token::Let,
             Token::Identifier("x".to_string()),
@@ -361,7 +361,7 @@ mod tests {
     fn test_while_if_tokens() {
         let src = "while (i < 10) ( print i; )";
         let mut lexer = Lexer::new(src.to_string());
-        let tokens = lexer.tokenize();
+        let tokens = lexer.tokenize().unwrap();
         assert_eq!(tokens, vec![
             Token::While,
             Token::ParenOpen,

@@ -49,6 +49,7 @@ type Scope = HashMap<String, Type>;
 pub struct TypeChecker {
     scopes: Vec<Scope>,
     diagnostics: Vec<Diagnostic>,
+    return_types: Vec<Vec<Type>>,
 }
 
 impl TypeChecker {
@@ -56,6 +57,7 @@ impl TypeChecker {
         Self {
             scopes: vec![Scope::new()],
             diagnostics: Vec::new(),
+            return_types: Vec::new(),
         }
     }
 
@@ -119,7 +121,12 @@ impl TypeChecker {
                     }
                 }
                 Statement::Print(stmt) => { self.infer(&stmt.value); }
-                Statement::Return(expr) => { self.infer(expr); }
+                Statement::Return(expr) => {
+                    let ty = self.infer(expr);
+                    if let Some(returns) = self.return_types.last_mut() {
+                        returns.push(ty);
+                    }
+                }
                 Statement::Break | Statement::Continue => {}
                 Statement::Block(statements) => self.check_scoped_statements(statements),
                 Statement::While(stmt) => {
@@ -191,9 +198,16 @@ impl TypeChecker {
             }
             Expression::Lambda { params, body } => {
                 self.push_scope();
+                self.return_types.push(Vec::new());
                 for param in params { self.define(param, Type::Unknown); }
-                let returns = self.infer(body);
+                let body_type = self.infer(body);
+                let explicit_returns = self.return_types.pop().unwrap_or_default();
                 self.pop_scope();
+                let returns = if explicit_returns.is_empty() {
+                    body_type
+                } else {
+                    self.merge_return_types(explicit_returns)
+                };
                 Type::Function { arity: params.len(), returns: Box::new(returns) }
             }
             Expression::Block(statements) => {
@@ -219,6 +233,16 @@ impl TypeChecker {
                     }
                 }
             }
+        }
+    }
+
+    fn merge_return_types(&mut self, returns: Vec<Type>) -> Type {
+        let Some(first) = returns.first().cloned() else { return Type::Unknown; };
+        if returns.iter().all(|ty| *ty == first) {
+            first
+        } else {
+            self.report("una función devuelve tipos incompatibles en distintas ramas");
+            Type::Unknown
         }
     }
 
@@ -300,6 +324,18 @@ mod tests {
     fn detects_non_callable_values() {
         let diagnostics = check_source("let n = 42; let result = n();");
         assert!(diagnostics.iter().any(|d| d.message.contains("no una función")));
+    }
+
+    #[test]
+    fn infers_explicit_return_type_from_function_block() {
+        let diagnostics = check_source("let make = |x| (return 7;); let n = make(1); n = false;");
+        assert!(diagnostics.iter().any(|d| d.message.contains("asignación") && d.message.contains("number")));
+    }
+
+    #[test]
+    fn detects_incompatible_function_return_branches() {
+        let diagnostics = check_source("let choose = |x| (if (x) (return 1;) else (return false;));");
+        assert!(diagnostics.iter().any(|d| d.message.contains("tipos incompatibles")));
     }
 
     #[test]

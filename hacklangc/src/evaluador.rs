@@ -27,6 +27,7 @@ impl Value {
 struct Environment {
     parent: Option<usize>,
     values: HashMap<String, Value>,
+    alive: bool,
 }
 
 #[derive(Debug)]
@@ -34,21 +35,69 @@ pub struct Evaluator {
     // Arena de entornos: las closures conservan IDs estables, no copias de variables.
     // Los frames permanecen vivos durante la vida del Evaluator.
     environments: Vec<Environment>,
+    free_env_ids: Vec<usize>,
     current_env: usize,
 }
 
 impl Evaluator {
     pub fn new() -> Self {
         Evaluator {
-            environments: vec![Environment { parent: None, values: HashMap::new() }],
+            environments: vec![Environment { parent: None, values: HashMap::new(), alive: true }],
+            free_env_ids: Vec::new(),
             current_env: 0,
         }
     }
 
     fn push_environment(&mut self, parent: usize) -> usize {
-        let id = self.environments.len();
-        self.environments.push(Environment { parent: Some(parent), values: HashMap::new() });
-        id
+        if let Some(id) = self.free_env_ids.pop() {
+            self.environments[id] = Environment { parent: Some(parent), values: HashMap::new(), alive: true };
+            id
+        } else {
+            let id = self.environments.len();
+            self.environments.push(Environment { parent: Some(parent), values: HashMap::new(), alive: true });
+            id
+        }
+    }
+
+    fn mark_value(value: &Value, pending: &mut Vec<usize>) {
+        match value {
+            Value::Function { captured_env, .. } => pending.push(*captured_env),
+            Value::Array(items) => {
+                for item in items { Self::mark_value(item, pending); }
+            }
+            Value::Map(entries) => {
+                for (key, value) in entries {
+                    Self::mark_value(key, pending);
+                    Self::mark_value(value, pending);
+                }
+            }
+            Value::Number(_) | Value::String(_) => {}
+        }
+    }
+
+    // Recolector mark-and-sweep de frames. Los valores siguen gestionados por Rust.
+    fn collect_garbage(&mut self) {
+        let mut marked = vec![false; self.environments.len()];
+        let mut pending = vec![0, self.current_env];
+
+        while let Some(id) = pending.pop() {
+            if id >= self.environments.len() || marked[id] || !self.environments[id].alive {
+                continue;
+            }
+            marked[id] = true;
+            let frame = &self.environments[id];
+            if let Some(parent) = frame.parent { pending.push(parent); }
+            for value in frame.values.values() { Self::mark_value(value, &mut pending); }
+        }
+
+        for id in 1..self.environments.len() {
+            if self.environments[id].alive && !marked[id] {
+                self.environments[id].alive = false;
+                self.environments[id].parent = None;
+                self.environments[id].values.clear();
+                self.free_env_ids.push(id);
+            }
+        }
     }
 
     fn with_environment<R>(
@@ -67,8 +116,10 @@ impl Evaluator {
         let mut environment = Some(self.current_env);
         while let Some(id) = environment {
             let frame = &self.environments[id];
-            if let Some(value) = frame.values.get(name) {
-                return Some(value);
+            if frame.alive {
+                if let Some(value) = frame.values.get(name) {
+                    return Some(value);
+                }
             }
             environment = frame.parent;
         }
@@ -78,7 +129,7 @@ impl Evaluator {
     fn find_environment(&self, name: &str) -> Option<usize> {
         let mut environment = Some(self.current_env);
         while let Some(id) = environment {
-            if self.environments[id].values.contains_key(name) { return Some(id); }
+            if self.environments[id].alive && self.environments[id].values.contains_key(name) { return Some(id); }
             environment = self.environments[id].parent;
         }
         None
@@ -99,7 +150,7 @@ impl Evaluator {
     }
 
     fn run_stmt(&mut self, stmt: &Statement) -> Result<(), String> {
-        match stmt {
+        let result = match stmt {
             Statement::Let(l) => self.eval_let(l),
             Statement::Assign(a) => self.eval_assign(a),
             Statement::IndexAssign(a) => self.eval_index_assign(a),
@@ -133,7 +184,9 @@ impl Evaluator {
                     Ok(())
                 })
             }
-        }
+        };
+        self.collect_garbage();
+        result
     }
 
     fn condition_true(&mut self, condition: &Expression) -> Result<bool, String> {
@@ -583,6 +636,19 @@ mod tests {
     fn test_assign_array_index_out_of_range() {
         let result = eval_program("let values = [1]; values[3] = 9;");
         assert!(result.unwrap_err().contains("fuera de rango"));
+    }
+
+    #[test]
+    fn test_returned_closure_keeps_captured_frame_alive() {
+        let ev = eval_program("let make_adder = |x| |y| x + y; let add_five = make_adder(5); let result = add_five(3);").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(8.0)));
+    }
+
+    #[test]
+    fn test_environment_frames_are_reused_after_calls() {
+        let ev = eval_program("let add = |x| x + 1; add(1); add(2); add(3); add(4); add(5);").unwrap();
+        assert!(ev.environments.len() <= 2, "frames should be reclaimed and reused");
+        assert!(!ev.free_env_ids.is_empty(), "a returned frame should be available for reuse");
     }
 
 }

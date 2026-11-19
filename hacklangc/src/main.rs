@@ -34,7 +34,13 @@ fn main() {
     // --- FASE 2: PARSER ---
     // Convierte la secuencia de Tokens en un Árbol de Sintaxis Abstracta (AST).
     let mut parser = parser::Parser::new(tokens);
-    let ast = parser.parse_program();
+    let ast = match parser.parse_program() {
+        Ok(program) => program,
+        Err(error) => {
+            eprintln!("Error de análisis sintáctico: {}", error);
+            return;
+        }
+    };
 
     // --- FASE 3: EVALUADOR (¡La Ejecución!) ---
     // Ahora, en lugar de solo imprimir el AST, lo vamos a ejecutar.

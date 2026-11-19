@@ -29,6 +29,9 @@ pub enum Token {
     Semicolon,
     ParenOpen,
     ParenClose,
+    BraceOpen,
+    BraceClose,
+    DeclareAssign, // := declaración compacta
     BracketOpen,
     BracketClose,
     Identifier(String),
@@ -110,6 +113,10 @@ impl Lexer {
                         self.position += 1;
                     }
                 }
+                ':' if self.position + 1 < self.chars.len() && self.chars[self.position + 1] == '=' => {
+                    tokens.push(Token::DeclareAssign);
+                    self.position += 2;
+                }
                 '=' => {
                     tokens.push(Token::Equals);
                     self.position += 1;
@@ -148,6 +155,14 @@ impl Lexer {
                 }
                 ')' => {
                     tokens.push(Token::ParenClose);
+                    self.position += 1;
+                }
+                '{' => {
+                    tokens.push(Token::BraceOpen);
+                    self.position += 1;
+                }
+                '}' => {
+                    tokens.push(Token::BraceClose);
                     self.position += 1;
                 }
                 '[' => {
@@ -335,13 +350,16 @@ mod tests {
 
     #[test]
     fn test_special_chars() {
-        let mut lexer = Lexer::new("= ; ( ) ? : | , @".to_string());
+        let mut lexer = Lexer::new("= := ; ( ) { } ? : | , @".to_string());
         let tokens = lexer.tokenize().unwrap();
         assert_eq!(tokens, vec![
             Token::Equals,
+            Token::DeclareAssign,
             Token::Semicolon,
             Token::ParenOpen,
             Token::ParenClose,
+            Token::BraceOpen,
+            Token::BraceClose,
             Token::Question,
             Token::Colon,
             Token::Pipe,

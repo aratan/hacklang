@@ -35,7 +35,40 @@ impl std::fmt::Display for Type {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
+    /// Stable machine-readable identifier for this diagnostic family.
+    pub code: &'static str,
+    /// Static analysis is advisory and never blocks execution.
+    pub severity: &'static str,
     pub message: String,
+}
+
+impl Diagnostic {
+    /// Serialize this diagnostic as one JSON object.
+    /// Source ranges are null until the AST preserves lexer spans.
+    pub fn to_json(&self) -> String {
+        format!(
+            "{{\"code\":\"{}\",\"severity\":\"{}\",\"message\":\"{}\",\"range\":null}}",
+            self.code,
+            self.severity,
+            json_escape(&self.message)
+        )
+    }
+}
+
+fn json_escape(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\"' => escaped.push_str("\\\\\\""),
+            '\\\\' => escaped.push_str("\\\\\\\\"),
+            '\\n' => escaped.push_str("\\\\n"),
+            '\\r' => escaped.push_str("\\\\r"),
+            '\\t' => escaped.push_str("\\\\t"),
+            ch if ch <= '\\u{1f}' => escaped.push_str(&format!("\\\\u{:04x}", ch as u32)),
+            ch => escaped.push(ch),
+        }
+    }
+    escaped
 }
 
 impl std::fmt::Display for Diagnostic {
@@ -68,7 +101,11 @@ impl TypeChecker {
     }
 
     fn report(&mut self, message: impl Into<String>) {
-        self.diagnostics.push(Diagnostic { message: message.into() });
+        self.diagnostics.push(Diagnostic {
+            code: "HL-TYPE-001",
+            severity: "warning",
+            message: message.into(),
+        });
     }
 
     fn push_scope(&mut self) {

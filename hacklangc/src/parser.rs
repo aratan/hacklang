@@ -477,7 +477,7 @@ mod tests {
 
     fn parse(source: &str) -> Program {
         let mut lexer = crate::lexer::Lexer::new(source.to_string());
-        let tokens = lexer.tokenize();
+        let tokens = lexer.tokenize().unwrap();
         let mut parser = Parser::new(tokens);
         parser.parse_program()
     }
@@ -696,7 +696,7 @@ mod tests {
     #[test]
     fn test_parse_unexpected_token_returns_error() {
         let mut lexer = crate::lexer::Lexer::new("let = 42;".to_string());
-        let tokens = lexer.tokenize();
+        let tokens = lexer.tokenize().unwrap();
         let mut parser = Parser::new(tokens);
         let error = parser.parse_program().unwrap_err();
         assert!(error.contains("nombre de variable"));

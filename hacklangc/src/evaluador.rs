@@ -451,6 +451,12 @@ mod tests {
     }
 
     #[test]
+    fn test_return_propagates_through_while() {
+        let ev = eval_program("let find = |limit| (let i = 0; while (i < limit) (if (i ~ 3) (return i;); i = i + 1;); return 0 - 1;); let result = find(10);").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(3.0)));
+    }
+
+    #[test]
     fn test_return_outside_function_is_error() {
         let result = eval_program("return 42;");
         assert!(result.unwrap_err().contains("return fuera de una función"));

@@ -238,7 +238,7 @@ impl Lexer {
             }
         }
 
-        tokens.push(Self::spanned(Token::Eof, token_start, self.position, &self.chars));
+        tokens.push(Self::spanned(Token::Eof, self.position, self.position, &self.chars));
         Ok(tokens)
     }
 

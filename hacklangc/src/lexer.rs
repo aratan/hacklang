@@ -36,6 +36,7 @@ pub enum Token {
     String(String),
     Let,
     Print,
+    Return,
     While,
     If,
     
@@ -118,6 +119,7 @@ impl Lexer {
                     let token = match ident.as_str() {
                         "let" => Token::Let,
                         "print" => Token::Print,
+                        "return" => Token::Return,
                         "while" => Token::While,
                         "if" => Token::If,
                         _ => Token::Identifier(ident),

@@ -1,6 +1,6 @@
 // src/evaluador.rs
 // Versión: rewrite applied
-use crate::ast::{Expression, Program, Statement, LetStatement, PrintStatement};
+use crate::ast::{AssignStatement, Expression, Program, Statement, LetStatement, PrintStatement};
 use crate::lexer::Token;
 use std::collections::HashMap;
 
@@ -509,6 +509,30 @@ mod tests {
     fn test_while_condition_error_is_propagated() {
         let result = eval_program("while (missing < 3) ( print 1; )");
         assert!(result.unwrap_err().contains("missing"));
+    }
+
+    #[test]
+    fn test_closure_sees_later_mutation() {
+        let ev = eval_program("let base = 10; let add = |n| n + base; base = 20; let result = add(1);").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(21.0)));
+    }
+
+    #[test]
+    fn test_lexical_block_scope() {
+        let ev = eval_program("let value = 1; (let value = 2;); let result = value;").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(1.0)));
+    }
+
+    #[test]
+    fn test_assignment_updates_outer_scope() {
+        let ev = eval_program("let value = 1; (value = value + 2;); let result = value;").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(3.0)));
+    }
+
+    #[test]
+    fn test_recursive_lambda() {
+        let ev = eval_program("let factorial = |n| n < 2 ? 1 : n * factorial(n - 1); let result = factorial(5);").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(120.0)));
     }
 
 }

@@ -91,6 +91,7 @@ impl Parser {
         match self.current_token() {
             Token::Let => self.parse_let_statement(),
             Token::Print => self.parse_print_statement(),
+            Token::Return => self.parse_return_statement(),
             Token::ParenOpen => self.parse_block_statement(),
             Token::While => self.parse_while_statement(),
             Token::If => self.parse_if_statement(),
@@ -152,6 +153,15 @@ impl Parser {
         }
 
         Ok(Statement::Let(LetStatement { name, value }))
+    }
+
+    fn parse_return_statement(&mut self) -> Result<Statement, String> {
+        self.advance(); // consume 'return'
+        let value = self.parse_expression(Precedence::Lowest)?;
+        if *self.current_token() == Token::Semicolon {
+            self.advance();
+        }
+        Ok(Statement::Return(value))
     }
 
     fn parse_print_statement(&mut self) -> Result<Statement, String> {
@@ -258,7 +268,17 @@ impl Parser {
         }
         self.advance(); // consume |
 
-        let body = self.parse_expression(Precedence::Lowest)?;
+        let body = if *self.current_token() == Token::ParenOpen {
+            self.advance();
+            let statements = self.parse_block()?;
+            if *self.current_token() != Token::ParenClose {
+                return Err("Se esperaba ')' al cerrar el cuerpo de la función".to_string());
+            }
+            self.advance();
+            Expression::Block(statements)
+        } else {
+            self.parse_expression(Precedence::Lowest)?
+        };
 
         if *self.current_token() == Token::Semicolon {
             self.advance();
@@ -415,7 +435,17 @@ impl Parser {
                     return Err("Se esperaba '|' después de los parámetros".to_string());
                 }
                 self.advance();
-                let body = self.parse_expression(Precedence::Lowest)?;
+                let body = if *self.current_token() == Token::ParenOpen {
+                    self.advance();
+                    let statements = self.parse_block()?;
+                    if *self.current_token() != Token::ParenClose {
+                        return Err("Se esperaba ')' al cerrar el cuerpo de la función".to_string());
+                    }
+                    self.advance();
+                    Expression::Block(statements)
+                } else {
+                    self.parse_expression(Precedence::Lowest)?
+                };
                 Ok(Expression::Lambda { params, body: Box::new(body) })
             }
             Token::BracketOpen => {

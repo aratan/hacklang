@@ -285,15 +285,33 @@ impl Parser {
         // Parsea la parte "prefijo" (un número, una variable, un paréntesis)
         let mut left_expr = self.parse_prefix()?;
 
-        // Indexación postfix.
-        while *self.current_token() == Token::BracketOpen {
-            self.advance();
-            let index = self.parse_expression(Precedence::Lowest)?;
-            if *self.current_token() != Token::BracketClose {
-                return Err("Se esperaba ']' después del índice".to_string());
+        // Operaciones postfix: indexación y llamadas sobre cualquier expresión.
+        loop {
+            if *self.current_token() == Token::BracketOpen {
+                self.advance();
+                let index = self.parse_expression(Precedence::Lowest)?;
+                if *self.current_token() != Token::BracketClose {
+                    return Err("Se esperaba ']' después del índice".to_string());
+                }
+                self.advance();
+                left_expr = Expression::Index {
+                    target: Box::new(left_expr),
+                    index: Box::new(index),
+                };
+            } else if *self.current_token() == Token::ParenOpen {
+                self.advance();
+                let args = self.parse_comma_list(Token::ParenClose)?;
+                if *self.current_token() != Token::ParenClose {
+                    return Err("Se esperaba ')' al cerrar la llamada".to_string());
+                }
+                self.advance();
+                left_expr = Expression::FunctionCall {
+                    func: Box::new(left_expr),
+                    args,
+                };
+            } else {
+                break;
             }
-            self.advance();
-            left_expr = Expression::Index { target: Box::new(left_expr), index: Box::new(index) };
         }
 
         // Mientras el siguiente token sea un operador con más "fuerza"...
@@ -632,6 +650,21 @@ mod tests {
                     ));
                 }
             }
+            other => panic!("expected Let, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_call_on_parenthesized_expression() {
+        let program = parse("let result = (factory)(2);");
+        match &program.statements[0] {
+            Statement::Let(stmt) => match &stmt.value {
+                Expression::FunctionCall { func, args } => {
+                    assert_eq!(func.as_ref(), &Expression::Identifier("factory".to_string()));
+                    assert_eq!(args.len(), 1);
+                }
+                other => panic!("expected FunctionCall, got {:?}", other),
+            },
             other => panic!("expected Let, got {:?}", other),
         }
     }

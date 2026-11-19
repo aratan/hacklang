@@ -270,6 +270,17 @@ impl Parser {
         // Parsea la parte "prefijo" (un número, una variable, un paréntesis)
         let mut left_expr = self.parse_prefix()?;
 
+        // Indexación postfix.
+        while *self.current_token() == Token::BracketOpen {
+            self.advance();
+            let index = self.parse_expression(Precedence::Lowest)?;
+            if *self.current_token() != Token::BracketClose {
+                return Err("Se esperaba ']' después del índice".to_string());
+            }
+            self.advance();
+            left_expr = Expression::Index { target: Box::new(left_expr), index: Box::new(index) };
+        }
+
         // Mientras el siguiente token sea un operador con más "fuerza"...
         while *self.current_token() != Token::Semicolon && precedence < self.get_precedence(self.current_token()) {
             let operator = self.current_token().clone();
@@ -286,17 +297,6 @@ impl Parser {
             } else {
                 break;
             }
-        }
-
-        // Indexación postfix.
-        while *self.current_token() == Token::BracketOpen {
-            self.advance();
-            let index = self.parse_expression(Precedence::Lowest)?;
-            if *self.current_token() != Token::BracketClose {
-                return Err("Se esperaba ']' después del índice".to_string());
-            }
-            self.advance();
-            left_expr = Expression::Index { target: Box::new(left_expr), index: Box::new(index) };
         }
 
         // Ternario: ? true_expr : false_expr

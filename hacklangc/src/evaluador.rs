@@ -8,6 +8,9 @@ use std::collections::HashMap;
 pub enum Value {
     Number(f64),
     String(String),
+    Array(Vec<Value>),
+    Map(Vec<(Value, Value)>),
+    Function { params: Vec<String>, body: Box<Expression>, captured: HashMap<String, Value> },
 }
 
 impl Value {
@@ -15,6 +18,7 @@ impl Value {
         match self {
             Value::Number(n) => *n != 0.0,
             Value::String(s) => !s.is_empty(),
+            Value::Array(_) | Value::Map(_) | Value::Function { .. } => true,
         }
     }
 }
@@ -43,10 +47,9 @@ impl Evaluator {
                 Ok(())
             }
             Statement::While(ws) => {
-                while self.condition_true(&ws.condition) {
-                    for s in &ws.body {
-                        self.run_stmt(s)?;
-                    }
+                loop {
+                    if !self.condition_true(&ws.condition)? { break; }
+                    for s in &ws.body { self.run_stmt(s)?; }
                 }
                 Ok(())
             }
@@ -62,12 +65,8 @@ impl Evaluator {
         }
     }
 
-    fn condition_true(&self, condition: &Expression) -> bool {
-        match self.eval_expression(condition) {
-            Ok(Value::Number(n)) => n != 0.0,
-            Ok(Value::String(s)) => !s.is_empty(),
-            _ => false,
-        }
+    fn condition_true(&mut self, condition: &Expression) -> Result<bool, String> {
+        Ok(self.eval_expression(condition)?.as_bool())
     }
 
     fn eval_let(&mut self, stmt: &LetStatement) -> Result<(), String> {
@@ -81,6 +80,9 @@ impl Evaluator {
         match &val {
             Value::Number(n) => println!("{}", n),
             Value::String(s) => println!("{}", s),
+            Value::Array(values) => println!("{:?}", values),
+            Value::Map(entries) => println!("{:?}", entries),
+            Value::Function { .. } => println!("<function>"),
         }
         Ok(())
     }
@@ -90,7 +92,7 @@ impl Evaluator {
         self.variables.get(name)
     }
 
-    fn eval_expression(&self, expr: &Expression) -> Result<Value, String> {
+    fn eval_expression(&mut self, expr: &Expression) -> Result<Value, String> {
         match expr {
             Expression::NumberLiteral(num) => Ok(Value::Number(*num)),
             Expression::StringLiteral(s) => Ok(Value::String(s.clone())),
@@ -111,16 +113,53 @@ impl Evaluator {
                     self.eval_expression(false_branch)
                 }
             }
-            Expression::Lambda { params: _, body: _ } => {
-                Err("Lambda not implemented".to_string())
+            Expression::Lambda { params, body } => Ok(Value::Function {
+                params: params.clone(), body: body.clone(), captured: self.variables.clone(),
+            }),
+            Expression::FunctionCall { func, args } => {
+                let function = self.eval_expression(func)?;
+                let (params, body, captured) = match function {
+                    Value::Function { params, body, captured } => (params, body, captured),
+                    other => return Err(format!("El valor {:?} no es una función", other)),
+                };
+                if params.len() != args.len() {
+                    return Err(format!("La función esperaba {} argumentos y recibió {}", params.len(), args.len()));
+                }
+                let mut values = Vec::with_capacity(args.len());
+                for arg in args { values.push(self.eval_expression(arg)?); }
+                let previous = std::mem::replace(&mut self.variables, captured);
+                for (name, value) in params.iter().cloned().zip(values) { self.variables.insert(name, value); }
+                let result = self.eval_expression(&body);
+                self.variables = previous;
+                result
             }
-            Expression::FunctionCall { func: _, args: _ } => {
-                Err("FunctionCall not implemented".to_string())
+            Expression::Array(items) => {
+                let mut values = Vec::with_capacity(items.len());
+                for item in items { values.push(self.eval_expression(item)?); }
+                Ok(Value::Array(values))
             }
-            Expression::Array(_) => Err("Array not implemented".to_string()),
-            Expression::Map(_) => Err("Map not implemented".to_string()),
-            Expression::Index { target: _, index: _ } => {
-                Err("Index not implemented".to_string())
+            Expression::Map(items) => {
+                let mut entries = Vec::with_capacity(items.len());
+                for (key, value) in items {
+                    entries.push((self.eval_expression(key)?, self.eval_expression(value)?));
+                }
+                Ok(Value::Map(entries))
+            }
+            Expression::Index { target, index } => {
+                let target_value = self.eval_expression(target)?;
+                let index_value = self.eval_expression(index)?;
+                match target_value {
+                    Value::Array(items) => match index_value {
+                        Value::Number(n) if n >= 0.0 && n.fract() == 0.0 => items.get(n as usize).cloned().ok_or_else(|| format!("Índice de array fuera de rango: {}", n)),
+                        other => Err(format!("El índice de un array debe ser entero no negativo: {:?}", other)),
+                    },
+                    Value::Map(entries) => entries.into_iter().find(|(key, _)| key == &index_value).map(|(_, value)| value).ok_or_else(|| format!("Clave no encontrada en mapa: {:?}", index_value)),
+                    Value::String(value) => match index_value {
+                        Value::Number(n) if n >= 0.0 && n.fract() == 0.0 => value.chars().nth(n as usize).map(|c| Value::String(c.to_string())).ok_or_else(|| format!("Índice de cadena fuera de rango: {}", n)),
+                        other => Err(format!("El índice de una cadena debe ser entero no negativo: {:?}", other)),
+                    },
+                    other => Err(format!("No se puede indexar el valor {:?}", other)),
+                }
             }
         }
     }

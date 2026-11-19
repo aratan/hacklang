@@ -1,6 +1,6 @@
 // src/evaluador.rs
 // Versión: rewrite applied
-use crate::ast::{AssignStatement, Expression, Program, Statement, LetStatement, PrintStatement};
+use crate::ast::{AssignStatement, Expression, IndexAssignStatement, Program, Statement, LetStatement, PrintStatement};
 use crate::lexer::Token;
 use std::collections::HashMap;
 

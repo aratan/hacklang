@@ -84,14 +84,20 @@ pub struct SpannedToken {
 pub struct Lexer {
     position: usize,
     chars: Vec<char>,
+    line_starts: Vec<usize>,
 }
 
 impl Lexer {
     pub fn new(input: String) -> Self {
-        let chars = input.chars().collect();
+        let chars: Vec<char> = input.chars().collect();
+        let mut line_starts = vec![0];
+        for (index, ch) in chars.iter().enumerate() {
+            if *ch == '\n' { line_starts.push(index + 1); }
+        }
         Lexer {
             position: 0,
             chars,
+            line_starts,
         }
     }
 
@@ -113,7 +119,7 @@ impl Lexer {
 
             match c {
                 '+' => {
-                    tokens.push(Self::spanned(Token::Plus, token_start, self.position + 1, &self.chars));
+                    tokens.push(Self::spanned(Token::Plus, token_start, self.position + 1, &self.chars, &self.line_starts));
                     self.position += 1;
                 }
                 '-' => {
@@ -243,20 +249,16 @@ impl Lexer {
     }
 
 
-fn spanned(token: Token, start: usize, end: usize, chars: &[char]) -> SpannedToken {
-    let mut line = 1;
-    let mut column = 1;
-    for ch in &chars[..start] {
-        if *ch == '\n' { line += 1; column = 1; } else { column += 1; }
-    }
-    let start_line = line;
-    let start_column = column;
-    for ch in &chars[start..end] {
-        if *ch == '\n' { line += 1; column = 1; } else { column += 1; }
-    }
+fn spanned(token: Token, start: usize, end: usize, chars: &[char], line_starts: &[usize]) -> SpannedToken {
+    let locate = |offset: usize| {
+        let line_index = line_starts.partition_point(|line_start| *line_start <= offset).saturating_sub(1);
+        (line_index + 1, offset - line_starts[line_index] + 1)
+    };
+    let (line, column) = locate(start);
+    let (end_line, end_column) = locate(end);
     SpannedToken {
         token,
-        span: SourceSpan { start, end, line: start_line, column: start_column, end_line: line, end_column: column },
+        span: SourceSpan { start, end, line, column, end_line, end_column },
     }
 }
 

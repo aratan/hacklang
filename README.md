@@ -63,6 +63,7 @@ classDiagram
     class Expression {
         <<enum>>
         NumberLiteral(f64)
+        BoolLiteral(bool)
         StringLiteral(String)
         Identifier(String)
         Infix
@@ -83,6 +84,7 @@ classDiagram
     class Value {
         <<enum>>
         Number(f64)
+        Bool(bool)
         String(String)
         Array(Vec<Value>)
         Map(Vec<(Value, Value)>)
@@ -274,11 +276,11 @@ El lexer y el parser devuelven `Result`: los caracteres desconocidos, las cadena
 |---|---|
 | **Lexer** | ✅ Tokenización, palabras clave, operadores, cadenas y errores recuperables |
 | **Parser** | ✅ Expresiones, ternario, lambdas, llamadas postfix, bloques, arrays, mapas e indexación |
-| **Evaluador** | ✅ Evaluación de expresiones, sentencias, ámbitos léxicos y colecciones |
+| **Evaluador** | ✅ Evaluación de expresiones, booleanos, sentencias, ámbitos léxicos y colecciones |
 | **Funciones** | ✅ Lambdas, closures léxicas, recursividad, llamadas de primera clase y aridad |
 | **Control de flujo** | ✅ `return`, `break` y `continue` |
 | **Memoria** | ✅ Mark-and-sweep de frames de entorno; los demás valores los gestiona Rust |
-| **Tipos estáticos** | ⏳ No implementados; el runtime usa comprobación dinámica |
+| **Tipos estáticos** | ⏳ No implementados; el runtime usa comprobación dinámica con valores booleanos nativos |
 | **Tests** | ✅ CI: 80 pruebas aprobadas en la revisión de closures devueltas |
 
 
@@ -293,7 +295,7 @@ El lexer y el parser devuelven `Result`: los caracteres desconocidos, las cadena
 - La indexación de cadenas devuelve el carácter solicitado.
 - Los errores al evaluar condiciones de `while` se propagan; ya no se convierten silenciosamente en una condición falsa.
 
-Limitaciones actuales: la asignación por índice solo admite como destino una variable identificada directamente (no indexación anidada); los mapas se representan como pares ordenados. El lenguaje todavía no tiene un sistema de tipos estáticos: los tipos se comprueban durante la evaluación y las condiciones usan la conversión dinámica de valores a booleano.
+Limitaciones actuales: la asignación por índice solo admite como destino una variable identificada directamente (no indexación anidada); los mapas se representan como pares ordenados. El lenguaje todavía no tiene un sistema de tipos estáticos: los tipos se comprueban durante la evaluación y las condiciones aceptan booleanos nativos y mantienen la conversión dinámica de números, cadenas y colecciones por compatibilidad. Las comparaciones numéricas producen `true` o `false`, no `1` o `0`.
 
 
 ## Modelo de memoria y ejecución

@@ -405,6 +405,14 @@ impl Parser {
     fn parse_prefix(&mut self) -> Result<Expression, String> {
         let token = self.current_token().clone();
         match token {
+            Token::True => {
+                self.advance();
+                Ok(Expression::BoolLiteral(true))
+            }
+            Token::False => {
+                self.advance();
+                Ok(Expression::BoolLiteral(false))
+            }
             Token::Identifier(name) => {
                 self.advance();
                 // Verificar si es llamada a función

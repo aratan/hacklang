@@ -263,5 +263,19 @@ La única excepción son errores léxicos irrecuperables (`panic!` en el lexer),
 |---|---|
 | **Lexer** | ✅ Completo |
 | **Parser** | ✅ Completo (infix, ternario, lambdas, arrays, mapas, indexación) |
-| **Evaluador** | ⚠️ Parcial — lambdas, arrays, mapas, index y llamadas son stubs |
-| **Tests** | ❌ Pendientes |
+| **Evaluador** | ⚠️ Parcial — números, cadenas, arrays, mapas, indexación y llamadas a lambdas |
+| **Funciones** | ✅ Lambdas con parámetros, captura del entorno y comprobación de aridad |
+| **Colecciones** | ✅ Arrays, mapas e indexación de lectura |
+| **Tests** | 🧪 Tests unitarios existentes y pruebas de regresión añadidas; pendiente ejecutar CI |
+
+
+## Funcionalidad del runtime (rama en desarrollo)
+
+- Las lambdas se evalúan como funciones y capturan una copia del entorno donde se definen.
+- Las llamadas comprueban el número de argumentos y ejecutan el cuerpo en un entorno local temporal.
+- Los arrays admiten literales e indexación numérica desde cero.
+- Los mapas admiten claves y valores evaluados, con indexación por clave.
+- La indexación de cadenas devuelve el carácter solicitado.
+- Los errores al evaluar condiciones de `while` se propagan; ya no se convierten silenciosamente en una condición falsa.
+
+Limitaciones actuales: las colecciones no tienen asignación por índice, los mapas se representan como pares ordenados y las funciones todavía no admiten cuerpos con varias sentencias ni recursión.

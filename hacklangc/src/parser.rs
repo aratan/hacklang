@@ -67,10 +67,24 @@ impl Parser {
                 self.advance(); // consume the identifier
                 self.advance(); // consume =
                 let value = self.parse_expression(Precedence::Lowest)?;
-                if *self.current_token() == Token::Semicolon {
-                    self.advance();
-                }
+                if *self.current_token() == Token::Semicolon { self.advance(); }
                 return Ok(Statement::Assign(AssignStatement { name: ident_name, value }));
+            }
+            if next == Some(Token::BracketOpen) {
+                self.advance(); // consume identifier
+                self.advance(); // consume [
+                let index = self.parse_expression(Precedence::Lowest)?;
+                if *self.current_token() != Token::BracketClose {
+                    return Err("Se esperaba ']' en la asignación por índice".to_string());
+                }
+                self.advance();
+                if *self.current_token() != Token::Equals {
+                    return Err("Se esperaba '=' después del índice".to_string());
+                }
+                self.advance();
+                let value = self.parse_expression(Precedence::Lowest)?;
+                if *self.current_token() == Token::Semicolon { self.advance(); }
+                return Ok(Statement::IndexAssign(IndexAssignStatement { name: ident_name, index, value }));
             }
         }
 

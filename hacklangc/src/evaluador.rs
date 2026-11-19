@@ -41,12 +41,15 @@ struct Environment {
 }
 
 #[derive(Debug)]
+const MAX_EVAL_DEPTH: usize = 256;
+
 pub struct Evaluator {
     // Arena de entornos: las closures conservan IDs estables, no copias de variables.
     // Los frames permanecen vivos durante la vida del Evaluator.
     environments: Vec<Environment>,
     free_env_ids: Vec<usize>,
     current_env: usize,
+    eval_depth: usize,
 }
 
 impl Evaluator {
@@ -55,6 +58,7 @@ impl Evaluator {
             environments: vec![Environment { parent: None, values: HashMap::new(), alive: true }],
             free_env_ids: Vec::new(),
             current_env: 0,
+            eval_depth: 0,
         }
     }
 
@@ -296,6 +300,16 @@ impl Evaluator {
     }
 
     fn eval_expression(&mut self, expr: &Expression) -> Result<Value, String> {
+        if self.eval_depth >= MAX_EVAL_DEPTH {
+            return Err(format!("Límite de profundidad de evaluación excedido ({MAX_EVAL_DEPTH})"));
+        }
+        self.eval_depth += 1;
+        let result = self.eval_expression_inner(expr);
+        self.eval_depth -= 1;
+        result
+    }
+
+    fn eval_expression_inner(&mut self, expr: &Expression) -> Result<Value, String> {
         match expr {
             Expression::NumberLiteral(num) => Ok(Value::Number(*num)),
             Expression::BoolLiteral(value) => Ok(Value::Bool(*value)),
@@ -766,6 +780,12 @@ mod tests {
     fn test_recursive_lambda() {
         let ev = eval_program("let factorial = |n| n < 2 ? 1 : n * factorial(n - 1); let result = factorial(5);").unwrap();
         assert_eq!(ev.get_var("result"), Some(&Value::Number(120.0)));
+    }
+
+    #[test]
+    fn deep_recursion_returns_error_instead_of_overflowing_stack() {
+        let result = eval_program("let loop = |n| loop(n + 1); loop(0);");
+        assert!(result.unwrap_err().contains("Límite de profundidad de evaluación"));
     }
 
     #[test]

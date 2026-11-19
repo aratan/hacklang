@@ -29,6 +29,8 @@ pub enum Token {
     Semicolon,
     ParenOpen,
     ParenClose,
+    BracketOpen,
+    BracketClose,
     Identifier(String),
     Number(Number),
     String(String),
@@ -140,6 +142,8 @@ impl Lexer {
                     tokens.push(Token::ParenClose);
                     self.position += 1;
                 }
+                '[' => { tokens.push(Token::BracketOpen); self.position += 1; }
+                ']' => { tokens.push(Token::BracketClose); self.position += 1; }
                 '<' => {
                     tokens.push(Token::Less);
                     self.position += 1;

@@ -56,7 +56,6 @@ pub enum Token {
 }
 
 pub struct Lexer {
-    input: String,
     position: usize,
     chars: Vec<char>,
 }
@@ -65,7 +64,6 @@ impl Lexer {
     pub fn new(input: String) -> Self {
         let chars = input.chars().collect();
         Lexer {
-            input,
             position: 0,
             chars,
         }

@@ -16,10 +16,11 @@ fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let compact_mode = args.iter().any(|arg| arg == "--compact");
     let format_mode = args.iter().any(|arg| arg == "--format");
-    let filename = match args.iter().find(|arg| arg.as_str() != "--compact" && arg.as_str() != "--format") {
+    let diagnostics_json = args.iter().any(|arg| arg == "--diagnostics-json");
+    let filename = match args.iter().find(|arg| arg.as_str() != "--compact" && arg.as_str() != "--format" && arg.as_str() != "--diagnostics-json") {
         Some(filename) => filename,
         None => {
-            eprintln!("Uso: hacklangc [--compact] [--format] <nombre_de_archivo.hl>");
+            eprintln!("Uso: hacklangc [--compact] [--format] [--diagnostics-json] <nombre_de_archivo.hl>");
             return;
         }
     };
@@ -66,6 +67,12 @@ fn main() {
     // Informa de incompatibilidades demostrables, pero no impide ejecutar
     // programas existentes ni sustituye las comprobaciones del runtime.
     let diagnostics = type_checker::TypeChecker::check(&ast);
+    if diagnostics_json {
+        let items = diagnostics.iter().map(|diagnostic| diagnostic.to_json()).collect::<Vec<_>>();
+        println!("[{}]", items.join(","));
+        return;
+    }
+
     if diagnostics.is_empty() {
         println!("Análisis estático: sin incompatibilidades detectadas.");
     } else {

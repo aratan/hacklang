@@ -381,7 +381,7 @@ mod tests {
 
     #[test]
     fn builtin_len_has_numeric_type_for_supported_inputs() {
-        assert!(check_source("let a = len(\"hello\"); let b = len([1,2]); let c = len(@{\"x\":1});").is_empty());
+        assert!(check_source("let a = len(\"hello\"); let b = len([1,2]); let c = len(@(\"x\":1));").is_empty());
     }
 
     #[test]

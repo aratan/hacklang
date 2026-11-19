@@ -163,6 +163,9 @@ Para formatear un archivo que ya usa el modo compacto:
 
 ```bash
 cargo run -- --compact --format ../compact.hl
+
+# Static diagnostics as JSON (analysis only; does not execute the program)
+cargo run -- --diagnostics-json ../programa.hl
 ```
 
 En esta primera versión se compactan las declaraciones (`:=`), los bloques (`{}`), las condiciones de `if/while`, los cuerpos de lambdas y los mapas (`@{}`). Se mantienen `print`, `return`, `break` y `continue` como palabras clave para evitar colisiones con operadores existentes. No se exige punto y coma entre sentencias cuando el siguiente token permite determinar el final de la expresión.

@@ -8,6 +8,7 @@ mod lexer;
 mod ast;
 mod parser;
 mod evaluador; // El módulo que contiene la lógica de ejecución.
+mod type_checker; // Análisis estático no bloqueante.
 
 fn main() {
     // 1. Leer el código fuente del archivo pasado como argumento.
@@ -47,6 +48,19 @@ fn main() {
             return;
         }
     };
+
+    // --- FASE 3: ANÁLISIS ESTÁTICO (NO BLOQUEANTE) ---
+    // Informa de incompatibilidades demostrables, pero no impide ejecutar
+    // programas existentes ni sustituye las comprobaciones del runtime.
+    let diagnostics = type_checker::TypeChecker::check(&ast);
+    if diagnostics.is_empty() {
+        println!("Análisis estático: sin incompatibilidades detectadas.");
+    } else {
+        eprintln!("Análisis estático: {} aviso(s):", diagnostics.len());
+        for diagnostic in diagnostics {
+            eprintln!("  - {}", diagnostic);
+        }
+    }
 
     // --- FASE 3: EVALUADOR (¡La Ejecución!) ---
     // Ahora, en lugar de solo imprimir el AST, lo vamos a ejecutar.

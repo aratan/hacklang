@@ -44,19 +44,16 @@ impl Parser {
     }
 
     // El método principal que construye el árbol completo.
-    pub fn parse_program(&mut self) -> Program {
+    pub fn parse_program(&mut self) -> Result<Program, String> {
         let mut statements = Vec::new();
         while !self.is_at_end() {
             if *self.current_token() == Token::Semicolon {
                 self.advance();
                 continue;
             }
-            match self.parse_statement() {
-                Ok(stmt) => statements.push(stmt),
-                Err(e) => panic!("Error de Análisis Sintáctico: {}", e),
-            }
+            statements.push(self.parse_statement()?);
         }
-        Program { statements }
+        Ok(Program { statements })
     }
 
     fn parse_statement(&mut self) -> Result<Statement, String> {

@@ -71,7 +71,7 @@ impl Lexer {
         }
     }
 
-    pub fn tokenize(&mut self) -> Vec<Token> {
+    pub fn tokenize(&mut self) -> Result<Vec<Token>, String> {
         let mut tokens = Vec::new();
 
         while self.position < self.chars.len() {
@@ -127,11 +127,11 @@ impl Lexer {
                     tokens.push(token);
                 }
                 '0'..='9' => {
-                    let number = self.read_number();
+                    let number = self.read_number()?;
                     tokens.push(Token::Number(Number(number)));
                 }
                 '"' => {
-                    let string = self.read_string();
+                    let string = self.read_string()?;
                     tokens.push(Token::String(string));
                 }
                 '(' => {
@@ -187,13 +187,13 @@ impl Lexer {
                     self.position += 1;
                 }
                 _ => {
-                    panic!("Carácter inesperado: {} en posición {}", c, self.position);
+                    return Err(format!("Carácter inesperado: '{}' en posición {}", c, self.position));
                 }
             }
         }
 
         tokens.push(Token::Eof);
-        tokens
+        Ok(tokens)
     }
 
     fn read_identifier(&mut self) -> String {
@@ -205,25 +205,26 @@ impl Lexer {
             }
             self.position += 1;
         }
-        self.input[start..self.position].to_string()
+        self.chars[start..self.position].iter().collect()
     }
 
-    fn read_string(&mut self) -> String {
+    fn read_string(&mut self) -> Result<String, String> {
         self.position += 1; // skip opening quote
         let start = self.position;
         while self.position < self.chars.len() {
             let c = self.chars[self.position];
             if c == '"' {
+                let value = self.chars[start..self.position].iter().collect();
                 self.position += 1; // skip closing quote
-                break;
+                return Ok(value);
             }
             self.position += 1;
         }
-        self.input[start..self.position - 1].to_string()
+        Err(format!("Cadena sin cerrar desde la posición {}", start - 1))
     }
 
     // --- FUNCIÓN MEJORADA ---
-    fn read_number(&mut self) -> f64 {
+    fn read_number(&mut self) -> Result<f64, String> {
         let start = self.position;
         while self.position < self.chars.len() {
             let c = self.chars[self.position];
@@ -232,18 +233,9 @@ impl Lexer {
             }
             self.position += 1;
         }
-        let number_str = &self.input[start..self.position];
-
-        // En lugar de usar `.expect()`, usamos un `match` para manejar el error.
-        // Esto nos permite dar un mensaje de error mucho más útil.
-        match number_str.parse::<f64>() {
-            Ok(num) => num,
-            Err(_) => {
-                // Si el parseo falla, el programa entrará en pánico aquí
-                // y nos dirá exactamente qué trozo de texto no pudo convertir.
-                panic!("Error léxico: '{}' no es un número válido.", number_str);
-            }
-        }
+        let number_str: String = self.chars[start..self.position].iter().collect();
+        number_str.parse::<f64>()
+            .map_err(|_| format!("Error léxico: '{}' no es un número válido.", number_str))
     }
 }
 
@@ -254,7 +246,7 @@ mod tests {
     #[test]
     fn test_empty_input() {
         let mut lexer = Lexer::new(String::new());
-        let tokens = lexer.tokenize();
+        let tokens = lexer.tokenize().unwrap();
         assert_eq!(tokens, vec![Token::Eof]);
     }
 
@@ -387,4 +379,24 @@ mod tests {
             Token::Eof,
         ]);
     }
+    #[test]
+    fn test_unexpected_character_returns_error() {
+        let mut lexer = Lexer::new("let x = 1; $".to_string());
+        assert!(lexer.tokenize().unwrap_err().contains("Carácter inesperado"));
+    }
+
+    #[test]
+    fn test_unterminated_string_returns_error() {
+        let mut lexer = Lexer::new("\"unterminated".to_string());
+        assert!(lexer.tokenize().unwrap_err().contains("Cadena sin cerrar"));
+    }
+
+    #[test]
+    fn test_unicode_before_identifier_does_not_panic() {
+        let mut lexer = Lexer::new("\"ñ\" name".to_string());
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::String("ñ".to_string()));
+        assert_eq!(tokens[1], Token::Identifier("name".to_string()));
+    }
+
 }

@@ -40,9 +40,9 @@ struct Environment {
     alive: bool,
 }
 
-#[derive(Debug)]
 const MAX_EVAL_DEPTH: usize = 256;
 
+#[derive(Debug)]
 pub struct Evaluator {
     // Arena de entornos: las closures conservan IDs estables, no copias de variables.
     // Los frames permanecen vivos durante la vida del Evaluator.

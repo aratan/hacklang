@@ -153,6 +153,18 @@ cd hacklangc
 cargo run -- --compact ../compact.hl
 ```
 
+Convertir un programa legacy a la forma canónica compacta (sin ejecutarlo):
+
+```bash
+cargo run -- --format ../programa.hl
+```
+
+Para formatear un archivo que ya usa el modo compacto:
+
+```bash
+cargo run -- --compact --format ../compact.hl
+```
+
 En esta primera versión se compactan las declaraciones (`:=`), los bloques (`{}`), las condiciones de `if/while`, los cuerpos de lambdas y los mapas (`@{}`). Se mantienen `print`, `return`, `break` y `continue` como palabras clave para evitar colisiones con operadores existentes. No se exige punto y coma entre sentencias cuando el siguiente token permite determinar el final de la expresión.
 
 ## Metodología
@@ -310,7 +322,7 @@ El lexer y el parser devuelven `Result`: los caracteres desconocidos, las cadena
 | **Control de flujo** | ✅ `return`, `break` y `continue` |
 | **Memoria** | ✅ Mark-and-sweep de frames de entorno; los demás valores los gestiona Rust |
 | **Análisis de tipos** | ✅ Primera pasada no bloqueante: tipos primitivos, retornos explícitos, arrays/mapas con tipos de elemento/clave/valor, indexación, asignaciones, operadores y aridad de llamadas |
-| **Tests** | ✅ CI: 102 pruebas aprobadas, 0 fallos (run #115) |
+| **Tests** | ✅ CI: 105 pruebas aprobadas, 0 fallos (run #120) |
 
 
 ## Funcionalidad del runtime

@@ -75,17 +75,20 @@ impl Evaluator {
         None
     }
 
-    fn assign_existing(&mut self, name: &str, value: Value) -> Result<(), String> {
+    fn find_environment(&self, name: &str) -> Option<usize> {
         let mut environment = Some(self.current_env);
         while let Some(id) = environment {
-            let parent = self.environments[id].parent;
-            if self.environments[id].values.contains_key(name) {
-                self.environments[id].values.insert(name.to_string(), value);
-                return Ok(());
-            }
-            environment = parent;
+            if self.environments[id].values.contains_key(name) { return Some(id); }
+            environment = self.environments[id].parent;
         }
-        Err(format!("Variable '{}' no definida para asignación", name))
+        None
+    }
+
+    fn assign_existing(&mut self, name: &str, value: Value) -> Result<(), String> {
+        let id = self.find_environment(name)
+            .ok_or_else(|| format!("Variable '{}' no definida para asignación", name))?;
+        self.environments[id].values.insert(name.to_string(), value);
+        Ok(())
     }
 
     pub fn evaluate(&mut self, program: &Program) -> Result<(), String> {
@@ -99,6 +102,7 @@ impl Evaluator {
         match stmt {
             Statement::Let(l) => self.eval_let(l),
             Statement::Assign(a) => self.eval_assign(a),
+            Statement::IndexAssign(a) => self.eval_index_assign(a),
             Statement::Print(p) => self.eval_print(p),
             Statement::Block(statements) => {
                 let parent = self.current_env;
@@ -145,6 +149,34 @@ impl Evaluator {
     fn eval_assign(&mut self, stmt: &AssignStatement) -> Result<(), String> {
         let value = self.eval_expression(&stmt.value)?;
         self.assign_existing(&stmt.name, value)
+    }
+
+    fn eval_index_assign(&mut self, stmt: &IndexAssignStatement) -> Result<(), String> {
+        let index = self.eval_expression(&stmt.index)?;
+        let value = self.eval_expression(&stmt.value)?;
+        let environment = self.find_environment(&stmt.name)
+            .ok_or_else(|| format!("Variable '{}' no definida para asignación", stmt.name))?;
+        let target = self.environments[environment].values.get_mut(&stmt.name).unwrap();
+        match target {
+            Value::Array(items) => match index {
+                Value::Number(n) if n >= 0.0 && n.fract() == 0.0 => {
+                    let item = items.get_mut(n as usize)
+                        .ok_or_else(|| format!("Índice de array fuera de rango: {}", n))?;
+                    *item = value;
+                    Ok(())
+                }
+                other => Err(format!("El índice de un array debe ser entero no negativo: {:?}", other)),
+            },
+            Value::Map(entries) => {
+                if let Some((_, existing)) = entries.iter_mut().find(|(key, _)| key == &index) {
+                    *existing = value;
+                } else {
+                    entries.push((index, value));
+                }
+                Ok(())
+            }
+            other => Err(format!("No se puede asignar por índice al valor {:?}", other)),
+        }
     }
 
     fn eval_print(&mut self, stmt: &PrintStatement) -> Result<(), String> {

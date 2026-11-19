@@ -92,6 +92,8 @@ impl Parser {
             Token::Let => self.parse_let_statement(),
             Token::Print => self.parse_print_statement(),
             Token::Return => self.parse_return_statement(),
+            Token::Break => self.parse_loop_control_statement(false),
+            Token::Continue => self.parse_loop_control_statement(true),
             Token::ParenOpen => self.parse_block_statement(),
             Token::While => self.parse_while_statement(),
             Token::If => self.parse_if_statement(),
@@ -153,6 +155,18 @@ impl Parser {
         }
 
         Ok(Statement::Let(LetStatement { name, value }))
+    }
+
+    fn parse_loop_control_statement(&mut self, is_continue: bool) -> Result<Statement, String> {
+        self.advance();
+        if *self.current_token() == Token::Semicolon {
+            self.advance();
+        }
+        if is_continue {
+            Ok(Statement::Continue)
+        } else {
+            Ok(Statement::Break)
+        }
     }
 
     fn parse_return_statement(&mut self) -> Result<Statement, String> {

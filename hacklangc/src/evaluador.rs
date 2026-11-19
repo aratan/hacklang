@@ -402,4 +402,40 @@ mod tests {
         let ev = eval_program("let x = 0; if (1 > 2) ( x = 10; ) else ( x = 20; )").unwrap();
         assert_eq!(ev.get_var("x"), Some(&Value::Number(20.0)));
     }
+    #[test]
+    fn test_lambda_function_call() {
+        let ev = eval_program("let add = |a, b| a + b; let result = add(3, 4);").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(7.0)));
+    }
+
+    #[test]
+    fn test_lambda_captures_outer_scope() {
+        let ev = eval_program("let base = 10; let add_base = |n| n + base; let result = add_base(5);").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(15.0)));
+    }
+
+    #[test]
+    fn test_function_arity_error() {
+        let result = eval_program("let add = |a, b| a + b; let result = add(1);");
+        assert!(result.unwrap_err().contains("esperaba 2 argumentos"));
+    }
+
+    #[test]
+    fn test_array_literal_and_index() {
+        let ev = eval_program("let values = [10, 20, 30]; let result = values[1];").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(20.0)));
+    }
+
+    #[test]
+    fn test_map_literal_and_index() {
+        let ev = eval_program("let config = @(\"port\": 8080); let result = config[\"port\"];").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(8080.0)));
+    }
+
+    #[test]
+    fn test_while_condition_error_is_propagated() {
+        let result = eval_program("while (missing < 3) ( print 1; )");
+        assert!(result.unwrap_err().contains("missing"));
+    }
+
 }

@@ -19,6 +19,8 @@ pub enum Statement {
     IndexAssign(IndexAssignStatement),
     Print(PrintStatement),
     Return(Expression),
+    Break,
+    Continue,
     Block(Vec<Statement>), // Bloque { stmt; stmt; ... }
     While(WhileStatement),
     If(IfStatement),

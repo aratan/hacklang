@@ -479,7 +479,7 @@ mod tests {
         let mut lexer = crate::lexer::Lexer::new(source.to_string());
         let tokens = lexer.tokenize().unwrap();
         let mut parser = Parser::new(tokens);
-        parser.parse_program()
+        parser.parse_program().unwrap()
     }
 
     #[test]

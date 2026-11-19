@@ -391,6 +391,19 @@ mod tests {
     }
 
     #[test]
+    fn checks_array_element_type_on_index_assignment() {
+        let diagnostics = check_source("let items = [1, 2]; items[0] = false;");
+        assert!(diagnostics.iter().any(|d| d.message.contains("elemento de 'items'") && d.message.contains("number")));
+    }
+
+    #[test]
+    fn checks_map_key_and_value_types_on_index_assignment() {
+        let diagnostics = check_source("let data = @(\"count\": 1); data[1] = false;");
+        assert!(diagnostics.iter().any(|d| d.message.contains("clave de 'data'") && d.message.contains("string")));
+        assert!(diagnostics.iter().any(|d| d.message.contains("valor de 'data'") && d.message.contains("number")));
+    }
+
+    #[test]
     fn accepts_legacy_string_number_concatenation() {
         assert!(check_source("let result = \"count=\" + 3;").is_empty());
     }

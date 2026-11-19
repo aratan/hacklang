@@ -115,7 +115,7 @@ Ya se han cerrado dos limitaciones iniciales del comprobador:
 Pendiente:
 
 - Inferencia de tipos de parámetros a partir del cuerpo y de los argumentos de llamada.
-- Diagnósticos JSON con código estable y severidad ya implementados para el análisis estático; el rango se devuelve como `null` porque el AST todavía no conserva spans. Los errores léxicos y sintácticos aún usan el canal textual.
+- Diagnósticos JSON con código estable y severidad ya implementados para el análisis estático; el rango se devuelve como `null` porque el AST todavía no conserva spans. Los errores léxicos y sintácticos aún usan el canal textual. El lexer ya expone `tokenize_spanned()` con offsets y línea/columna Unicode-aware, manteniendo `tokenize()` compatible; falta transportar esos spans por parser/AST hasta los diagnósticos.
 - Benchmark reproducible de tokens, compilación y Pass@1 frente a Python y Lua.
 - Evaluar si merece la pena abreviar `print` y otras palabras clave sin crear ambigüedad.
 

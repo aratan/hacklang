@@ -6,7 +6,7 @@ Lenguaje de programación interpretado, Turing completo, implementado en Rust.
 
 ```mermaid
 flowchart LR
-    A["Source (.hl)"] --> B["Lexer<br/><i>tokenize()</i>"]
+    A["Source (.hl)"] --> B["Lexer<br/><i>tokenize_spanned()</i> / tokenize()"]
     B --> C["Tokens<br/><i>Vec&lt;Token&gt;</i>"]
     C --> D["Parser<br/><i>parse_program()</i>"]
     D --> E["AST<br/><i>Program</i>"]
@@ -325,7 +325,7 @@ El lexer y el parser devuelven `Result`: los caracteres desconocidos, las cadena
 | **Control de flujo** | ✅ `return`, `break` y `continue` |
 | **Memoria** | ✅ Mark-and-sweep de frames de entorno; los demás valores los gestiona Rust |
 | **Análisis de tipos** | ✅ Primera pasada no bloqueante: tipos primitivos, retornos explícitos, arrays/mapas con tipos de elemento/clave/valor, indexación, asignaciones, operadores y aridad de llamadas |
-| **Tests** | ✅ CI: 107 pruebas aprobadas, 0 fallos (run #131) |
+| **Tests** | Verificar el resultado vigente en GitHub Actions; no mantener un contador histórico aquí |
 
 
 ## Funcionalidad del runtime
@@ -344,7 +344,7 @@ Limitaciones actuales: la asignación por índice solo admite como destino una v
 
 ## Modelo de memoria y ejecución
 
-- **Stack (pila):** la evaluación de expresiones y las llamadas a funciones usan recursión de Rust; por tanto, la pila de llamadas real es la pila nativa del proceso. Los bucles del lenguaje se ejecutan iterativamente. HackLang todavía no tiene una VM ni una pila de operandos propia.
+- **Stack (pila):** la evaluación de expresiones y las llamadas a funciones usan recursión de Rust; por tanto, la pila de llamadas real es la pila nativa del proceso. El evaluador limita la profundidad a 256 niveles y devuelve un error controlado al superar el límite. Los bucles del lenguaje se ejecutan iterativamente. HackLang todavía no tiene una VM ni una pila de operandos propia. El parser también aplica límites de 256 niveles a expresiones y sentencias anidadas.
 - **Heap (montículo):** el AST usa `Box` para nodos recursivos y `Vec` para listas; cadenas, mapas y tablas de variables usan estructuras propiedad de Rust. El arena de entornos también vive en el heap. Un recolector mark-and-sweep recupera frames no alcanzables y reutiliza sus posiciones; no es un GC general de objetos, porque los valores los gestiona Rust.
 - **Closures:** guardan un ID de entorno, no una copia completa del `HashMap`. La cadena de entornos proporciona el alcance léxico y permite recursividad.
 - **Liberación:** Rust libera automáticamente los valores cuando se destruye el evaluador. El arena recolecta frames inalcanzables después de cada sentencia, incluyendo el seguimiento de closures contenidas en valores y de closures devueltas temporalmente. No hay un garbage collector general para todos los objetos: Rust gestiona la vida de cadenas, arrays, mapas y AST.
@@ -353,36 +353,4 @@ Limitaciones actuales: la asignación por índice solo admite como destino una v
 ### Errores léxicos y sintácticos
 
 El lexer expone `tokenize() -> Result<Vec<Token>, String>` y el parser `parse_program() -> Result<Program, String>`. Un carácter desconocido, una cadena sin cerrar o una sentencia mal formada produce un error recuperable que el ejecutable muestra al usuario. Las pruebas cubren también cadenas Unicode para evitar errores al confundir índices de caracteres con índices de bytes.
-
-
-
-pendiente
-
-Corrijo lo que dije antes: tu repo no es un fork de `gfaff/hacklang`. Es un proyecto distinto, un intérprete en **Rust** (no Go), descrito como "lenguaje de programación para LLM". Lo anterior sobre Go y `dep` no aplica.
-
-**Qué puede hacer**
-- Variables, aritmética, `while`, `if`, ternario, `break`/`continue`/`return`.
-- Lambdas con closures y recursión, arrays, mapas e indexación de cadenas.
-- Un type checker no bloqueante y `--diagnostics-json` (análisis estático en JSON sin ejecutar).
-- Sintaxis compacta (`--compact`) y `--format` para convertir a forma canónica.
-
-**En qué es bueno**
-- Como diseño para LLM: la sintaxis compacta gasta menos tokens, y los diagnósticos en JSON permiten que un agente corrija su propio código.
-- Código limpio y didáctico: lexer, parser Pratt, evaluador, errores con `Result` sin `panic!`.
-- Tiene CI con 107 tests pasando.
-
-**Qué le falta**
-- **E/S y sistema:** no menciona archivos, red, sockets, HTTP, procesos ni variables de entorno. Sin eso no sirve para pentesting.
-- **Librería estándar:** no menciona funciones de strings, regex, hex/base64, hashing ni JSON.
-- **Módulos/imports** y manejo de errores en el propio lenguaje (try/catch o equivalente).
-- **Rendimiento y robustez:** es un intérprete que recorre el AST con la pila nativa de Rust, así que una recursión profunda puede desbordar la pila. Los mapas son pares ordenados (búsqueda lineal).
-- **Limitaciones declaradas:** la asignación por índice solo funciona sobre una variable directa (nada de `a[0][1] = x`), y el type checker deja muchos casos como `unknown`.
-- Un solo tipo numérico (f64 en el AST), sin enteros ni bytes, lo cual es un problema para binarios y protocolos.
-
-**Cuánto:** como intérprete de juguete bien hecho, 6/10. Como lenguaje utilizable en el día a día, 2/10 por ahora. Para pentesting, 1/10 hasta que tenga red, archivos, bytes y librería estándar.
-
-¿Quieres que te arme una hoja de ruta ordenada por prioridad para convertirlo en un lenguaje de scripting para pentesting (módulo `net`, `bytes`, `fs`, `proc`...)?
-
-
-
 

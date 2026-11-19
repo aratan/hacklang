@@ -22,7 +22,29 @@ La métrica principal será:
 
 También se medirá Pass@1, tasa de compilación, tasa de éxito funcional y legibilidad en revisión. Una sintaxis que ahorre tokens pero genere más errores puede salir más cara.
 
-## Propuesta compacta (objetivo v0.2; aún no implementada)
+## Sintaxis compacta experimental v0 (implementación inicial)
+
+Ya existe un modo explícito de parser compacto, activado con `hacklangc --compact archivo.hl`. No cambia el modo legacy por defecto.
+
+Implementado y cubierto por pruebas:
+
+- Declaración compacta `name:=expr`.
+- Asignación existente `name=expr`.
+- Bloques `{...}` para bloques independientes, `if`, `else`, `while` y cuerpos de lambdas.
+- Condiciones sin paréntesis: `if cond{...}` y `while cond{...}`.
+- Mapas compactos `@{key:value}`.
+- Punto y coma opcional cuando la gramática puede reconocer el siguiente inicio de sentencia.
+- Compatibilidad del parser legacy con sus paréntesis y declaraciones `let`.
+
+Se mantienen las palabras clave `print`, `return`, `break` y `continue`; no se han introducido abreviaturas que colisionen con el ternario o con operadores. La implementación compacta es una primera versión experimental, no todavía la sintaxis predeterminada.
+
+## Siguientes reducciones a evaluar
+
+- Impresión abreviada: no asignar `?` hasta resolver la interacción inequívoca con el operador ternario; alternativa segura a estudiar: una palabra clave corta nueva, medida con tokenizadores.
+- Retorno: mantener `return`; `^` ya es operador y no se reutilizará sin rediseñar la precedencia y demostrar compatibilidad.
+- Un mapa compacto usa `@{}`; arrays mantienen `[]`.
+
+## Propuesta compacta (evolución propuesta)
 
 Ejemplo completo:
 
@@ -94,7 +116,7 @@ Pendiente:
 - Inferencia de tipos de parámetros a partir del cuerpo y de los argumentos de llamada.
 - Diagnósticos JSON con códigos estables y rangos de fuente; el AST todavía no conserva spans.
 - Formateador AST → sintaxis canónica compacta.
-- Modo de parser compacto versionado, con compatibilidad explícita para la sintaxis actual.
 - Benchmark reproducible de tokens, compilación y Pass@1 frente a Python y Lua.
+- Evaluar si merece la pena abreviar `print` y otras palabras clave sin crear ambigüedad.
 
 Estos puntos son trabajo pendiente, no funcionalidades ya terminadas. La sintaxis compacta sigue siendo una propuesta documentada: todavía no se ha activado ni sustituido la sintaxis actual.

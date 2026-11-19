@@ -866,6 +866,26 @@ mod tests {
     }
 
     #[test]
+    fn deeply_nested_expression_returns_error() {
+        let source = format!("let x = {}1{};", "(".repeat(300), ")".repeat(300));
+        let mut lexer = crate::lexer::Lexer::new(source);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let error = parser.parse_program().unwrap_err();
+        assert!(error.contains("Límite de profundidad"));
+    }
+
+    #[test]
+    fn deeply_nested_blocks_return_error() {
+        let source = format!("{}print 1;{}", "(".repeat(300), ")".repeat(300));
+        let mut lexer = crate::lexer::Lexer::new(source);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let error = parser.parse_program().unwrap_err();
+        assert!(error.contains("Límite de anidamiento"));
+    }
+
+    #[test]
     fn test_parse_unexpected_token_returns_error() {
         let mut lexer = crate::lexer::Lexer::new("let = 42;".to_string());
         let tokens = lexer.tokenize().unwrap();

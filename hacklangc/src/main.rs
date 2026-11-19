@@ -9,15 +9,17 @@ mod ast;
 mod parser;
 mod evaluador; // El módulo que contiene la lógica de ejecución.
 mod type_checker; // Análisis estático no bloqueante.
+mod formatter; // Formateador canónico de sintaxis compacta.
 
 fn main() {
     // 1. Leer el código fuente del archivo pasado como argumento.
     let args: Vec<String> = env::args().skip(1).collect();
     let compact_mode = args.iter().any(|arg| arg == "--compact");
-    let filename = match args.iter().find(|arg| arg.as_str() != "--compact") {
+    let format_mode = args.iter().any(|arg| arg == "--format");
+    let filename = match args.iter().find(|arg| arg.as_str() != "--compact" && arg.as_str() != "--format") {
         Some(filename) => filename,
         None => {
-            eprintln!("Uso: hacklangc [--compact] <nombre_de_archivo.hl>");
+            eprintln!("Uso: hacklangc [--compact] [--format] <nombre_de_archivo.hl>");
             return;
         }
     };
@@ -54,6 +56,11 @@ fn main() {
             return;
         }
     };
+
+    if format_mode {
+        println!("{}", formatter::format_program(&ast));
+        return;
+    }
 
     // --- FASE 3: ANÁLISIS ESTÁTICO (NO BLOQUEANTE) ---
     // Informa de incompatibilidades demostrables, pero no impide ejecutar

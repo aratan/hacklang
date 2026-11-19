@@ -5,7 +5,8 @@ Este documento separa las capacidades existentes de las que faltan. Las propuest
 ## Estado actual y límites conocidos
 
 - Intérprete Rust: lexer → parser → AST → evaluador; no hay IR ni compilador nativo.
-- El evaluador recorre recursivamente el AST. La profundidad de expresiones, llamadas y recursión puede agotar la pila nativa; todavía no hay límite configurable ni evaluación con pila explícita.
+- El evaluador recorre recursivamente el AST y limita la profundidad de evaluación a 256 niveles; no es configurable y todavía no existe una pila de operandos propia.
+- El parser limita a 256 niveles la profundidad de expresiones y sentencias anidadas para devolver errores controlados; no hay todavía un parser iterativo.
 - Los entornos usan `HashMap`, pero los mapas del lenguaje son `Vec<(Value, Value)>`: buscar una clave es lineal.
 - El AST y los valores numéricos usan `f64`; no existen enteros de ancho fijo ni bytes como tipo propio.
 - La asignación indexada se limita a una variable directa (por ejemplo, `a[i] = x`); no se admite actualizar directamente un destino anidado como `a[0][1] = x`.
@@ -20,11 +21,11 @@ HackLang es un lenguaje de programación de propósito general. Debe permitir co
 ## Plan por etapas
 
 ### P0 — Fundamentos y seguridad del runtime
-- Completar source spans desde lexer a parser y diagnósticos estructurados.
+- Completar source spans desde lexer a parser/AST y diagnósticos estructurados. El lexer ya genera spans Unicode-aware; falta propagarlos.
 - Introducir errores tipados con código, fase, mensaje y ubicación; mantener mensajes legibles y salida JSON estable.
 - Definir límites configurables de profundidad, pasos/instrucciones, memoria y tiempo para ejecutar scripts no confiables.
-- Evitar desbordamientos de pila: primero límites defensivos y pruebas de estrés; después evaluar un evaluador con pila explícita/trampolín.
-- Añadir pruebas de fuzzing para lexer/parser y pruebas de estrés para recursión, anidamiento y entradas malformadas.
+- Evaluador y parser: límites defensivos de 256 niveles ya implementados; añadir configuración, pruebas de estrés/fuzzing y evaluar una pila explícita/trampolín si las mediciones lo justifican.
+- Añadir fuzzing para lexer/parser y pruebas de estrés adicionales para recursión, anidamiento y entradas malformadas. Ya hay tests de regresión para los límites del parser y evaluador.
 
 ### P1 — Tipos para sistemas y protocolos
 - Añadir enteros con signo/sin signo de anchuras explícitas (8/16/32/64 bits) y conversiones comprobadas.

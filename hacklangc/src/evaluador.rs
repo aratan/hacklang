@@ -27,6 +27,8 @@ impl Value {
 #[derive(Debug, Clone, PartialEq)]
 enum Flow {
     Continue,
+    LoopContinue,
+    Break,
     Return(Value),
 }
 #[derive(Debug, Clone)]
@@ -152,6 +154,8 @@ impl Evaluator {
         for stmt in &program.statements {
             match self.run_stmt(stmt)? {
                 Flow::Continue => {}
+                Flow::LoopContinue => return Err("continue fuera de un bucle".to_string()),
+                Flow::Break => return Err("break fuera de un bucle".to_string()),
                 Flow::Return(_) => return Err("return fuera de una función".to_string()),
             }
         }
@@ -165,13 +169,15 @@ impl Evaluator {
             Statement::IndexAssign(a) => self.eval_index_assign(a).map(|_| Flow::Continue),
             Statement::Print(p) => self.eval_print(p).map(|_| Flow::Continue),
             Statement::Return(value) => self.eval_expression(value).map(Flow::Return),
+            Statement::Break => Ok(Flow::Break),
+            Statement::Continue => Ok(Flow::LoopContinue),
             Statement::Block(statements) => {
                 let parent = self.current_env;
                 self.with_environment(parent, |this| {
                     for statement in statements {
                         match this.run_stmt(statement)? {
                             Flow::Continue => {}
-                            flow @ Flow::Return(_) => return Ok(flow),
+                            flow @ (Flow::LoopContinue | Flow::Break | Flow::Return(_)) => return Ok(flow),
                         }
                     }
                     Ok(Flow::Continue)
@@ -180,11 +186,13 @@ impl Evaluator {
             Statement::While(ws) => {
                 let parent = self.current_env;
                 self.with_environment(parent, |this| {
-                    loop {
+                    'while_loop: loop {
                         if !this.condition_true(&ws.condition)? { break; }
                         for statement in &ws.body {
                             match this.run_stmt(statement)? {
                                 Flow::Continue => {}
+                                Flow::LoopContinue => continue 'while_loop,
+                                Flow::Break => break 'while_loop,
                                 flow @ Flow::Return(_) => return Ok(flow),
                             }
                         }
@@ -205,7 +213,7 @@ impl Evaluator {
                         for statement in statements {
                             match this.run_stmt(statement)? {
                                 Flow::Continue => {}
-                                flow @ Flow::Return(_) => return Ok(flow),
+                                flow @ (Flow::LoopContinue | Flow::Break | Flow::Return(_)) => return Ok(flow),
                             }
                         }
                     }
@@ -306,6 +314,8 @@ impl Evaluator {
                     match self.run_stmt(statement)? {
                         Flow::Continue => {}
                         Flow::Return(value) => return Ok(value),
+                        Flow::Break => return Err("break fuera de un bucle".to_string()),
+                        Flow::LoopContinue => return Err("continue fuera de un bucle".to_string()),
                     }
                 }
                 Ok(Value::Number(0.0))
@@ -454,6 +464,24 @@ mod tests {
     fn test_return_propagates_through_while() {
         let ev = eval_program("let find = |limit| (let i = 0; while (i < limit) (if (i ~ 3) (return i;); i = i + 1;); return 0 - 1;); let result = find(10);").unwrap();
         assert_eq!(ev.get_var("result"), Some(&Value::Number(3.0)));
+    }
+
+    #[test]
+    fn test_break_exits_loop() {
+        let ev = eval_program("let i = 0; while (i < 10) (i = i + 1; if (i ~ 3) (break;);); let result = i;").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(3.0)));
+    }
+
+    #[test]
+    fn test_continue_skips_remaining_iteration() {
+        let ev = eval_program("let i = 0; let sum = 0; while (i < 5) (i = i + 1; if (i ~ 3) (continue;); sum = sum + i;); let result = sum;").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(12.0)));
+    }
+
+    #[test]
+    fn test_break_outside_loop_is_error() {
+        let result = eval_program("break;");
+        assert!(result.unwrap_err().contains("break fuera de un bucle"));
     }
 
     #[test]

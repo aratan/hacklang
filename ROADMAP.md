@@ -15,7 +15,7 @@ Este documento separa las capacidades existentes de las que faltan. Las propuest
 
 ## Objetivo de diseño
 
-HackLang debe servir tanto para automatización general como para scripting técnico y pentesting autorizado. Mantener un núcleo pequeño y portable; exponer capacidades del sistema a través de módulos estándar explícitos, con permisos y límites configurables. No convertir el intérprete en una colección de primitivas específicas de cada plataforma.
+HackLang es un lenguaje de programación de propósito general. Debe permitir construir programas, herramientas, bibliotecas y aplicaciones, además de automatización y scripting técnico. Pentesting es solo uno de sus posibles dominios de uso. Mantener un núcleo pequeño y portable; exponer capacidades del sistema a través de módulos estándar explícitos y APIs coherentes. No convertir el intérprete en una colección de primitivas específicas de cada plataforma.
 
 ## Plan por etapas
 
@@ -60,19 +60,26 @@ HackLang debe servir tanto para automatización general como para scripting téc
 - APIs de bajo nivel para protocolos binarios sobre `bytes`.
 - Límites de concurrencia, tamaño, tiempo y conexiones; no incluir escaneo agresivo por defecto.
 
-### P6 — Módulos y errores del lenguaje
+### P6 — Módulos, paquetes y errores del lenguaje
 - Sistema de módulos con imports explícitos, resolución determinista y control de versiones.
+- Gestor de paquetes reproducible, manifiesto del proyecto, dependencias fijadas y lockfile.
 - Separar biblioteca estándar y módulos opcionales.
 - Diseñar manejo de errores recuperables: resultado explícito (`Result`/operador de propagación) como base; excepciones tipo `try/catch` solo si aportan una semántica clara.
 - No ocultar errores ni convertir fallos en valores ambiguos.
 
-### P7 — Tipado e inferencia
+### P7 — Concurrencia y asincronía
+- Definir un modelo de concurrencia seguro y comprensible (tareas, async/await o alternativa justificada).
+- Primitivas de sincronización y canales; evitar introducir carreras de datos por defecto.
+- Cancelación, timeouts, propagación de errores y límites de recursos.
+- No añadir concurrencia hasta que el runtime y el modelo de memoria tengan contratos claros.
+
+### P8 — Tipado e inferencia
 - Inferir tipos de parámetros a partir de usos y llamadas cuando sea seguro.
 - Propagar tipos a través de ramas, retornos, colecciones, índices y funciones.
 - Añadir anotaciones opcionales para parámetros/retornos y genéricos donde aporten valor.
 - Mantener `unknown` como escape conservador cuando no haya evidencia suficiente; no inventar tipos.
 
-### P8 — Rendimiento y compilación
+### P9 — Rendimiento y compilación
 - Crear benchmarks reproducibles: tiempo, memoria, profundidad máxima y coste de colecciones.
 - Medir coste real de tokens con tokenizadores representativos y comparar legibilidad/tasa de generación correcta (Pass@1).
 - Evaluar bytecode/IR y compilación solo después de tener benchmarks que demuestren el cuello de botella.

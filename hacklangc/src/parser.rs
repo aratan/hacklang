@@ -449,12 +449,11 @@ impl Parser {
                     return Err("Se esperaba '|' después de los parámetros".to_string());
                 }
                 self.advance();
-                let body = if *self.current_token() == Token::ParenOpen {
+                let (block_open, block_close) = self.block_delimiters();
+                let body = if *self.current_token() == block_open {
                     self.advance();
                     let statements = self.parse_block()?;
-                    if *self.current_token() != Token::ParenClose {
-                        return Err("Se esperaba ')' al cerrar el cuerpo de la función".to_string());
-                    }
+                    if *self.current_token() != block_close { return Err(format!("Se esperaba '{block_close:?}' al cerrar el cuerpo de la función")); }
                     self.advance();
                     Expression::Block(statements)
                 } else {
@@ -800,6 +799,44 @@ mod tests {
     fn test_parse_empty_input() {
         let program = parse("");
         assert_eq!(program.statements.len(), 0);
+    }
+
+    fn parse_compact(source: &str) -> Program {
+        let mut lexer = crate::lexer::Lexer::new(source.to_string());
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new_compact(tokens);
+        parser.parse_program().unwrap()
+    }
+
+    #[test]
+    fn compact_mode_parses_declarations_and_brace_blocks() {
+        let program = parse_compact("n:=3 while n>0{n=n-1}");
+        assert!(matches!(program.statements[0], Statement::Let(_)));
+        assert!(matches!(program.statements[1], Statement::While(_)));
+    }
+
+    #[test]
+    fn compact_mode_parses_if_else_and_lambda_blocks() {
+        let program = parse_compact("f:=|x|{if x>0{return x}else{return 0}}");
+        match &program.statements[0] {
+            Statement::Let(stmt) => assert!(matches!(stmt.value, Expression::Lambda { .. })),
+            other => panic!("expected compact lambda declaration, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compact_mode_parses_map_literal_with_braces() {
+        let program = parse_compact("data:=@{\"x\":1,\"y\":2}");
+        match &program.statements[0] {
+            Statement::Let(stmt) => assert!(matches!(stmt.value, Expression::Map(_))),
+            other => panic!("expected compact map declaration, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn legacy_mode_still_parses_parenthesis_blocks() {
+        let program = parse("while (i < 2) ( print i; )");
+        assert!(matches!(program.statements[0], Statement::While(_)));
     }
 
     #[test]

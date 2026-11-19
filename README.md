@@ -50,6 +50,7 @@ classDiagram
     class Statement {
         <<enum>>
         Let(LetStatement)
+        Assign(AssignStatement)
         Print(PrintStatement)
         Block(Vec~Statement~)
         While(WhileStatement)
@@ -78,6 +79,9 @@ classDiagram
         <<enum>>
         Number(f64)
         String(String)
+        Array(Vec<Value>)
+        Map(Vec<(Value, Value)>)
+        Function
     }
 
     Lexer ..> Token : produce
@@ -211,9 +215,15 @@ fn run_stmt(&mut self, stmt: &Statement) -> Result<(), String> {
 }
 ```
 
-### Environment como HashMap
+### Entornos léxicos y closures
 
-El estado del programa (variables) se almacena en un `HashMap<String, Value>` dentro del `Evaluator`. No hay scoping anidado ni closures — es un único ámbito global.
+El runtime mantiene un arena de entornos (`Vec<Environment>`). Cada entorno contiene un `HashMap<String, Value>` y un enlace opcional a su entorno padre. Las variables se resuelven recorriendo esa cadena, desde el ámbito actual hacia los padres.
+
+- `let` crea o reemplaza una vinculación en el ámbito actual.
+- La asignación `x = ...` actualiza la vinculación existente más cercana.
+- Los bloques, ramas, bucles y llamadas crean nuevos entornos.
+- Una lambda captura el identificador estable del entorno donde se define. No clona todas las variables: ve también las modificaciones posteriores y puede ser recursiva.
+- Los entornos se conservan en el arena hasta que termina el `Evaluator`. Es una estrategia sencilla y segura para closures, pero todavía no recupera frames individuales que ya no sean alcanzables.
 
 ## Principios Aplicados
 
@@ -226,17 +236,9 @@ Cada decisión de diseño se tomó preguntando "¿esto añade complejidad sin ne
 - **Sin genéricos ni macros complejas**: el evaluador es código plano con `match`.
 - **Sin lifetimes complejas**: se clona lo necesario (`s.clone()`, `name.clone()`) en lugar de tejer referencias.
 
-### YAGNI (You Aren't Gonna Need It) — stubs con error claro
+### YAGNI (You Aren't Gonna Need It)
 
-Las features que no están implementadas devuelven un error explícito en lugar de valores basura o infraestructura completa:
-
-```rust
-Expression::Lambda { .. }       => Err("Lambda not implemented".to_string()),
-Expression::FunctionCall { .. } => Err("FunctionCall not implemented".to_string()),
-Expression::Array(_)            => Err("Array not implemented".to_string()),
-```
-
-Esto evita construir el sistema de closures, tipado, etc., hasta que sea realmente necesario.
+El runtime implementa primero las construcciones necesarias para ejecutar programas pequeños: funciones, closures léxicas, arrays, mapas e indexación. Las características que aún no existen deben fallar explícitamente; no deben simularse con valores por defecto ni con resultados silenciosos.
 
 ### DRY — con límites
 
@@ -264,7 +266,7 @@ La única excepción son errores léxicos irrecuperables (`panic!` en el lexer),
 | **Lexer** | ✅ Completo |
 | **Parser** | ✅ Completo (infix, ternario, lambdas, arrays, mapas, indexación) |
 | **Evaluador** | ⚠️ Parcial — números, cadenas, arrays, mapas, indexación y llamadas a lambdas |
-| **Funciones** | ✅ Lambdas con parámetros, captura del entorno y comprobación de aridad |
+| **Funciones** | ✅ Lambdas, closures léxicas, recursividad y comprobación de aridad |
 | **Colecciones** | ✅ Arrays, mapas e indexación de lectura |
 | **Tests** | 🧪 Tests unitarios existentes y pruebas de regresión añadidas; pendiente ejecutar CI |
 
@@ -279,3 +281,11 @@ La única excepción son errores léxicos irrecuperables (`panic!` en el lexer),
 - Los errores al evaluar condiciones de `while` se propagan; ya no se convierten silenciosamente en una condición falsa.
 
 Limitaciones actuales: las colecciones no tienen asignación por índice, los mapas se representan como pares ordenados y las funciones todavía no admiten cuerpos con varias sentencias ni recursión.
+
+
+## Modelo de memoria y ejecución
+
+- **Stack (pila):** la evaluación de expresiones y las llamadas a funciones usan recursión de Rust; por tanto, la pila de llamadas real es la pila nativa del proceso. Los bucles del lenguaje se ejecutan iterativamente. HackLang todavía no tiene una VM ni una pila de operandos propia.
+- **Heap (montículo):** el AST usa `Box` para nodos recursivos y `Vec` para listas; cadenas, mapas y tablas de variables usan estructuras propiedad de Rust. El arena de entornos también vive en el heap.
+- **Closures:** guardan un ID de entorno, no una copia completa del `HashMap`. La cadena de entornos proporciona el alcance léxico y permite recursividad.
+- **Liberación:** Rust libera automáticamente los valores cuando se destruye el evaluador. Actualmente el arena conserva los entornos creados durante toda la ejecución; aún no hay garbage collector ni recolección de frames inalcanzables.

@@ -16,11 +16,15 @@ enum Precedence {
     Comparison, // < , >
 }
 
+const MAX_PARSE_DEPTH: usize = 256;
+
 pub struct Parser {
     tokens: Vec<Token>,
     position: usize,
     precedences: HashMap<Token, Precedence>,
     compact: bool,
+    expression_depth: usize,
+    statement_depth: usize,
 }
 
 impl Parser {
@@ -50,6 +54,8 @@ impl Parser {
             position: 0,
             precedences,
             compact,
+            expression_depth: 0,
+            statement_depth: 0,
         }
     }
 
@@ -67,6 +73,16 @@ impl Parser {
     }
 
     fn parse_statement(&mut self) -> Result<Statement, String> {
+        if self.statement_depth >= MAX_PARSE_DEPTH {
+            return Err(format!("Límite de anidamiento de sentencias excedido ({MAX_PARSE_DEPTH})"));
+        }
+        self.statement_depth += 1;
+        let result = self.parse_statement_inner();
+        self.statement_depth -= 1;
+        result
+    }
+
+    fn parse_statement_inner(&mut self) -> Result<Statement, String> {
         // First, try to handle Identifier(name) without a long-lived match borrow.
         // We check for the Identifier case here to avoid the borrow-checker conflict
         // between the match on self.current_token() and mutable self calls.
@@ -325,6 +341,16 @@ impl Parser {
     }
 
     fn parse_expression(&mut self, precedence: Precedence) -> Result<Expression, String> {
+        if self.expression_depth >= MAX_PARSE_DEPTH {
+            return Err(format!("Límite de profundidad de expresiones excedido ({MAX_PARSE_DEPTH})"));
+        }
+        self.expression_depth += 1;
+        let result = self.parse_expression_inner(precedence);
+        self.expression_depth -= 1;
+        result
+    }
+
+    fn parse_expression_inner(&mut self, precedence: Precedence) -> Result<Expression, String> {
         // Parsea la parte "prefijo" (un número, una variable, un paréntesis)
         let mut left_expr = self.parse_prefix()?;
 

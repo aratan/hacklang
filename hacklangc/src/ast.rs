@@ -15,6 +15,7 @@ pub struct Program {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Statement {
     Let(LetStatement),
+    Assign(AssignStatement),
     Print(PrintStatement),
     Block(Vec<Statement>), // Bloque { stmt; stmt; ... }
     While(WhileStatement),
@@ -76,6 +77,12 @@ pub enum Expression {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LetStatement {
+    pub name: String,
+    pub value: Expression,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AssignStatement {
     pub name: String,
     pub value: Expression,
 }

@@ -69,7 +69,7 @@ impl Parser {
                 if *self.current_token() == Token::Semicolon {
                     self.advance();
                 }
-                return Ok(Statement::Let(LetStatement { name: ident_name, value }));
+                return Ok(Statement::Assign(AssignStatement { name: ident_name, value }));
             }
         }
 

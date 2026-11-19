@@ -47,6 +47,10 @@ impl Parser {
     pub fn parse_program(&mut self) -> Program {
         let mut statements = Vec::new();
         while !self.is_at_end() {
+            if *self.current_token() == Token::Semicolon {
+                self.advance();
+                continue;
+            }
             match self.parse_statement() {
                 Ok(stmt) => statements.push(stmt),
                 Err(e) => panic!("Error de Análisis Sintáctico: {}", e),
@@ -509,15 +513,15 @@ mod tests {
 
     #[test]
     fn test_parse_let_from_identifier() {
-        // Parser also accepts `x = 10;` as a let (without explicit 'let')
+        // Assignment is distinct from a declaration and updates an existing binding.
         let program = parse("x = 10;");
         assert_eq!(program.statements.len(), 1);
         match &program.statements[0] {
-            Statement::Let(stmt) => {
+            Statement::Assign(stmt) => {
                 assert_eq!(stmt.name, "x");
                 assert_eq!(stmt.value, Expression::NumberLiteral(10.0));
             }
-            other => panic!("expected Let, got {:?}", other),
+            other => panic!("expected Assign, got {:?}", other),
         }
     }
 

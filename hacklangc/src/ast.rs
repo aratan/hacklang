@@ -34,6 +34,7 @@ pub enum Expression {
     
     // Un literal numérico. Lo guardamos como f64 directamente, como espera el evaluador.
     NumberLiteral(f64),
+    BoolLiteral(bool),
     
     // Un literal de cadena de texto. ej: `"Hola Mundo"`
     StringLiteral(String),

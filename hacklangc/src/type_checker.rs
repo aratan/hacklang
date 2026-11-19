@@ -13,8 +13,8 @@ pub enum Type {
     Number,
     Bool,
     String,
-    Array,
-    Map,
+    Array(Box<Type>),
+    Map(Box<Type>, Box<Type>),
     Function { arity: usize, returns: Box<Type> },
     Unknown,
 }
@@ -25,8 +25,8 @@ impl std::fmt::Display for Type {
             Type::Number => write!(f, "number"),
             Type::Bool => write!(f, "bool"),
             Type::String => write!(f, "string"),
-            Type::Array => write!(f, "array"),
-            Type::Map => write!(f, "map"),
+            Type::Array(element) => write!(f, "array<{element}>"),
+            Type::Map(key, value) => write!(f, "map<{key}, {value}>"),
             Type::Function { arity, returns } => write!(f, "function/{arity} -> {returns}"),
             Type::Unknown => write!(f, "unknown"),
         }
@@ -114,9 +114,17 @@ impl TypeChecker {
                     let index = self.infer(&stmt.index);
                     let value = self.infer(&stmt.value);
                     match target {
-                        Type::Array if index != Type::Unknown && index != Type::Number =>
-                            self.report(format!("el índice de '{}' debe ser number, no {}", stmt.name, index)),
-                        Type::Array | Type::Map | Type::Unknown => { let _ = value; }
+                        Type::Array(element) => {
+                            if index != Type::Unknown && index != Type::Number {
+                                self.report(format!("el índice de '{}' debe ser number, no {}", stmt.name, index));
+                            }
+                            self.check_compatible(&format!("elemento de '{}'", stmt.name), &element, &value);
+                        }
+                        Type::Map(key, map_value) => {
+                            self.check_compatible(&format!("clave de '{}'", stmt.name), &key, &index);
+                            self.check_compatible(&format!("valor de '{}'", stmt.name), &map_value, &value);
+                        }
+                        Type::Unknown => {}
                         other => self.report(format!("no se puede asignar por índice a '{}' de tipo {}", stmt.name, other)),
                     }
                 }
@@ -157,27 +165,42 @@ impl TypeChecker {
             Expression::StringLiteral(_) => Type::String,
             Expression::Identifier(name) => self.lookup(name),
             Expression::Array(items) => {
-                for item in items { self.infer(item); }
-                Type::Array
+                let mut element_type = Type::Unknown;
+                for item in items {
+                    let item_type = self.infer(item);
+                    element_type = self.merge_collection_type("elementos de array", element_type, item_type);
+                }
+                Type::Array(Box::new(element_type))
             }
             Expression::Map(items) => {
+                let mut key_type = Type::Unknown;
+                let mut value_type = Type::Unknown;
                 for (key, value) in items {
-                    self.infer(key);
-                    self.infer(value);
+                    let current_key = self.infer(key);
+                    let current_value = self.infer(value);
+                    key_type = self.merge_collection_type("claves de map", key_type, current_key);
+                    value_type = self.merge_collection_type("valores de map", value_type, current_value);
                 }
-                Type::Map
+                Type::Map(Box::new(key_type), Box::new(value_type))
             }
             Expression::Index { target, index } => {
                 let target_type = self.infer(target);
                 let index_type = self.infer(index);
                 match target_type {
-                    Type::Array | Type::String if index_type != Type::Unknown && index_type != Type::Number => {
+                    Type::Array(element) if index_type != Type::Unknown && index_type != Type::Number => {
                         self.report(format!("el índice requiere number, se obtuvo {index_type}"));
                         Type::Unknown
                     }
-                    Type::Array => Type::Unknown,
+                    Type::Array(element) => *element,
+                    Type::String if index_type != Type::Unknown && index_type != Type::Number => {
+                        self.report(format!("el índice requiere number, se obtuvo {index_type}"));
+                        Type::Unknown
+                    }
                     Type::String => Type::String,
-                    Type::Map => Type::Unknown,
+                    Type::Map(key, value) => {
+                        self.check_compatible("clave de map", &key, &index_type);
+                        *value
+                    }
                     Type::Unknown => Type::Unknown,
                     other => {
                         self.report(format!("el tipo {other} no admite indexación"));
@@ -232,6 +255,17 @@ impl TypeChecker {
                         Type::Unknown
                     }
                 }
+            }
+        }
+    }
+
+    fn merge_collection_type(&mut self, context: &str, current: Type, next: Type) -> Type {
+        match (current, next) {
+            (Type::Unknown, other) | (other, Type::Unknown) => other,
+            (left, right) if left == right => left,
+            (left, right) => {
+                self.report(format!("{context}: tipos incompatibles {left} y {right}"));
+                Type::Unknown
             }
         }
     }

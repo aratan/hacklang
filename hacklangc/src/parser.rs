@@ -288,6 +288,17 @@ impl Parser {
             }
         }
 
+        // Indexación postfix.
+        while *self.current_token() == Token::BracketOpen {
+            self.advance();
+            let index = self.parse_expression(Precedence::Lowest)?;
+            if *self.current_token() != Token::BracketClose {
+                return Err("Se esperaba ']' después del índice".to_string());
+            }
+            self.advance();
+            left_expr = Expression::Index { target: Box::new(left_expr), index: Box::new(index) };
+        }
+
         // Ternario: ? true_expr : false_expr
         if *self.current_token() == Token::Question && precedence <= Precedence::Ternary {
             self.advance(); // consume ?
@@ -352,6 +363,15 @@ impl Parser {
                 self.advance();
                 let body = self.parse_expression(Precedence::Lowest)?;
                 Ok(Expression::Lambda { params, body: Box::new(body) })
+            }
+            Token::BracketOpen => {
+                self.advance();
+                let items = self.parse_comma_list(Token::BracketClose)?;
+                if *self.current_token() != Token::BracketClose {
+                    return Err("Se esperaba ']' al cerrar el array".to_string());
+                }
+                self.advance();
+                Ok(Expression::Array(items))
             }
             Token::At => {
                 // Mapa: @{ "key": value }

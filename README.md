@@ -10,7 +10,8 @@ flowchart LR
     B --> C["Tokens<br/><i>Vec&lt;Token&gt;</i>"]
     C --> D["Parser<br/><i>parse_program()</i>"]
     D --> E["AST<br/><i>Program</i>"]
-    E --> F["Evaluador<br/><i>evaluate()</i>"]
+    E --> H["Type checker<br/><i>check()</i>"]
+    H --> F["Evaluador<br/><i>evaluate()</i>"]
     F --> G["Output"]
 ```
 
@@ -136,7 +137,7 @@ HackLang sigue el patrón clásico de **intérprete sin IR** (Intermediate Repre
 Source (.hl)  ──[Lexer]──▶  Tokens  ──[Parser]──▶  AST  ──[Evaluator]──▶  Output
 ```
 
-Cada fase es un módulo independiente de Rust (`lexer.rs`, `parser.rs`, `evaluador.rs`) que se comunica con el siguiente solo a través de su tipo de salida (`Vec<Token>` → `Program` → `Result<(), String>`). No hay paso intermedio, ni optimizaciones, ni generación de código.
+Cada fase es un módulo independiente de Rust (`lexer.rs`, `parser.rs`, `evaluador.rs`) que se comunica con el siguiente solo a través de su tipo de salida (`Vec<Token>` → `Program` → `Result<(), String>`). El análisis estático es una pasada independiente y no bloqueante entre el parser y el evaluador. No hay IR, optimizaciones ni generación de código.
 
 ### Flujo de errores
 
@@ -280,11 +281,11 @@ El lexer y el parser devuelven `Result`: los caracteres desconocidos, las cadena
 | **Funciones** | ✅ Lambdas, closures léxicas, recursividad, llamadas de primera clase y aridad |
 | **Control de flujo** | ✅ `return`, `break` y `continue` |
 | **Memoria** | ✅ Mark-and-sweep de frames de entorno; los demás valores los gestiona Rust |
-| **Tipos estáticos** | ⏳ No implementados; el runtime usa comprobación dinámica con valores booleanos nativos |
-| **Tests** | ✅ CI: 80 pruebas aprobadas en la revisión de closures devueltas |
+| **Análisis de tipos** | ✅ Primera pasada no bloqueante: tipos primitivos, arrays/mapas, asignaciones, operadores y aridad de llamadas |
+| **Tests** | ✅ CI: 91 pruebas aprobadas en main tras integrar el comprobador |
 
 
-## Funcionalidad del runtime (rama en desarrollo)
+## Funcionalidad del runtime
 
 - Las lambdas se evalúan como funciones y capturan el ID estable del entorno léxico donde se definen.
 - Las llamadas comprueban el número de argumentos y ejecutan el cuerpo en un entorno local cuyo padre es el entorno capturado.
@@ -295,7 +296,7 @@ El lexer y el parser devuelven `Result`: los caracteres desconocidos, las cadena
 - La indexación de cadenas devuelve el carácter solicitado.
 - Los errores al evaluar condiciones de `while` se propagan; ya no se convierten silenciosamente en una condición falsa.
 
-Limitaciones actuales: la asignación por índice solo admite como destino una variable identificada directamente (no indexación anidada); los mapas se representan como pares ordenados. El lenguaje todavía no tiene un sistema de tipos estáticos: los tipos se comprueban durante la evaluación y las condiciones aceptan booleanos nativos y mantienen la conversión dinámica de números, cadenas y colecciones por compatibilidad. Las comparaciones numéricas producen `true` o `false`, no `1` o `0`.
+Limitaciones actuales: la asignación por índice solo admite como destino una variable identificada directamente (no indexación anidada); los mapas se representan como pares ordenados. El comprobador estático inicial es deliberadamente no bloqueante: informa de incompatibilidades demostrables y deja como `unknown` los casos que aún no puede inferir. El runtime mantiene la conversión dinámica de números, cadenas y colecciones en condiciones por compatibilidad. Las comparaciones numéricas producen `true` o `false`, no `1` o `0`.
 
 
 ## Modelo de memoria y ejecución

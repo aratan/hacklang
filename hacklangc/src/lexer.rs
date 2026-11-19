@@ -63,6 +63,24 @@ pub enum Token {
     Eof,
 }
 
+/// Character-based source location. Offsets and columns count Unicode scalar values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceSpan {
+    pub start: usize,
+    pub end: usize,
+    pub line: usize,
+    pub column: usize,
+    pub end_line: usize,
+    pub end_column: usize,
+}
+
+/// A token paired with its exact source range.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpannedToken {
+    pub token: Token,
+    pub span: SourceSpan,
+}
+
 pub struct Lexer {
     position: usize,
     chars: Vec<char>,
@@ -78,9 +96,14 @@ impl Lexer {
     }
 
     pub fn tokenize(&mut self) -> Result<Vec<Token>, String> {
+        self.tokenize_spanned().map(|items| items.into_iter().map(|item| item.token).collect())
+    }
+
+    pub fn tokenize_spanned(&mut self) -> Result<Vec<SpannedToken>, String> {
         let mut tokens = Vec::new();
 
         while self.position < self.chars.len() {
+            let token_start = self.position;
             let c = self.chars[self.position];
 
             if c.is_whitespace() {
@@ -90,15 +113,15 @@ impl Lexer {
 
             match c {
                 '+' => {
-                    tokens.push(Token::Plus);
+                    tokens.push(spanned(Token::Plus, token_start, self.position, &self.chars));
                     self.position += 1;
                 }
                 '-' => {
-                    tokens.push(Token::Minus);
+                    tokens.push(spanned(Token::Minus, token_start, self.position, &self.chars));
                     self.position += 1;
                 }
                 '*' => {
-                    tokens.push(Token::Star);
+                    tokens.push(spanned(Token::Star, token_start, self.position, &self.chars));
                     self.position += 1;
                 }
                 '/' => {
@@ -109,20 +132,20 @@ impl Lexer {
                             self.position += 1;
                         }
                     } else {
-                        tokens.push(Token::Slash);
+                        tokens.push(spanned(Token::Slash, token_start, self.position, &self.chars));
                         self.position += 1;
                     }
                 }
                 ':' if self.position + 1 < self.chars.len() && self.chars[self.position + 1] == '=' => {
-                    tokens.push(Token::DeclareAssign);
+                    tokens.push(spanned(Token::DeclareAssign, token_start, self.position, &self.chars));
                     self.position += 2;
                 }
                 '=' => {
-                    tokens.push(Token::Equals);
+                    tokens.push(spanned(Token::Equals, token_start, self.position, &self.chars));
                     self.position += 1;
                 }
                 ';' => {
-                    tokens.push(Token::Semicolon);
+                    tokens.push(spanned(Token::Semicolon, token_start, self.position, &self.chars));
                     self.position += 1;
                 }
                 'a'..='z' | 'A'..='Z' | '_' => {
@@ -139,74 +162,74 @@ impl Lexer {
                         "false" => Token::False,
                         _ => Token::Identifier(ident),
                     };
-                    tokens.push(token);
+                    tokens.push(spanned(token, token_start, self.position, &self.chars));
                 }
                 '0'..='9' => {
                     let number = self.read_number()?;
-                    tokens.push(Token::Number(Number(number)));
+                    tokens.push(spanned(Token::Number(Number(number)), token_start, self.position, &self.chars));
                 }
                 '"' => {
                     let string = self.read_string()?;
-                    tokens.push(Token::String(string));
+                    tokens.push(spanned(Token::String(string), token_start, self.position, &self.chars));
                 }
                 '(' => {
-                    tokens.push(Token::ParenOpen);
+                    tokens.push(spanned(Token::ParenOpen, token_start, self.position, &self.chars));
                     self.position += 1;
                 }
                 ')' => {
-                    tokens.push(Token::ParenClose);
+                    tokens.push(spanned(Token::ParenClose, token_start, self.position, &self.chars));
                     self.position += 1;
                 }
                 '{' => {
-                    tokens.push(Token::BraceOpen);
+                    tokens.push(spanned(Token::BraceOpen, token_start, self.position, &self.chars));
                     self.position += 1;
                 }
                 '}' => {
-                    tokens.push(Token::BraceClose);
+                    tokens.push(spanned(Token::BraceClose, token_start, self.position, &self.chars));
                     self.position += 1;
                 }
                 '[' => {
-                    tokens.push(Token::BracketOpen);
+                    tokens.push(spanned(Token::BracketOpen, token_start, self.position, &self.chars));
                     self.position += 1;
                 }
                 ']' => {
-                    tokens.push(Token::BracketClose);
+                    tokens.push(spanned(Token::BracketClose, token_start, self.position, &self.chars));
                     self.position += 1;
                 }
                 '<' => {
-                    tokens.push(Token::Less);
+                    tokens.push(spanned(Token::Less, token_start, self.position, &self.chars));
                     self.position += 1;
                 }
                 '>' => {
-                    tokens.push(Token::Greater);
+                    tokens.push(spanned(Token::Greater, token_start, self.position, &self.chars));
                     self.position += 1;
                 }
                 '~' => {
-                    tokens.push(Token::Tilde);
+                    tokens.push(spanned(Token::Tilde, token_start, self.position, &self.chars));
                     self.position += 1;
                 }
                 '^' => {
-                    tokens.push(Token::Caret);
+                    tokens.push(spanned(Token::Caret, token_start, self.position, &self.chars));
                     self.position += 1;
                 }
                 '?' => {
-                    tokens.push(Token::Question);
+                    tokens.push(spanned(Token::Question, token_start, self.position, &self.chars));
                     self.position += 1;
                 }
                 ':' => {
-                    tokens.push(Token::Colon);
+                    tokens.push(spanned(Token::Colon, token_start, self.position, &self.chars));
                     self.position += 1;
                 }
                 '|' => {
-                    tokens.push(Token::Pipe);
+                    tokens.push(spanned(Token::Pipe, token_start, self.position, &self.chars));
                     self.position += 1;
                 }
                 ',' => {
-                    tokens.push(Token::Comma);
+                    tokens.push(spanned(Token::Comma, token_start, self.position, &self.chars));
                     self.position += 1;
                 }
                 '@' => {
-                    tokens.push(Token::At);
+                    tokens.push(spanned(Token::At, token_start, self.position, &self.chars));
                     self.position += 1;
                 }
                 _ => {
@@ -215,9 +238,27 @@ impl Lexer {
             }
         }
 
-        tokens.push(Token::Eof);
+        tokens.push(spanned(Token::Eof, token_start, self.position, &self.chars));
         Ok(tokens)
     }
+
+
+fn spanned(token: Token, start: usize, end: usize, chars: &[char]) -> SpannedToken {
+    let mut line = 1;
+    let mut column = 1;
+    for ch in &chars[..start] {
+        if *ch == '\n' { line += 1; column = 1; } else { column += 1; }
+    }
+    let start_line = line;
+    let start_column = column;
+    for ch in &chars[start..end] {
+        if *ch == '\n' { line += 1; column = 1; } else { column += 1; }
+    }
+    SpannedToken {
+        token,
+        span: SourceSpan { start, end, line: start_line, column: start_column, end_line: line, end_column: column },
+    }
+}
 
     fn read_identifier(&mut self) -> String {
         let start = self.position;
@@ -425,6 +466,19 @@ mod tests {
         let tokens = lexer.tokenize().unwrap();
         assert_eq!(tokens[0], Token::String("ñ".to_string()));
         assert_eq!(tokens[1], Token::Identifier("name".to_string()));
+    }
+
+    #[test]
+    fn spanned_tokens_report_unicode_aware_line_and_column() {
+        let mut lexer = Lexer::new("\"ñ\"\\nvalue := 2".to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        assert_eq!(tokens[0].span.start, 0);
+        assert_eq!(tokens[0].span.end, 3);
+        assert_eq!(tokens[1].span.line, 2);
+        assert_eq!(tokens[1].span.column, 1);
+        assert_eq!(tokens[1].span.start, 4);
+        assert_eq!(tokens[2].span.column, 7);
+        assert_eq!(tokens[2].span.end_column, 9);
     }
 
 }

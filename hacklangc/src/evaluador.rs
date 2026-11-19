@@ -296,7 +296,7 @@ mod tests {
         let mut lexer = Lexer::new(source.to_string());
         let tokens = lexer.tokenize();
         let mut parser = Parser::new(tokens);
-        let program = parser.parse_program();
+        let program = parser.parse_program().unwrap();
         let mut evaluator = Evaluator::new();
         evaluator.evaluate(&program)?;
         Ok(evaluator)
@@ -307,7 +307,7 @@ mod tests {
         let mut lexer = Lexer::new(format!("let __x = {};", source));
         let tokens = lexer.tokenize();
         let mut parser = Parser::new(tokens);
-        let program = parser.parse_program();
+        let program = parser.parse_program().unwrap();
         let mut evaluator = Evaluator::new();
         evaluator.evaluate(&program)?;
         evaluator.get_var("__x").cloned().ok_or("__x not set".to_string())

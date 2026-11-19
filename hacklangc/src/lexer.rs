@@ -37,6 +37,8 @@ pub enum Token {
     Let,
     Print,
     Return,
+    Break,
+    Continue,
     While,
     If,
     
@@ -120,6 +122,8 @@ impl Lexer {
                         "let" => Token::Let,
                         "print" => Token::Print,
                         "return" => Token::Return,
+                        "break" => Token::Break,
+                        "continue" => Token::Continue,
                         "while" => Token::While,
                         "if" => Token::If,
                         _ => Token::Identifier(ident),

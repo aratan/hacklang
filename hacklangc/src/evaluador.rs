@@ -294,7 +294,7 @@ mod tests {
     /// Panics if parsing fails (parse_program panics on errors).
     fn eval_program(source: &str) -> Result<Evaluator, String> {
         let mut lexer = Lexer::new(source.to_string());
-        let tokens = lexer.tokenize();
+        let tokens = lexer.tokenize().unwrap();
         let mut parser = Parser::new(tokens);
         let program = parser.parse_program().unwrap();
         let mut evaluator = Evaluator::new();
@@ -305,7 +305,7 @@ mod tests {
     fn eval_expr(source: &str) -> Result<Value, String> {
         // Wrap the expression in a let and inspect the variable
         let mut lexer = Lexer::new(format!("let __x = {};", source));
-        let tokens = lexer.tokenize();
+        let tokens = lexer.tokenize().unwrap();
         let mut parser = Parser::new(tokens);
         let program = parser.parse_program().unwrap();
         let mut evaluator = Evaluator::new();

@@ -53,6 +53,9 @@ classDiagram
         Assign(AssignStatement)
         IndexAssign(IndexAssignStatement)
         Print(PrintStatement)
+        Return(Expression)
+        Break
+        Continue
         Block(Vec~Statement~)
         While(WhileStatement)
         If(IfStatement)
@@ -65,6 +68,7 @@ classDiagram
         Infix
         Ternary
         Lambda
+        Block(Vec~Statement~)
         FunctionCall
         Array(Vec~Expression~)
         Map(Vec~(Expression, Expression)~)
@@ -205,13 +209,16 @@ El parser de sentencias usa **Recursive Descent**: una función por cada constru
 El evaluador actúa como un **Visitor** pero sin el patrón clásico de doble dispatch — Rust lo resuelve con `match` sobre el enum del AST:
 
 ```rust
-fn run_stmt(&mut self, stmt: &Statement) -> Result<(), String> {
+fn run_stmt(&mut self, stmt: &Statement) -> Result<Flow, String> {
     match stmt {
-        Statement::Let(l)    => self.eval_let(l),
-        Statement::Print(p)  => self.eval_print(p),
-        Statement::Block(ss) => { for s in ss { self.run_stmt(s)?; } Ok(()) }
-        Statement::While(w)  => { /* loop hasta que condition sea false */ }
-        Statement::If(i)     => { /* eval condition → branch */ }
+        Statement::Let(l)       => self.eval_let(l).map(|_| Flow::Continue),
+        Statement::Return(expr) => self.eval_expression(expr).map(Flow::Return),
+        Statement::Break         => Ok(Flow::Break),
+        Statement::Continue      => Ok(Flow::LoopContinue),
+        Statement::Block(ss)     => { /* propaga Return, Break y Continue */ }
+        Statement::While(w)      => { /* consume Break/Continue y propaga Return */ }
+        Statement::If(i)         => { /* evalúa condición y propaga el flujo */ }
+        // Assign, IndexAssign y Print también producen Flow::Continue.
     }
 }
 ```
@@ -224,7 +231,8 @@ El runtime mantiene un arena de entornos (`Vec<Environment>`). Cada entorno cont
 - La asignación `x = ...` actualiza la vinculación existente más cercana.
 - Los bloques, ramas, bucles y llamadas crean nuevos entornos.
 - Una lambda captura el identificador estable del entorno donde se define. No clona todas las variables: ve también las modificaciones posteriores y puede ser recursiva.
-- Los entornos se conservan en el arena hasta que termina el `Evaluator`. Es una estrategia sencilla y segura para closures, pero todavía no recupera frames individuales que ya no sean alcanzables.
+- Los bloques, ramas, bucles y llamadas crean entornos con padre léxico.
+- El recolector mark-and-sweep recupera frames no alcanzables y reutiliza sus IDs. Los valores contenidos siguen bajo gestión de memoria de Rust.
 
 ## Principios Aplicados
 
@@ -274,14 +282,16 @@ El lexer y el parser devuelven `Result`: los caracteres desconocidos, las cadena
 
 ## Funcionalidad del runtime (rama en desarrollo)
 
-- Las lambdas se evalúan como funciones y capturan una copia del entorno donde se definen.
-- Las llamadas comprueban el número de argumentos y ejecutan el cuerpo en un entorno local temporal.
+- Las lambdas se evalúan como funciones y capturan el ID estable del entorno léxico donde se definen.
+- Las llamadas comprueban el número de argumentos y ejecutan el cuerpo en un entorno local cuyo padre es el entorno capturado.
+- Los cuerpos de función admiten varias sentencias y `return` explícito.
+- `return` se propaga a través de bloques, ramas y bucles; `break` y `continue` controlan el bucle más cercano.
 - Los arrays admiten literales, lectura por índice y actualización de posiciones existentes.
 - Los mapas admiten claves y valores evaluados, lectura por clave y alta o actualización de entradas.
 - La indexación de cadenas devuelve el carácter solicitado.
 - Los errores al evaluar condiciones de `while` se propagan; ya no se convierten silenciosamente en una condición falsa.
 
-Limitaciones actuales: la asignación por índice solo admite como destino una variable identificada directamente (no indexación anidada); los mapas se representan como pares ordenados y las funciones todavía no admiten cuerpos con varias sentencias.
+Limitaciones actuales: la asignación por índice solo admite como destino una variable identificada directamente (no indexación anidada); los mapas se representan como pares ordenados. El lenguaje todavía no tiene un sistema de tipos estáticos: los tipos se comprueban durante la evaluación y las condiciones usan la conversión dinámica de valores a booleano.
 
 
 ## Modelo de memoria y ejecución
@@ -289,7 +299,7 @@ Limitaciones actuales: la asignación por índice solo admite como destino una v
 - **Stack (pila):** la evaluación de expresiones y las llamadas a funciones usan recursión de Rust; por tanto, la pila de llamadas real es la pila nativa del proceso. Los bucles del lenguaje se ejecutan iterativamente. HackLang todavía no tiene una VM ni una pila de operandos propia.
 - **Heap (montículo):** el AST usa `Box` para nodos recursivos y `Vec` para listas; cadenas, mapas y tablas de variables usan estructuras propiedad de Rust. El arena de entornos también vive en el heap. Un recolector mark-and-sweep recupera frames no alcanzables y reutiliza sus posiciones; no es un GC general de objetos, porque los valores los gestiona Rust.
 - **Closures:** guardan un ID de entorno, no una copia completa del `HashMap`. La cadena de entornos proporciona el alcance léxico y permite recursividad.
-- **Liberación:** Rust libera automáticamente los valores cuando se destruye el evaluador. El arena recolecta frames inalcanzables después de cada sentencia. No hay un garbage collector general para todos los objetos: Rust gestiona la vida de cadenas, arrays, mapas y AST.
+- **Liberación:** Rust libera automáticamente los valores cuando se destruye el evaluador. El arena recolecta frames inalcanzables después de cada sentencia, incluyendo el seguimiento de closures contenidas en valores y de closures devueltas temporalmente. No hay un garbage collector general para todos los objetos: Rust gestiona la vida de cadenas, arrays, mapas y AST.
 
 
 ### Errores léxicos y sintácticos

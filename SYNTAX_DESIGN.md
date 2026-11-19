@@ -81,12 +81,20 @@ La tabla define un objetivo de experimento, no una promesa de compatibilidad ni 
 5. Crear un corpus de tareas equivalentes en HackLang, Python y Lua. Medir tokens con el mismo tokenizador y modelos, y Pass@1 con criterios funcionales idénticos.
 6. Promover la sintaxis compacta a predeterminada solo si reduce el coste total y no empeora de forma significativa la tasa de éxito.
 
-## Pendientes detectados en la revisión
+## Estado actualizado del proyecto
 
-- El comprobador actual infiere tipos básicos, pero los bloques de función devuelven `unknown`; no infiere de forma completa los retornos explícitos.
-- Los tipos de arrays/mapas no conservan tipos de elemento/clave/valor.
-- No hay diagnósticos JSON ni posiciones de origen en el AST.
-- No existe un formateador ni un benchmark de tokens/pass@1.
-- El lexer/parser actual tiene construcciones heredadas que conviene mantener mientras se introduce la sintaxis nueva.
+Ya se han cerrado dos limitaciones iniciales del comprobador:
 
-Estos puntos son trabajo pendiente, no funcionalidades ya terminadas.
+- Los retornos explícitos de funciones y lambdas se incorporan a la inferencia; ramas con tipos de retorno incompatibles generan diagnóstico.
+- Los arrays conservan el tipo inferido de sus elementos y los mapas conservan los tipos de clave y valor. La lectura por índice y las asignaciones por índice comprueban esos tipos.
+- Los elementos heterogéneos de arrays y las claves o valores incompatibles se notifican sin bloquear la ejecución.
+
+Pendiente:
+
+- Inferencia de tipos de parámetros a partir del cuerpo y de los argumentos de llamada.
+- Diagnósticos JSON con códigos estables y rangos de fuente; el AST todavía no conserva spans.
+- Formateador AST → sintaxis canónica compacta.
+- Modo de parser compacto versionado, con compatibilidad explícita para la sintaxis actual.
+- Benchmark reproducible de tokens, compilación y Pass@1 frente a Python y Lua.
+
+Estos puntos son trabajo pendiente, no funcionalidades ya terminadas. La sintaxis compacta sigue siendo una propuesta documentada: todavía no se ha activado ni sustituido la sintaxis actual.

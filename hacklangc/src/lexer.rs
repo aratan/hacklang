@@ -41,6 +41,8 @@ pub enum Token {
     Continue,
     While,
     If,
+    True,
+    False,
     
     // Operadores de comparación
     Less,
@@ -126,6 +128,8 @@ impl Lexer {
                         "continue" => Token::Continue,
                         "while" => Token::While,
                         "if" => Token::If,
+                        "true" => Token::True,
+                        "false" => Token::False,
                         _ => Token::Identifier(ident),
                     };
                     tokens.push(token);
@@ -263,13 +267,15 @@ mod tests {
 
     #[test]
     fn test_keywords() {
-        let mut lexer = Lexer::new("let print while if".to_string());
+        let mut lexer = Lexer::new("let print while if true false".to_string());
         let tokens = lexer.tokenize().unwrap();
         assert_eq!(tokens, vec![
             Token::Let,
             Token::Print,
             Token::While,
             Token::If,
+            Token::True,
+            Token::False,
             Token::Eof,
         ]);
     }

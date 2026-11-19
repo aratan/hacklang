@@ -470,7 +470,7 @@ mod tests {
 
     #[test]
     fn spanned_tokens_report_unicode_aware_line_and_column() {
-        let mut lexer = Lexer::new("\"ñ\"\\nvalue := 2".to_string());
+        let mut lexer = Lexer::new("\"ñ\"\nvalue := 2".to_string());
         let tokens = lexer.tokenize_spanned().unwrap();
         assert_eq!(tokens[0].span.start, 0);
         assert_eq!(tokens[0].span.end, 3);

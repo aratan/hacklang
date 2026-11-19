@@ -23,6 +23,12 @@ impl Value {
     }
 }
 
+
+#[derive(Debug, Clone, PartialEq)]
+enum Flow {
+    Continue,
+    Return(Value),
+}
 #[derive(Debug, Clone)]
 struct Environment {
     parent: Option<usize>,
@@ -144,22 +150,31 @@ impl Evaluator {
 
     pub fn evaluate(&mut self, program: &Program) -> Result<(), String> {
         for stmt in &program.statements {
-            self.run_stmt(stmt)?;
+            match self.run_stmt(stmt)? {
+                Flow::Continue => {}
+                Flow::Return(_) => return Err("return fuera de una función".to_string()),
+            }
         }
         Ok(())
     }
 
-    fn run_stmt(&mut self, stmt: &Statement) -> Result<(), String> {
+    fn run_stmt(&mut self, stmt: &Statement) -> Result<Flow, String> {
         let result = match stmt {
-            Statement::Let(l) => self.eval_let(l),
-            Statement::Assign(a) => self.eval_assign(a),
-            Statement::IndexAssign(a) => self.eval_index_assign(a),
-            Statement::Print(p) => self.eval_print(p),
+            Statement::Let(l) => self.eval_let(l).map(|_| Flow::Continue),
+            Statement::Assign(a) => self.eval_assign(a).map(|_| Flow::Continue),
+            Statement::IndexAssign(a) => self.eval_index_assign(a).map(|_| Flow::Continue),
+            Statement::Print(p) => self.eval_print(p).map(|_| Flow::Continue),
+            Statement::Return(value) => self.eval_expression(value).map(Flow::Return),
             Statement::Block(statements) => {
                 let parent = self.current_env;
                 self.with_environment(parent, |this| {
-                    for statement in statements { this.run_stmt(statement)?; }
-                    Ok(())
+                    for statement in statements {
+                        match this.run_stmt(statement)? {
+                            Flow::Continue => {}
+                            flow @ Flow::Return(_) => return Ok(flow),
+                        }
+                    }
+                    Ok(Flow::Continue)
                 })
             }
             Statement::While(ws) => {
@@ -167,21 +182,34 @@ impl Evaluator {
                 self.with_environment(parent, |this| {
                     loop {
                         if !this.condition_true(&ws.condition)? { break; }
-                        for statement in &ws.body { this.run_stmt(statement)?; }
+                        for statement in &ws.body {
+                            match this.run_stmt(statement)? {
+                                Flow::Continue => {}
+                                flow @ Flow::Return(_) => return Ok(flow),
+                            }
+                        }
                     }
-                    Ok(())
+                    Ok(Flow::Continue)
                 })
             }
             Statement::If(ifst) => {
                 let condition = self.eval_expression(&ifst.condition)?;
                 let parent = self.current_env;
                 self.with_environment(parent, |this| {
-                    if condition.as_bool() {
-                        for statement in &ifst.true_body { this.run_stmt(statement)?; }
-                    } else if let Some(false_body) = &ifst.false_body {
-                        for statement in false_body { this.run_stmt(statement)?; }
+                    let body = if condition.as_bool() {
+                        Some(&ifst.true_body)
+                    } else {
+                        ifst.false_body.as_ref()
+                    };
+                    if let Some(statements) = body {
+                        for statement in statements {
+                            match this.run_stmt(statement)? {
+                                Flow::Continue => {}
+                                flow @ Flow::Return(_) => return Ok(flow),
+                            }
+                        }
                     }
-                    Ok(())
+                    Ok(Flow::Continue)
                 })
             }
         };
@@ -273,6 +301,15 @@ impl Evaluator {
             Expression::Lambda { params, body } => Ok(Value::Function {
                 params: params.clone(), body: body.clone(), captured_env: self.current_env,
             }),
+            Expression::Block(statements) => {
+                for statement in statements {
+                    match self.run_stmt(statement)? {
+                        Flow::Continue => {}
+                        Flow::Return(value) => return Ok(value),
+                    }
+                }
+                Ok(Value::Number(0.0))
+            }
             Expression::FunctionCall { func, args } => {
                 let function = self.eval_expression(func)?;
                 let (params, body, captured_env) = match function {
@@ -399,6 +436,25 @@ mod tests {
     }
 
     // -- First-class function call tests --
+
+    #[test]
+    fn test_function_block_with_return() {
+        let ev = eval_program("let calculate = |x| (let doubled = x * 2; return doubled + 1;); let result = calculate(4);").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(9.0)));
+    }
+
+    #[test]
+    fn test_return_propagates_through_if() {
+        let ev = eval_program("let choose = |x| (if (x > 0) (return 1;); return 2;); let positive = choose(5); let negative = choose(0);").unwrap();
+        assert_eq!(ev.get_var("positive"), Some(&Value::Number(1.0)));
+        assert_eq!(ev.get_var("negative"), Some(&Value::Number(2.0)));
+    }
+
+    #[test]
+    fn test_return_outside_function_is_error() {
+        let result = eval_program("return 42;");
+        assert!(result.unwrap_err().contains("return fuera de una función"));
+    }
 
     #[test]
     fn test_eval_call_on_parenthesized_function() {

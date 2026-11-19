@@ -694,8 +694,11 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error de Análisis Sintáctico")]
-    fn test_parse_unexpected_token() {
-        parse("let = 42;");
+    fn test_parse_unexpected_token_returns_error() {
+        let mut lexer = crate::lexer::Lexer::new("let = 42;".to_string());
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(tokens);
+        let error = parser.parse_program().unwrap_err();
+        assert!(error.contains("nombre de variable"));
     }
 }

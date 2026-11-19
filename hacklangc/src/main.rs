@@ -12,13 +12,15 @@ mod type_checker; // Análisis estático no bloqueante.
 
 fn main() {
     // 1. Leer el código fuente del archivo pasado como argumento.
-    let args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        // Usamos eprintln! para imprimir errores al "standard error".
-        eprintln!("Uso: hacklangc <nombre_de_archivo.hl>");
-        return;
-    }
-    let filename = &args[1];
+    let args: Vec<String> = env::args().skip(1).collect();
+    let compact_mode = args.iter().any(|arg| arg == "--compact");
+    let filename = match args.iter().find(|arg| arg.as_str() != "--compact") {
+        Some(filename) => filename,
+        None => {
+            eprintln!("Uso: hacklangc [--compact] <nombre_de_archivo.hl>");
+            return;
+        }
+    };
     let source_code = match fs::read_to_string(filename) {
         Ok(code) => code,
         Err(e) => {
@@ -40,7 +42,11 @@ fn main() {
 
     // --- FASE 2: PARSER ---
     // Convierte la secuencia de Tokens en un Árbol de Sintaxis Abstracta (AST).
-    let mut parser = parser::Parser::new(tokens);
+    let mut parser = if compact_mode {
+        parser::Parser::new_compact(tokens)
+    } else {
+        parser::Parser::new(tokens)
+    };
     let ast = match parser.parse_program() {
         Ok(program) => program,
         Err(error) => {

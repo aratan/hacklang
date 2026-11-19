@@ -16,6 +16,7 @@ pub struct Program {
 pub enum Statement {
     Let(LetStatement),
     Assign(AssignStatement),
+    IndexAssign(IndexAssignStatement),
     Print(PrintStatement),
     Block(Vec<Statement>), // Bloque { stmt; stmt; ... }
     While(WhileStatement),
@@ -84,6 +85,13 @@ pub struct LetStatement {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AssignStatement {
     pub name: String,
+    pub value: Expression,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IndexAssignStatement {
+    pub name: String,
+    pub index: Expression,
     pub value: Expression,
 }
 

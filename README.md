@@ -127,6 +127,34 @@ cd hacklangc
 cargo run ../test.hl
 ```
 
+### Sintaxis compacta experimental
+
+La sintaxis compacta se activa explícitamente con `--compact`; el modo legacy sigue siendo el predeterminado y conserva su gramática.
+
+```hacklang
+n:=10
+sum:=0
+while n>0{
+  sum=sum+n
+  n=n-1
+}
+print sum
+
+fact:=|n|{
+  if n<2{return 1}else{return n*fact(n-1)}
+}
+print fact(5)
+```
+
+Ejecutar un archivo compacto:
+
+```bash
+cd hacklangc
+cargo run -- --compact ../compact.hl
+```
+
+En esta primera versión se compactan las declaraciones (`:=`), los bloques (`{}`), las condiciones de `if/while`, los cuerpos de lambdas y los mapas (`@{}`). Se mantienen `print`, `return`, `break` y `continue` como palabras clave para evitar colisiones con operadores existentes. No se exige punto y coma entre sentencias cuando el siguiente token permite determinar el final de la expresión.
+
 ## Metodología
 
 ### Pipeline de ejecución
@@ -282,7 +310,7 @@ El lexer y el parser devuelven `Result`: los caracteres desconocidos, las cadena
 | **Control de flujo** | ✅ `return`, `break` y `continue` |
 | **Memoria** | ✅ Mark-and-sweep de frames de entorno; los demás valores los gestiona Rust |
 | **Análisis de tipos** | ✅ Primera pasada no bloqueante: tipos primitivos, retornos explícitos, arrays/mapas con tipos de elemento/clave/valor, indexación, asignaciones, operadores y aridad de llamadas |
-| **Tests** | ✅ CI: 98 pruebas aprobadas, 0 fallos (run #110) |
+| **Tests** | ✅ CI: 102 pruebas aprobadas, 0 fallos (run #115) |
 
 
 ## Funcionalidad del runtime

@@ -373,6 +373,24 @@ mod tests {
     }
 
     #[test]
+    fn infers_array_element_type_through_indexing() {
+        let diagnostics = check_source("let items = [1, 2, 3]; let value = items[0]; value = false;");
+        assert!(diagnostics.iter().any(|d| d.message.contains("asignación") && d.message.contains("number")));
+    }
+
+    #[test]
+    fn infers_map_key_and_value_types_through_indexing() {
+        let diagnostics = check_source("let data = @(\"count\": 1); let value = data[\"count\"]; value = false;");
+        assert!(diagnostics.iter().any(|d| d.message.contains("asignación") && d.message.contains("number")));
+    }
+
+    #[test]
+    fn detects_incompatible_array_element_types() {
+        let diagnostics = check_source("let items = [1, false];");
+        assert!(diagnostics.iter().any(|d| d.message.contains("elementos de array") && d.message.contains("incompatibles")));
+    }
+
+    #[test]
     fn accepts_legacy_string_number_concatenation() {
         assert!(check_source("let result = \"count=\" + 3;").is_empty());
     }

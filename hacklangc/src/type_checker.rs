@@ -444,4 +444,19 @@ mod tests {
     fn accepts_legacy_string_number_concatenation() {
         assert!(check_source("let result = \"count=\" + 3;").is_empty());
     }
+
+    #[test]
+    fn diagnostics_have_stable_machine_readable_metadata() {
+        let diagnostics = check_source("let result = true + 2;");
+        let diagnostic = diagnostics.first().unwrap();
+        assert_eq!(diagnostic.code, "HL-TYPE-001");
+        assert_eq!(diagnostic.severity, "warning");
+        assert!(diagnostic.to_json().contains("\"range\":null"));
+    }
+
+    #[test]
+    fn diagnostic_json_escapes_quotes_slashes_and_control_characters() {
+        assert_eq!(json_escape("quote: \" slash: \\\\ newline:\n tab:\t"), "quote: \\\\\\\" slash: \\\\\\\\ newline:\\\\n tab:\\\\t");
+    }
+
 }

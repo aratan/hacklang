@@ -3,7 +3,7 @@
 // Importamos las definiciones del AST y los Tokens del Lexer.
 // Necesitamos `Number` para poder extraer el f64 de adentro.
 use crate::ast::*;
-use crate::lexer::{Number, Token};
+use crate::lexer::{Number, SourceSpan, SpannedToken, Token};
 use std::collections::HashMap;
 
 // Definimos la "fuerza" de cada operador para manejar la precedencia.
@@ -25,6 +25,7 @@ pub struct Parser {
     compact: bool,
     expression_depth: usize,
     statement_depth: usize,
+    spans: Option<Vec<SourceSpan>>,
 }
 
 impl Parser {
@@ -34,6 +35,22 @@ impl Parser {
 
     pub fn new_compact(tokens: Vec<Token>) -> Self {
         Self::with_mode(tokens, true)
+    }
+
+    pub fn new_spanned(tokens: Vec<SpannedToken>) -> Self {
+        Self::with_spanned_mode(tokens, false)
+    }
+
+    pub fn new_compact_spanned(tokens: Vec<SpannedToken>) -> Self {
+        Self::with_spanned_mode(tokens, true)
+    }
+
+    fn with_spanned_mode(tokens: Vec<SpannedToken>, compact: bool) -> Self {
+        let (plain, spans): (Vec<Token>, Vec<SourceSpan>) = tokens.into_iter()
+            .map(|item| (item.token, item.span)).unzip();
+        let mut parser = Self::with_mode(plain, compact);
+        parser.spans = Some(spans);
+        parser
     }
 
     fn with_mode(tokens: Vec<Token>, compact: bool) -> Self {
@@ -56,11 +73,25 @@ impl Parser {
             compact,
             expression_depth: 0,
             statement_depth: 0,
+            spans: None,
         }
     }
 
     // El método principal que construye el árbol completo.
     pub fn parse_program(&mut self) -> Result<Program, String> {
+        match self.parse_program_inner() {
+            Ok(program) => Ok(program),
+            Err(error) => {
+                if let Some(span) = self.spans.as_ref().and_then(|items| items.get(self.position)) {
+                    Err(format!("{} (línea {}, columna {})", error, span.line, span.column))
+                } else {
+                    Err(error)
+                }
+            }
+        }
+    }
+
+    fn parse_program_inner(&mut self) -> Result<Program, String> {
         let mut statements = Vec::new();
         while !self.is_at_end() {
             if *self.current_token() == Token::Semicolon {

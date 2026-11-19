@@ -10,7 +10,7 @@ pub enum Value {
     String(String),
     Array(Vec<Value>),
     Map(Vec<(Value, Value)>),
-    Function { params: Vec<String>, body: Box<Expression>, captured: HashMap<String, Value> },
+    Function { params: Vec<String>, body: Box<Expression>, captured_env: usize },
 }
 
 impl Value {
@@ -23,13 +23,70 @@ impl Value {
     }
 }
 
+#[derive(Debug, Clone)]
+struct Environment {
+    parent: Option<usize>,
+    values: HashMap<String, Value>,
+}
+
 #[derive(Debug)]
 pub struct Evaluator {
-    variables: HashMap<String, Value>,
+    // Arena de entornos: las closures conservan IDs estables, no copias de variables.
+    // Los frames permanecen vivos durante la vida del Evaluator.
+    environments: Vec<Environment>,
+    current_env: usize,
 }
 
 impl Evaluator {
-    pub fn new() -> Self { Evaluator { variables: HashMap::new() } }
+    pub fn new() -> Self {
+        Evaluator {
+            environments: vec![Environment { parent: None, values: HashMap::new() }],
+            current_env: 0,
+        }
+    }
+
+    fn push_environment(&mut self, parent: usize) -> usize {
+        let id = self.environments.len();
+        self.environments.push(Environment { parent: Some(parent), values: HashMap::new() });
+        id
+    }
+
+    fn with_environment<R>(
+        &mut self,
+        parent: usize,
+        operation: impl FnOnce(&mut Self) -> Result<R, String>,
+    ) -> Result<R, String> {
+        let previous = self.current_env;
+        self.current_env = self.push_environment(parent);
+        let result = operation(self);
+        self.current_env = previous;
+        result
+    }
+
+    fn lookup(&self, name: &str) -> Option<&Value> {
+        let mut environment = Some(self.current_env);
+        while let Some(id) = environment {
+            let frame = &self.environments[id];
+            if let Some(value) = frame.values.get(name) {
+                return Some(value);
+            }
+            environment = frame.parent;
+        }
+        None
+    }
+
+    fn assign_existing(&mut self, name: &str, value: Value) -> Result<(), String> {
+        let mut environment = Some(self.current_env);
+        while let Some(id) = environment {
+            let parent = self.environments[id].parent;
+            if self.environments[id].values.contains_key(name) {
+                self.environments[id].values.insert(name.to_string(), value);
+                return Ok(());
+            }
+            environment = parent;
+        }
+        Err(format!("Variable '{}' no definida para asignación", name))
+    }
 
     pub fn evaluate(&mut self, program: &Program) -> Result<(), String> {
         for stmt in &program.statements {
@@ -41,26 +98,36 @@ impl Evaluator {
     fn run_stmt(&mut self, stmt: &Statement) -> Result<(), String> {
         match stmt {
             Statement::Let(l) => self.eval_let(l),
+            Statement::Assign(a) => self.eval_assign(a),
             Statement::Print(p) => self.eval_print(p),
-            Statement::Block(ss) => {
-                for s in ss { self.run_stmt(s)?; }
-                Ok(())
+            Statement::Block(statements) => {
+                let parent = self.current_env;
+                self.with_environment(parent, |this| {
+                    for statement in statements { this.run_stmt(statement)?; }
+                    Ok(())
+                })
             }
             Statement::While(ws) => {
-                loop {
-                    if !self.condition_true(&ws.condition)? { break; }
-                    for s in &ws.body { self.run_stmt(s)?; }
-                }
-                Ok(())
+                let parent = self.current_env;
+                self.with_environment(parent, |this| {
+                    loop {
+                        if !this.condition_true(&ws.condition)? { break; }
+                        for statement in &ws.body { this.run_stmt(statement)?; }
+                    }
+                    Ok(())
+                })
             }
             Statement::If(ifst) => {
-                let cond_val = self.eval_expression(&ifst.condition)?;
-                if cond_val.as_bool() {
-                    for s in &ifst.true_body { self.run_stmt(s)?; }
-                } else if let Some(ref fb) = ifst.false_body {
-                    for s in fb { self.run_stmt(s)?; }
-                }
-                Ok(())
+                let condition = self.eval_expression(&ifst.condition)?;
+                let parent = self.current_env;
+                self.with_environment(parent, |this| {
+                    if condition.as_bool() {
+                        for statement in &ifst.true_body { this.run_stmt(statement)?; }
+                    } else if let Some(false_body) = &ifst.false_body {
+                        for statement in false_body { this.run_stmt(statement)?; }
+                    }
+                    Ok(())
+                })
             }
         }
     }
@@ -70,9 +137,14 @@ impl Evaluator {
     }
 
     fn eval_let(&mut self, stmt: &LetStatement) -> Result<(), String> {
-        let val = self.eval_expression(&stmt.value)?;
-        self.variables.insert(stmt.name.clone(), val);
+        let value = self.eval_expression(&stmt.value)?;
+        self.environments[self.current_env].values.insert(stmt.name.clone(), value);
         Ok(())
+    }
+
+    fn eval_assign(&mut self, stmt: &AssignStatement) -> Result<(), String> {
+        let value = self.eval_expression(&stmt.value)?;
+        self.assign_existing(&stmt.name, value)
     }
 
     fn eval_print(&mut self, stmt: &PrintStatement) -> Result<(), String> {
@@ -89,7 +161,7 @@ impl Evaluator {
 
     /// Public accessor for testing — returns a variable's value if it exists.
     pub fn get_var(&self, name: &str) -> Option<&Value> {
-        self.variables.get(name)
+        self.lookup(name)
     }
 
     fn eval_expression(&mut self, expr: &Expression) -> Result<Value, String> {
@@ -97,7 +169,7 @@ impl Evaluator {
             Expression::NumberLiteral(num) => Ok(Value::Number(*num)),
             Expression::StringLiteral(s) => Ok(Value::String(s.clone())),
             Expression::Identifier(name) => {
-                self.variables.get(name).cloned().ok_or_else(
+                self.lookup(name).cloned().ok_or_else(
                     || format!("Variable '{}' no definida", name))
             }
             Expression::Infix { left, operator, right } => {
@@ -114,12 +186,12 @@ impl Evaluator {
                 }
             }
             Expression::Lambda { params, body } => Ok(Value::Function {
-                params: params.clone(), body: body.clone(), captured: self.variables.clone(),
+                params: params.clone(), body: body.clone(), captured_env: self.current_env,
             }),
             Expression::FunctionCall { func, args } => {
                 let function = self.eval_expression(func)?;
-                let (params, body, captured) = match function {
-                    Value::Function { params, body, captured } => (params, body, captured),
+                let (params, body, captured_env) = match function {
+                    Value::Function { params, body, captured_env } => (params, body, captured_env),
                     other => return Err(format!("El valor {:?} no es una función", other)),
                 };
                 if params.len() != args.len() {
@@ -127,11 +199,12 @@ impl Evaluator {
                 }
                 let mut values = Vec::with_capacity(args.len());
                 for arg in args { values.push(self.eval_expression(arg)?); }
-                let previous = std::mem::replace(&mut self.variables, captured);
-                for (name, value) in params.iter().cloned().zip(values) { self.variables.insert(name, value); }
-                let result = self.eval_expression(&body);
-                self.variables = previous;
-                result
+                self.with_environment(captured_env, |this| {
+                    for (name, value) in params.iter().cloned().zip(values) {
+                        this.environments[this.current_env].values.insert(name, value);
+                    }
+                    this.eval_expression(&body)
+                })
             }
             Expression::Array(items) => {
                 let mut values = Vec::with_capacity(items.len());

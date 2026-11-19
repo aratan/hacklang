@@ -398,6 +398,20 @@ mod tests {
         evaluator.get_var("__x").cloned().ok_or("__x not set".to_string())
     }
 
+    // -- First-class function call tests --
+
+    #[test]
+    fn test_eval_call_on_parenthesized_function() {
+        let ev = eval_program("let inc = |x| x + 1; let result = (inc)(4);").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(5.0)));
+    }
+
+    #[test]
+    fn test_eval_immediate_lambda_call() {
+        let ev = eval_program("let result = (|x| x + 1)(4);").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(5.0)));
+    }
+
     // -- Number literal tests --
 
     #[test]

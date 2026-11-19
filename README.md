@@ -257,7 +257,7 @@ fn evaluate(&mut self, program: &Program) -> Result<(), String> {
 }
 ```
 
-La única excepción son errores léxicos irrecuperables (`panic!` en el lexer), porque un token mal formado no permite continuar el análisis.
+El lexer y el parser devuelven `Result`: los caracteres desconocidos, las cadenas sin cerrar y los errores sintácticos llegan al CLI como mensajes controlados, sin provocar un `panic!`.
 
 ## Estado
 
@@ -289,3 +289,8 @@ Limitaciones actuales: las colecciones no tienen asignación por índice, los ma
 - **Heap (montículo):** el AST usa `Box` para nodos recursivos y `Vec` para listas; cadenas, mapas y tablas de variables usan estructuras propiedad de Rust. El arena de entornos también vive en el heap.
 - **Closures:** guardan un ID de entorno, no una copia completa del `HashMap`. La cadena de entornos proporciona el alcance léxico y permite recursividad.
 - **Liberación:** Rust libera automáticamente los valores cuando se destruye el evaluador. Actualmente el arena conserva los entornos creados durante toda la ejecución; aún no hay garbage collector ni recolección de frames inalcanzables.
+
+
+### Errores léxicos y sintácticos
+
+El lexer expone `tokenize() -> Result<Vec<Token>, String>` y el parser `parse_program() -> Result<Program, String>`. Un carácter desconocido, una cadena sin cerrar o una sentencia mal formada produce un error recuperable que el ejecutable muestra al usuario. Las pruebas cubren también cadenas Unicode para evitar errores al confundir índices de caracteres con índices de bytes.

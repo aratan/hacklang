@@ -917,6 +917,15 @@ mod tests {
     }
 
     #[test]
+    fn spanned_parser_reports_line_and_column() {
+        let mut lexer = crate::lexer::Lexer::new("\\nlet = 1;".to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = Parser::new_spanned(tokens);
+        let error = parser.parse_program().unwrap_err();
+        assert!(error.contains("línea 2, columna 5"), "{}", error);
+    }
+
+    #[test]
     fn test_parse_unexpected_token_returns_error() {
         let mut lexer = crate::lexer::Lexer::new("let = 42;".to_string());
         let tokens = lexer.tokenize().unwrap();

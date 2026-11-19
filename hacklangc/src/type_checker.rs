@@ -277,6 +277,21 @@ impl TypeChecker {
                 Type::Unknown
             }
             Expression::FunctionCall { func, args } => {
+                if matches!(func.as_ref(), Expression::Identifier(name) if name == "len") {
+                    if args.len() != 1 {
+                        self.report(format!("len(): se esperaba 1 argumento y se recibieron {}", args.len()));
+                        for arg in args { self.infer(arg); }
+                        return Type::Unknown;
+                    }
+                    let argument = self.infer(&args[0]);
+                    match argument {
+                        Type::String | Type::Array(_) | Type::Map(_, _) | Type::Unknown => Type::Number,
+                        other => {
+                            self.report(format!("len() requiere string, array o map; se obtuvo {other}"));
+                            Type::Unknown
+                        }
+                    }
+                } else {
                 let function_type = self.infer(func);
                 for arg in args { self.infer(arg); }
                 match function_type {
@@ -291,6 +306,7 @@ impl TypeChecker {
                         self.report(format!("se intenta llamar un valor de tipo {other}, no una función"));
                         Type::Unknown
                     }
+                }
                 }
             }
         }
@@ -361,6 +377,18 @@ mod tests {
         let mut parser = Parser::new(tokens);
         let program = parser.parse_program().unwrap();
         TypeChecker::check(&program)
+    }
+
+    #[test]
+    fn builtin_len_has_numeric_type_for_supported_inputs() {
+        assert!(check_source("let a = len(\"hello\"); let b = len([1,2]); let c = len(@{\"x\":1});").is_empty());
+    }
+
+    #[test]
+    fn builtin_len_reports_invalid_argument_type_and_arity() {
+        let diagnostics = check_source("let a = len(42); let b = len();");
+        assert!(diagnostics.iter().any(|d| d.message.contains("len() requiere")));
+        assert!(diagnostics.iter().any(|d| d.message.contains("len(): se esperaba 1 argumento")));
     }
 
     #[test]

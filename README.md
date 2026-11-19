@@ -51,6 +51,7 @@ classDiagram
         <<enum>>
         Let(LetStatement)
         Assign(AssignStatement)
+        IndexAssign(IndexAssignStatement)
         Print(PrintStatement)
         Block(Vec~Statement~)
         While(WhileStatement)
@@ -267,7 +268,7 @@ El lexer y el parser devuelven `Result`: los caracteres desconocidos, las cadena
 | **Parser** | ✅ Completo (infix, ternario, lambdas, arrays, mapas, indexación) |
 | **Evaluador** | ⚠️ Parcial — números, cadenas, arrays, mapas, indexación y llamadas a lambdas |
 | **Funciones** | ✅ Lambdas, closures léxicas, recursividad y comprobación de aridad |
-| **Colecciones** | ✅ Arrays, mapas e indexación de lectura |
+| **Colecciones** | ✅ Arrays y mapas con lectura y asignación por índice |
 | **Tests** | 🧪 Tests unitarios existentes y pruebas de regresión añadidas; pendiente ejecutar CI |
 
 
@@ -275,12 +276,12 @@ El lexer y el parser devuelven `Result`: los caracteres desconocidos, las cadena
 
 - Las lambdas se evalúan como funciones y capturan una copia del entorno donde se definen.
 - Las llamadas comprueban el número de argumentos y ejecutan el cuerpo en un entorno local temporal.
-- Los arrays admiten literales e indexación numérica desde cero.
-- Los mapas admiten claves y valores evaluados, con indexación por clave.
+- Los arrays admiten literales, lectura por índice y actualización de posiciones existentes.
+- Los mapas admiten claves y valores evaluados, lectura por clave y alta o actualización de entradas.
 - La indexación de cadenas devuelve el carácter solicitado.
 - Los errores al evaluar condiciones de `while` se propagan; ya no se convierten silenciosamente en una condición falsa.
 
-Limitaciones actuales: las colecciones no tienen asignación por índice, los mapas se representan como pares ordenados y las funciones todavía no admiten cuerpos con varias sentencias ni recursión.
+Limitaciones actuales: la asignación por índice solo admite como destino una variable identificada directamente (no indexación anidada); los mapas se representan como pares ordenados y las funciones todavía no admiten cuerpos con varias sentencias.
 
 
 ## Modelo de memoria y ejecución

@@ -325,7 +325,7 @@ El lexer y el parser devuelven `Result`: los caracteres desconocidos, las cadena
 | **Control de flujo** | ✅ `return`, `break` y `continue` |
 | **Memoria** | ✅ Mark-and-sweep de frames de entorno; los demás valores los gestiona Rust |
 | **Análisis de tipos** | ✅ Primera pasada no bloqueante: tipos primitivos, retornos explícitos, arrays/mapas con tipos de elemento/clave/valor, indexación, asignaciones, operadores y aridad de llamadas |
-| **Tests** | ✅ CI: 105 pruebas aprobadas, 0 fallos (run #120) |
+| **Tests** | ✅ CI: 107 pruebas aprobadas, 0 fallos (run #131) |
 
 
 ## Funcionalidad del runtime

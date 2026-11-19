@@ -18,6 +18,7 @@ pub enum Statement {
     Assign(AssignStatement),
     IndexAssign(IndexAssignStatement),
     Print(PrintStatement),
+    Return(Expression),
     Block(Vec<Statement>), // Bloque { stmt; stmt; ... }
     While(WhileStatement),
     If(IfStatement),
@@ -54,6 +55,8 @@ pub enum Expression {
         params: Vec<String>,
         body: Box<Expression>,
     },
+    // Bloque de varias sentencias usado como cuerpo de una función.
+    Block(Vec<Statement>),
     
     // Llamada a función: func(a, b)
     FunctionCall {

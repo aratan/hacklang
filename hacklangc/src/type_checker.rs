@@ -456,7 +456,7 @@ mod tests {
 
     #[test]
     fn diagnostic_json_escapes_quotes_slashes_and_control_characters() {
-        assert_eq!(json_escape("quote: \" slash: \\\\ newline:\n tab:\t"), r#"quote: \" slash: \\ newline:\n tab:\t"#);
+        assert_eq!(json_escape("quote: \" slash: \\\\ newline:\n tab:\t"), r#"quote: \" slash: \\\\ newline:\n tab:\t"#);
     }
 
 }

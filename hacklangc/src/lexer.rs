@@ -113,15 +113,15 @@ impl Lexer {
 
             match c {
                 '+' => {
-                    tokens.push(spanned(Token::Plus, token_start, self.position + 1, &self.chars));
+                    tokens.push(Self::spanned(Token::Plus, token_start, self.position + 1, &self.chars));
                     self.position += 1;
                 }
                 '-' => {
-                    tokens.push(spanned(Token::Minus, token_start, self.position + 1, &self.chars));
+                    tokens.push(Self::spanned(Token::Minus, token_start, self.position + 1, &self.chars));
                     self.position += 1;
                 }
                 '*' => {
-                    tokens.push(spanned(Token::Star, token_start, self.position + 1, &self.chars));
+                    tokens.push(Self::spanned(Token::Star, token_start, self.position + 1, &self.chars));
                     self.position += 1;
                 }
                 '/' => {
@@ -132,20 +132,20 @@ impl Lexer {
                             self.position += 1;
                         }
                     } else {
-                        tokens.push(spanned(Token::Slash, token_start, self.position + 1, &self.chars));
+                        tokens.push(Self::spanned(Token::Slash, token_start, self.position + 1, &self.chars));
                         self.position += 1;
                     }
                 }
                 ':' if self.position + 1 < self.chars.len() && self.chars[self.position + 1] == '=' => {
-                    tokens.push(spanned(Token::DeclareAssign, token_start, self.position + 2, &self.chars));
+                    tokens.push(Self::spanned(Token::DeclareAssign, token_start, self.position + 2, &self.chars));
                     self.position += 2;
                 }
                 '=' => {
-                    tokens.push(spanned(Token::Equals, token_start, self.position + 1, &self.chars));
+                    tokens.push(Self::spanned(Token::Equals, token_start, self.position + 1, &self.chars));
                     self.position += 1;
                 }
                 ';' => {
-                    tokens.push(spanned(Token::Semicolon, token_start, self.position + 1, &self.chars));
+                    tokens.push(Self::spanned(Token::Semicolon, token_start, self.position + 1, &self.chars));
                     self.position += 1;
                 }
                 'a'..='z' | 'A'..='Z' | '_' => {
@@ -162,74 +162,74 @@ impl Lexer {
                         "false" => Token::False,
                         _ => Token::Identifier(ident),
                     };
-                    tokens.push(spanned(token, token_start, self.position, &self.chars));
+                    tokens.push(Self::spanned(token, token_start, self.position, &self.chars));
                 }
                 '0'..='9' => {
                     let number = self.read_number()?;
-                    tokens.push(spanned(Token::Number(Number(number)), token_start, self.position, &self.chars));
+                    tokens.push(Self::spanned(Token::Number(Number(number)), token_start, self.position, &self.chars));
                 }
                 '"' => {
                     let string = self.read_string()?;
-                    tokens.push(spanned(Token::String(string), token_start, self.position, &self.chars));
+                    tokens.push(Self::spanned(Token::String(string), token_start, self.position, &self.chars));
                 }
                 '(' => {
-                    tokens.push(spanned(Token::ParenOpen, token_start, self.position + 1, &self.chars));
+                    tokens.push(Self::spanned(Token::ParenOpen, token_start, self.position + 1, &self.chars));
                     self.position += 1;
                 }
                 ')' => {
-                    tokens.push(spanned(Token::ParenClose, token_start, self.position + 1, &self.chars));
+                    tokens.push(Self::spanned(Token::ParenClose, token_start, self.position + 1, &self.chars));
                     self.position += 1;
                 }
                 '{' => {
-                    tokens.push(spanned(Token::BraceOpen, token_start, self.position + 1, &self.chars));
+                    tokens.push(Self::spanned(Token::BraceOpen, token_start, self.position + 1, &self.chars));
                     self.position += 1;
                 }
                 '}' => {
-                    tokens.push(spanned(Token::BraceClose, token_start, self.position + 1, &self.chars));
+                    tokens.push(Self::spanned(Token::BraceClose, token_start, self.position + 1, &self.chars));
                     self.position += 1;
                 }
                 '[' => {
-                    tokens.push(spanned(Token::BracketOpen, token_start, self.position + 1, &self.chars));
+                    tokens.push(Self::spanned(Token::BracketOpen, token_start, self.position + 1, &self.chars));
                     self.position += 1;
                 }
                 ']' => {
-                    tokens.push(spanned(Token::BracketClose, token_start, self.position + 1, &self.chars));
+                    tokens.push(Self::spanned(Token::BracketClose, token_start, self.position + 1, &self.chars));
                     self.position += 1;
                 }
                 '<' => {
-                    tokens.push(spanned(Token::Less, token_start, self.position + 1, &self.chars));
+                    tokens.push(Self::spanned(Token::Less, token_start, self.position + 1, &self.chars));
                     self.position += 1;
                 }
                 '>' => {
-                    tokens.push(spanned(Token::Greater, token_start, self.position + 1, &self.chars));
+                    tokens.push(Self::spanned(Token::Greater, token_start, self.position + 1, &self.chars));
                     self.position += 1;
                 }
                 '~' => {
-                    tokens.push(spanned(Token::Tilde, token_start, self.position + 1, &self.chars));
+                    tokens.push(Self::spanned(Token::Tilde, token_start, self.position + 1, &self.chars));
                     self.position += 1;
                 }
                 '^' => {
-                    tokens.push(spanned(Token::Caret, token_start, self.position + 1, &self.chars));
+                    tokens.push(Self::spanned(Token::Caret, token_start, self.position + 1, &self.chars));
                     self.position += 1;
                 }
                 '?' => {
-                    tokens.push(spanned(Token::Question, token_start, self.position + 1, &self.chars));
+                    tokens.push(Self::spanned(Token::Question, token_start, self.position + 1, &self.chars));
                     self.position += 1;
                 }
                 ':' => {
-                    tokens.push(spanned(Token::Colon, token_start, self.position + 1, &self.chars));
+                    tokens.push(Self::spanned(Token::Colon, token_start, self.position + 1, &self.chars));
                     self.position += 1;
                 }
                 '|' => {
-                    tokens.push(spanned(Token::Pipe, token_start, self.position + 1, &self.chars));
+                    tokens.push(Self::spanned(Token::Pipe, token_start, self.position + 1, &self.chars));
                     self.position += 1;
                 }
                 ',' => {
-                    tokens.push(spanned(Token::Comma, token_start, self.position + 1, &self.chars));
+                    tokens.push(Self::spanned(Token::Comma, token_start, self.position + 1, &self.chars));
                     self.position += 1;
                 }
                 '@' => {
-                    tokens.push(spanned(Token::At, token_start, self.position + 1, &self.chars));
+                    tokens.push(Self::spanned(Token::At, token_start, self.position + 1, &self.chars));
                     self.position += 1;
                 }
                 _ => {
@@ -238,7 +238,7 @@ impl Lexer {
             }
         }
 
-        tokens.push(spanned(Token::Eof, token_start, self.position, &self.chars));
+        tokens.push(Self::spanned(Token::Eof, token_start, self.position, &self.chars));
         Ok(tokens)
     }
 

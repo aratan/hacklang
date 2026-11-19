@@ -84,9 +84,12 @@ impl Evaluator {
     }
 
     // Recolector mark-and-sweep de frames. Los valores siguen gestionados por Rust.
-    fn collect_garbage(&mut self) {
+    fn collect_garbage(&mut self, temporary_root: Option<&Value>) {
         let mut marked = vec![false; self.environments.len()];
         let mut pending = vec![0, self.current_env];
+        if let Some(value) = temporary_root {
+            Self::mark_value(value, &mut pending);
+        }
 
         while let Some(id) = pending.pop() {
             if id >= self.environments.len() || marked[id] || !self.environments[id].alive {
@@ -221,7 +224,11 @@ impl Evaluator {
                 })
             }
         };
-        self.collect_garbage();
+        let temporary_root = match &result {
+            Ok(Flow::Return(value)) => Some(value),
+            _ => None,
+        };
+        self.collect_garbage(temporary_root);
         result
     }
 
@@ -451,6 +458,14 @@ mod tests {
     fn test_function_block_with_return() {
         let ev = eval_program("let calculate = |x| (let doubled = x * 2; return doubled + 1;); let result = calculate(4);").unwrap();
         assert_eq!(ev.get_var("result"), Some(&Value::Number(9.0)));
+    }
+
+    #[test]
+    fn test_returned_closure_keeps_nested_block_environment_alive() {
+        let ev = eval_program(
+            "let factory = |x| ((let inner = |y| x + y; return inner;)); let add_ten = factory(10); let result = add_ten(5);"
+        ).unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(15.0)));
     }
 
     #[test]

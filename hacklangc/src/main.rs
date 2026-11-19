@@ -35,7 +35,7 @@ fn main() {
     // --- FASE 1: LEXER ---
     // Convierte el texto en una secuencia de Tokens.
     let mut lexer = lexer::Lexer::new(source_code);
-    let tokens = match lexer.tokenize() {
+    let tokens = match lexer.tokenize_spanned() {
         Ok(tokens) => tokens,
         Err(error) => {
             eprintln!("Error léxico: {}", error);
@@ -46,9 +46,9 @@ fn main() {
     // --- FASE 2: PARSER ---
     // Convierte la secuencia de Tokens en un Árbol de Sintaxis Abstracta (AST).
     let mut parser = if compact_mode {
-        parser::Parser::new_compact(tokens)
+        parser::Parser::new_compact_spanned(tokens)
     } else {
-        parser::Parser::new(tokens)
+        parser::Parser::new_spanned(tokens)
     };
     let ast = match parser.parse_program() {
         Ok(program) => program,

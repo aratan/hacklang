@@ -327,6 +327,10 @@ impl Parser {
                 if !self.is_at_end() && *self.current_token() == Token::ParenOpen {
                     self.advance();
                     let args = self.parse_comma_list(Token::ParenClose)?;
+                    if *self.current_token() != Token::ParenClose {
+                        return Err("Se esperaba ')' al cerrar la llamada".to_string());
+                    }
+                    self.advance();
                     Ok(Expression::FunctionCall {
                         func: Box::new(Expression::Identifier(name)),
                         args,
@@ -381,6 +385,10 @@ impl Parser {
                 }
                 self.advance();
                 let pairs = self.parse_map_entries()?;
+                if *self.current_token() != Token::ParenClose {
+                    return Err("Se esperaba ')' al cerrar el mapa".to_string());
+                }
+                self.advance();
                 Ok(Expression::Map(pairs))
             }
             _ => Err(format!(

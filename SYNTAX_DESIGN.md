@@ -34,6 +34,7 @@ Implementado y cubierto por pruebas:
 - Condiciones sin paréntesis: `if cond{...}` y `while cond{...}`.
 - Mapas compactos `@{key:value}`.
 - Punto y coma opcional cuando la gramática puede reconocer el siguiente inicio de sentencia.
+- Formateador AST → sintaxis canónica compacta, disponible con `--format`; puede leer sintaxis legacy o compacta y emite compacta.
 - Compatibilidad del parser legacy con sus paréntesis y declaraciones `let`.
 
 Se mantienen las palabras clave `print`, `return`, `break` y `continue`; no se han introducido abreviaturas que colisionen con el ternario o con operadores. La implementación compacta es una primera versión experimental, no todavía la sintaxis predeterminada.
@@ -115,7 +116,6 @@ Pendiente:
 
 - Inferencia de tipos de parámetros a partir del cuerpo y de los argumentos de llamada.
 - Diagnósticos JSON con códigos estables y rangos de fuente; el AST todavía no conserva spans.
-- Formateador AST → sintaxis canónica compacta.
 - Benchmark reproducible de tokens, compilación y Pass@1 frente a Python y Lua.
 - Evaluar si merece la pena abreviar `print` y otras palabras clave sin crear ambigüedad.
 

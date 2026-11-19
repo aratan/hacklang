@@ -100,7 +100,7 @@ La tabla define un objetivo de experimento, no una promesa de compatibilidad ni 
 1. Congelar la gramática actual como sintaxis legacy y añadir pruebas de compatibilidad.
 2. Implementar la sintaxis compacta detrás de una versión/modo explícito, sin cambiar silenciosamente programas existentes.
 3. Añadir un formateador que convierta AST a la forma canónica compacta.
-4. Añadir diagnósticos JSON con códigos y rangos de fuente.
+4. Añadir diagnósticos JSON con códigos estables (primera versión implementada); propagar spans por lexer/parser/AST para completar rangos y estructurar también errores léxicos y sintácticos.
 5. Crear un corpus de tareas equivalentes en HackLang, Python y Lua. Medir tokens con el mismo tokenizador y modelos, y Pass@1 con criterios funcionales idénticos.
 6. Promover la sintaxis compacta a predeterminada solo si reduce el coste total y no empeora de forma significativa la tasa de éxito.
 
@@ -115,8 +115,8 @@ Ya se han cerrado dos limitaciones iniciales del comprobador:
 Pendiente:
 
 - Inferencia de tipos de parámetros a partir del cuerpo y de los argumentos de llamada.
-- Diagnósticos JSON con códigos estables y rangos de fuente; el AST todavía no conserva spans.
+- Diagnósticos JSON con código estable y severidad ya implementados para el análisis estático; el rango se devuelve como `null` porque el AST todavía no conserva spans. Los errores léxicos y sintácticos aún usan el canal textual.
 - Benchmark reproducible de tokens, compilación y Pass@1 frente a Python y Lua.
 - Evaluar si merece la pena abreviar `print` y otras palabras clave sin crear ambigüedad.
 
-Estos puntos son trabajo pendiente, no funcionalidades ya terminadas. La sintaxis compacta sigue siendo una propuesta documentada: todavía no se ha activado ni sustituido la sintaxis actual.
+Estos puntos son trabajo pendiente, no funcionalidades ya terminadas. La sintaxis compacta está implementada detrás de `--compact` y dispone de formateador `--format`; sigue siendo experimental y no sustituye la sintaxis legacy por defecto.

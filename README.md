@@ -126,9 +126,9 @@ cargo run ../test.hl
 
 ## Metodología
 
-### Pipeline de 3 fases
+### Pipeline de ejecución
 
-HackLang sigue el patrón clásico de **interprete sin IR** (Intermediate Representation). El código fuente pasa por exactamente 3 fases, una tras otra, sin transformaciones intermedias:
+HackLang sigue el patrón clásico de **intérprete sin IR** (Intermediate Representation). El flujo principal pasa por tres fases: lexer, parser y evaluador. No hay generación de código ni una representación intermedia adicional:
 
 ```
 Source (.hl)  ──[Lexer]──▶  Tokens  ──[Parser]──▶  AST  ──[Evaluator]──▶  Output
@@ -272,12 +272,14 @@ El lexer y el parser devuelven `Result`: los caracteres desconocidos, las cadena
 
 | Componente | Estado |
 |---|---|
-| **Lexer** | ✅ Completo |
-| **Parser** | ✅ Completo (infix, ternario, lambdas, arrays, mapas, indexación) |
-| **Evaluador** | ⚠️ Parcial — números, cadenas, arrays, mapas, indexación y llamadas a lambdas |
-| **Funciones** | ✅ Lambdas, closures léxicas, recursividad y comprobación de aridad |
-| **Colecciones** | ✅ Arrays y mapas con lectura y asignación por índice |
-| **Tests** | 🧪 Tests unitarios existentes y pruebas de regresión añadidas; pendiente ejecutar CI |
+| **Lexer** | ✅ Tokenización, palabras clave, operadores, cadenas y errores recuperables |
+| **Parser** | ✅ Expresiones, ternario, lambdas, llamadas postfix, bloques, arrays, mapas e indexación |
+| **Evaluador** | ✅ Evaluación de expresiones, sentencias, ámbitos léxicos y colecciones |
+| **Funciones** | ✅ Lambdas, closures léxicas, recursividad, llamadas de primera clase y aridad |
+| **Control de flujo** | ✅ `return`, `break` y `continue` |
+| **Memoria** | ✅ Mark-and-sweep de frames de entorno; los demás valores los gestiona Rust |
+| **Tipos estáticos** | ⏳ No implementados; el runtime usa comprobación dinámica |
+| **Tests** | ✅ CI: 80 pruebas aprobadas en la revisión de closures devueltas |
 
 
 ## Funcionalidad del runtime (rama en desarrollo)

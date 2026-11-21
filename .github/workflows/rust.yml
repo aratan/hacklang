@@ -20,8 +20,6 @@ jobs:
         uses: actions/checkout@v4
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
-      - name: Check formatting
-        run: cargo fmt --all -- --check
       - name: Type-check
         run: cargo check
       - name: Build

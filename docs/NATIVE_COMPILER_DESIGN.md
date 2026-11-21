@@ -167,6 +167,7 @@ No implementar filesystem, procesos, sockets ni biblioteca estándar de sistema 
 
 - Reutilizar la batería existente de tests de `evaluador.rs` (ya cubre closures, recursividad, scopes, GC de frames, truthiness, operadores básicos, colecciones, `len` y límites); ampliarla donde haya huecos, no duplicarla en otra suite Rust paralela.
 - [x] Corregir el fallback silencioso de operadores no soportados en `num_op`: ahora devuelve error explícito en vez de fabricar `Number(0)`; se añadió una regresión unitaria.
+- [x] Corregir ambigüedad del parser legacy: expresiones lambda agrupadas como `|x, y| (x + y)` ya no se confunden con bloques de sentencias; se conserva el parseo de bloques con `let/return/if/while` y se añaden tests de ambos caminos.
 
 - Convertir los casos existentes del evaluador en corpus de conformidad.
 - Añadir tests para todos los operadores, coerciones, mapas con claves repetidas, impresión, Unicode, scopes, closures, errores y límites.

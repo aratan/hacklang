@@ -10,7 +10,7 @@ flowchart LR
     B --> C["Tokens<br/><i>Vec&lt;Token&gt;</i>"]
     C --> D["Parser<br/><i>parse_program()</i>"]
     D --> E["AST<br/><i>Program</i>"]
-    E --> H["Type checker<br/><i>check()</i>"]
+    E --> H["Type checker<br/><i>check()</i> (análisis no bloqueante)"]
     H --> F["Evaluador<br/><i>evaluate()</i>"]
     F --> G["Output"]
 ```
@@ -118,7 +118,12 @@ let result = (x > 10) ? ( x ) : ( 0 );
 
 let add = |a, b| ( a + b );
 print add(3, 4);
+
+let datos = @( "host": "127.0.0.1", "port": 80 );
+print datos["host"];
 ```
+
+Los ejemplos ejecutables de la versión actual están en `examples/`. Los bocetos que dependen de funciones todavía inexistentes (`read_file`, `write_file`, `exec`) se conservan en `prototypes/unsupported/` y no son programas ejecutables.
 
 ## Cómo usar
 
@@ -126,7 +131,7 @@ Desde la raíz del repositorio:
 
 ```bash
 cargo run -- examples/test.hl
-cargo run -- --compact compact.hl
+cargo run -- --compact programa-compacto.hl
 cargo run -- --format programa.hl
 cargo run -- --diagnostics-json programa.hl
 ```
@@ -180,7 +185,7 @@ cargo run -- --compact --format compact.hl
 cargo run -- --diagnostics-json programa.hl
 ```
 
-En esta primera versión se compactan las declaraciones (`:=`), los bloques (`{}`), las condiciones de `if/while`, los cuerpos de lambdas y los mapas (`@{}`). Se mantienen `print`, `return`, `break` y `continue` como palabras clave para evitar colisiones con operadores existentes. No se exige punto y coma entre sentencias cuando el siguiente token permite determinar el final de la expresión.
+En esta primera versión se compactan las declaraciones (`:=`), los bloques (`{}`), las condiciones de `if/while`, los cuerpos de lambdas y los mapas (`@{}`). En modo legacy, las declaraciones usan `let`, los bloques usan `(...)` y los mapas usan `@(...)`. Se mantienen `print`, `return`, `break` y `continue` como palabras clave para evitar colisiones con operadores existentes. No se exige punto y coma entre sentencias cuando el siguiente token permite determinar el final de la expresión.
 
 ## Metodología
 
@@ -328,6 +333,8 @@ El lexer y el parser devuelven `Result`: los caracteres desconocidos, las cadena
 
 ## Estado
 
+El CLI se construye como el ejecutable `hl`. En desarrollo se invoca con `cargo run -- ...`; en release, Cargo genera `target/release/hl` (o `hl.exe` en Windows). No existe actualmente un comando `compile` ni generación de binarios nativos a partir de `.hl`.
+
 | Componente | Estado |
 |---|---|
 | **Lexer** | ✅ Tokenización, palabras clave, operadores, cadenas y errores recuperables |
@@ -337,7 +344,7 @@ El lexer y el parser devuelven `Result`: los caracteres desconocidos, las cadena
 | **Control de flujo** | ✅ `return`, `break` y `continue` |
 | **Memoria** | ✅ Mark-and-sweep de frames de entorno; los demás valores los gestiona Rust |
 | **Análisis de tipos** | ✅ Primera pasada no bloqueante: tipos primitivos, retornos explícitos, arrays/mapas con tipos de elemento/clave/valor, indexación, asignaciones, operadores y aridad de llamadas |
-| **Tests** | Verificar el resultado vigente en GitHub Actions; no mantener un contador histórico aquí |
+| **Tests** | Tests Rust y ejecución de todos los `examples/*.hl` en GitHub Actions |
 
 
 ## Funcionalidad del runtime

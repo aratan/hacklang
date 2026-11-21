@@ -379,16 +379,20 @@ impl Parser {
 
     // --- Sentencia Lambda: |x, y| { cuerpo } ---
     fn parse_lambda_statement(&mut self) -> Result<Statement, String> {
-        let (params, lambda) = self.parse_lambda_expression()?;
+        let lambda = self.parse_lambda_expression()?;
         if *self.current_token() == Token::Semicolon {
             self.advance();
         }
+        let params = match &lambda {
+            Expression::Lambda { params, .. } => params,
+            _ => unreachable!("parse_lambda_expression always returns a Lambda"),
+        };
         let name = format!("__lambda_{}", params.join("_"));
         Ok(Statement::Let(LetStatement { name, value: lambda }))
     }
 
     // Único punto de parsing para lambdas usadas como expresión o sentencia.
-    fn parse_lambda_expression(&mut self) -> Result<(Vec<String>, Expression), String> {
+    fn parse_lambda_expression(&mut self) -> Result<Expression, String> {
         self.advance(); // consume primer |
         let params = self.parse_params()?;
         if !self.is_at_end() && *self.current_token() != Token::Pipe {
@@ -414,7 +418,7 @@ impl Parser {
             self.parse_expression(Precedence::Lowest)?
         };
 
-        Ok((params.clone(), Expression::Lambda { params, body: Box::new(body) }))
+        Ok(Expression::Lambda { params, body: Box::new(body) })
     }
 
     fn parse_params(&mut self) -> Result<Vec<String>, String> {
@@ -572,8 +576,7 @@ impl Parser {
                 Ok(expr)
             }
             Token::Pipe => {
-                let (_, lambda) = self.parse_lambda_expression()?;
-                Ok(lambda)
+                self.parse_lambda_expression()
             }
             Token::BracketOpen => {
                 self.advance();

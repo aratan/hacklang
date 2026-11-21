@@ -1,6 +1,6 @@
 # HackLang
 
-Lenguaje de programación interpretado, Turing completo, implementado en Rust.
+Lenguaje de programación implementado en Rust. Actualmente dispone de un intérprete; la compilación de ejecutables nativos es el objetivo de desarrollo prioritario y todavía no está implementada.
 
 ## Arquitectura
 
@@ -186,6 +186,12 @@ cargo run -- --diagnostics-json programa.hl
 ```
 
 En esta primera versión se compactan las declaraciones (`:=`), los bloques (`{}`), las condiciones de `if/while`, los cuerpos de lambdas y los mapas (`@{}`). En modo legacy, las declaraciones usan `let`, los bloques usan `(...)` y los mapas usan `@(...)`. Se mantienen `print`, `return`, `break` y `continue` como palabras clave para evitar colisiones con operadores existentes. No se exige punto y coma entre sentencias cuando el siguiente token permite determinar el final de la expresión.
+
+## Objetivo de desarrollo: ejecutables nativos
+
+El siguiente objetivo es que un mismo programa pueda ejecutarse con el intérprete Rust o compilarse a un ejecutable nativo del sistema. La interfaz prevista es `hl run`, `hl build` y `hl check`, manteniendo `hl programa.hl` como alias de ejecución. Estos subcomandos todavía no están implementados.
+
+La estrategia es reutilizar el front-end existente (lexer, parser, AST y checker) y el evaluador Rust como referencia semántica. El backend nativo inicial generará C y enlazará un runtime propio con GCC o Clang. No se duplicará el parser ni se hará obligatorio el checker estático. La especificación y el inventario de componentes reutilizables están en [docs/NATIVE_COMPILER_DESIGN.md](docs/NATIVE_COMPILER_DESIGN.md).
 
 ## Metodología
 

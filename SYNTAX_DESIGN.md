@@ -24,7 +24,7 @@ También se medirá Pass@1, tasa de compilación, tasa de éxito funcional y leg
 
 ## Sintaxis compacta experimental v0 (implementación inicial)
 
-Ya existe un modo explícito de parser compacto, activado con `hacklangc --compact archivo.hl`. No cambia el modo legacy por defecto.
+Ya existe un modo explícito de parser compacto, activado con `hl --compact archivo.hl`. No cambia el modo legacy por defecto.
 
 Implementado y cubierto por pruebas:
 

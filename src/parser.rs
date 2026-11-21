@@ -382,13 +382,22 @@ impl Parser {
 
     // --- Sentencia Lambda: |x, y| { cuerpo } ---
     fn parse_lambda_statement(&mut self) -> Result<Statement, String> {
+        let (params, lambda) = self.parse_lambda_expression()?;
+        if *self.current_token() == Token::Semicolon {
+            self.advance();
+        }
+        let name = format!("__lambda_{}", params.join("_"));
+        Ok(Statement::Let(LetStatement { name, value: lambda }))
+    }
+
+    // Único punto de parsing para lambdas usadas como expresión o sentencia.
+    fn parse_lambda_expression(&mut self) -> Result<(Vec<String>, Expression), String> {
         self.advance(); // consume primer |
         let params = self.parse_params()?;
-        
         if !self.is_at_end() && *self.current_token() != Token::Pipe {
             return Err("Se esperaba '|' después de los parámetros".to_string());
         }
-        self.advance(); // consume |
+        self.advance(); // consume segundo |
 
         let (block_open, block_close) = self.block_delimiters();
         let is_block = if self.compact {
@@ -399,22 +408,16 @@ impl Parser {
         let body = if is_block {
             self.advance();
             let statements = self.parse_block()?;
-            if *self.current_token() != block_close { return Err(format!("Se esperaba '{block_close:?}' al cerrar el cuerpo de la función")); }
+            if *self.current_token() != block_close {
+                return Err(format!("Se esperaba '{block_close:?}' al cerrar el cuerpo de la función"));
+            }
             self.advance();
             Expression::Block(statements)
         } else {
             self.parse_expression(Precedence::Lowest)?
         };
 
-        if *self.current_token() == Token::Semicolon {
-            self.advance();
-        }
-
-        let name = format!("__lambda_{}", params.join("_"));
-        Ok(Statement::Let(LetStatement {
-            name,
-            value: Expression::Lambda { params, body: Box::new(body) },
-        }))
+        Ok((params.clone(), Expression::Lambda { params, body: Box::new(body) }))
     }
 
     fn parse_params(&mut self) -> Result<Vec<String>, String> {
@@ -572,29 +575,8 @@ impl Parser {
                 Ok(expr)
             }
             Token::Pipe => {
-                // Lambda: |x, y| { body }
-                self.advance();
-                let params = self.parse_params()?;
-                if !self.is_at_end() && *self.current_token() != Token::Pipe {
-                    return Err("Se esperaba '|' después de los parámetros".to_string());
-                }
-                self.advance();
-                let (block_open, block_close) = self.block_delimiters();
-                let is_block = if self.compact {
-                    *self.current_token() == block_open
-                } else {
-                    self.legacy_lambda_body_is_block()
-                };
-                let body = if is_block {
-                    self.advance();
-                    let statements = self.parse_block()?;
-                    if *self.current_token() != block_close { return Err(format!("Se esperaba '{block_close:?}' al cerrar el cuerpo de la función")); }
-                    self.advance();
-                    Expression::Block(statements)
-                } else {
-                    self.parse_expression(Precedence::Lowest)?
-                };
-                Ok(Expression::Lambda { params, body: Box::new(body) })
+                let (_, lambda) = self.parse_lambda_expression()?;
+                Ok(lambda)
             }
             Token::BracketOpen => {
                 self.advance();

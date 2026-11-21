@@ -1,8 +1,10 @@
 # Ejemplos pendientes de implementación
 
-Los archivos .hl de este directorio son bocetos históricos, no ejemplos válidos de la versión actual.
+Los archivos `.hl` de este directorio son prototipos históricos. No pertenecen al conjunto de ejemplos ejecutables ni deben incluirse en pruebas de compatibilidad de la versión actual.
 
-- test_io.hl: depende de read_file() y write_file(), funciones que el runtime todavía no implementa.
-- test_exec.hl: depende de exec(), función que el runtime todavía no implementa y que además requerirá un diseño explícito de permisos y seguridad antes de incorporarse.
+| Archivo | Capacidad pendiente | Estado |
+|---|---|---|
+| `test_io.hl` | `read_file()` y `write_file()` | No implementadas en el runtime |
+| `test_exec.hl` | `exec()` | No implementada; requiere además un modelo explícito de permisos y aislamiento |
 
-Los ejemplos ejecutables y verificados están en examples/. No ejecutar estos prototipos como pruebas de compatibilidad.
+No se deben simular estas funciones ni asumir que existen por aparecer en ejemplos antiguos. Cuando se implementen, deberán tener pruebas de integración, documentación y controles de seguridad. Los ejemplos compatibles se mantienen en `examples/` y CI los ejecuta automáticamente.

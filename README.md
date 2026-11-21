@@ -130,11 +130,20 @@ Los ejemplos ejecutables de la versión actual están en `examples/`. Los boceto
 Desde la raíz del repositorio:
 
 ```bash
+# Interpretar (se conserva la invocación legacy)
+cargo run -- run examples/test.hl
 cargo run -- examples/test.hl
-cargo run -- --compact programa-compacto.hl
-cargo run -- --format programa.hl
-cargo run -- --diagnostics-json programa.hl
+
+# Comprobar sintaxis y mostrar avisos del análisis estático, sin ejecutar
+cargo run -- check examples/test.hl
+
+# Sintaxis compacta, formateo y diagnósticos JSON
+cargo run -- run --compact programa-compacto.hl
+cargo run -- run --format programa.hl
+cargo run -- check --diagnostics-json programa.hl
 ```
+
+`hl build programa.hl [-o ejecutable]` está reservado en la CLI, pero devuelve un error explícito mientras el backend nativo no esté implementado. No genera un ejecutable todavía.
 
 Para generar el ejecutable optimizado `hl`:
 

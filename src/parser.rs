@@ -828,7 +828,12 @@ mod tests {
         match &program.statements[0] {
             Statement::Let(stmt) => match &stmt.value {
                 Expression::Lambda { body, .. } => {
-                    assert!(matches!(body.as_ref(), Expression::Block(statements) if statements.len() == 2));
+                    assert!(matches!(
+                        body.as_ref(),
+                        Expression::Block(statements)
+                            if statements.len() == 1
+                                && matches!(&statements[0], Statement::Block(inner) if inner.len() == 2)
+                    ));
                 }
                 other => panic!("expected Lambda, got {:?}", other),
             },

@@ -134,6 +134,18 @@ static void hl_print(HlValue value) {
         case HL_STRING: puts(value.as.string); break;
     }
 }
+static int hl_is_string_number_pair(HlValue left, HlValue right) {
+    return (left.tag == HL_STRING && right.tag == HL_NUMBER)
+        || (left.tag == HL_NUMBER && right.tag == HL_STRING);
+}
+static HlValue hl_mixed_text(HlValue left, HlValue right) {
+    const char *left_text = hl_to_text(left);
+    const char *right_text = hl_to_text(right);
+    size_t size = strlen(left_text) + strlen(right_text) + 3;
+    char *joined = (char *)hl_alloc(size);
+    snprintf(joined, size, "%s(%s)", left_text, right_text);
+    return hl_string(joined);
+}
 static void hl_require_numbers(HlValue left, HlValue right, const char *operation) {
     if (left.tag != HL_NUMBER || right.tag != HL_NUMBER) {
         char message[256];
@@ -162,26 +174,33 @@ static HlValue hl_add(HlValue left, HlValue right) {
     return hl_number(0);
 }
 static HlValue hl_sub(HlValue left, HlValue right) {
+    if (hl_is_string_number_pair(left, right)) return hl_mixed_text(left, right);
     hl_require_numbers(left, right, "Minus"); return hl_number(left.as.number - right.as.number);
 }
 static HlValue hl_mul(HlValue left, HlValue right) {
+    if (hl_is_string_number_pair(left, right)) return hl_mixed_text(left, right);
     hl_require_numbers(left, right, "Star"); return hl_number(left.as.number * right.as.number);
 }
 static HlValue hl_div(HlValue left, HlValue right) {
+    if (hl_is_string_number_pair(left, right)) return hl_mixed_text(left, right);
     hl_require_numbers(left, right, "Slash");
     if (right.as.number == 0.0) hl_fail("Division by zero");
     return hl_number(left.as.number / right.as.number);
 }
 static HlValue hl_less(HlValue left, HlValue right) {
+    if (hl_is_string_number_pair(left, right)) return hl_mixed_text(left, right);
     hl_require_numbers(left, right, "Less"); return hl_bool(left.as.number < right.as.number);
 }
 static HlValue hl_greater(HlValue left, HlValue right) {
+    if (hl_is_string_number_pair(left, right)) return hl_mixed_text(left, right);
     hl_require_numbers(left, right, "Greater"); return hl_bool(left.as.number > right.as.number);
 }
 static HlValue hl_equal(HlValue left, HlValue right) {
+    if (hl_is_string_number_pair(left, right)) return hl_mixed_text(left, right);
     hl_require_numbers(left, right, "Tilde"); return hl_bool(left.as.number == right.as.number);
 }
 static HlValue hl_not_equal(HlValue left, HlValue right) {
+    if (hl_is_string_number_pair(left, right)) return hl_mixed_text(left, right);
     hl_require_numbers(left, right, "Caret");
     return hl_bool(fabs(left.as.number - right.as.number) > DBL_EPSILON);
 }

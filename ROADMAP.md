@@ -24,7 +24,7 @@ La especificación completa del contrato semántico, runtime, backend y criterio
 
 ## Estado actual y límites conocidos
 
-- Intérprete Rust: lexer → parser → AST → evaluador; no hay IR ni compilador nativo.
+- Intérprete Rust y compilador nativo C comparten lexer → parser → AST. `hl build` ya genera ejecutables para un subconjunto explícito; no hay IR adicional.
 - El evaluador recorre recursivamente el AST y limita la profundidad de evaluación a 256 niveles; no es configurable y todavía no existe una pila de operandos propia.
 - El parser limita a 256 niveles la profundidad de expresiones y sentencias anidadas para devolver errores controlados; no hay todavía un parser iterativo.
 - Los entornos usan `HashMap`, pero los mapas del lenguaje son `Vec<(Value, Value)>`: buscar una clave es lineal.
@@ -108,12 +108,14 @@ Estado: pendiente. No asumir que `read_file()`, `write_file()` o `exec()` existe
 
 ### P9 — Compilador nativo y conformidad (prioridad actual)
 
-1. **N0 — Contrato semántico:** auditar AST y evaluador; fijar truthiness, operadores, coerciones, scopes, closures, colecciones, impresión, errores y límites mediante tests.
-2. **N1 — CLI/toolchain:** añadir `run`, `build`, `check`, alias legacy, detección de GCC/Clang y códigos de salida estables.
-3. **N2 — Runtime C:** implementar valores etiquetados, strings, colecciones, entornos, funciones, flujo de control, errores y gestión de memoria.
-4. **N3 — Backend por subconjuntos:** generar C desde AST, primero primitivas y control de flujo; después colecciones y funciones/closures.
-5. **N4 — Build y diferencial:** enlazar el runtime, generar ejecutable y comparar stdout, stderr, código de salida y errores entre intérprete y binario nativo.
-6. **N5 — Cobertura:** ampliar hasta cubrir todo el AST y la semántica del intérprete; solo entonces declarar paridad completa y abordar ARM64/Windows.
+Estado real: primer camino de compilación C operativo para un subconjunto, todavía sin paridad completa.
+
+1. **N0 — Contrato semántico (parcial):** se ha corregido el fallback numérico silencioso y se han fijado algunos casos de parser con regresiones. Falta completar pruebas de operadores/coerciones, scopes, impresión, Unicode, errores y límites.
+2. **N1 — CLI/toolchain (implementado inicialmente):** `run`, `build`, `check`, alias legacy y códigos de salida. `build` detecta `cc`, GCC o Clang y no sobrescribe destinos existentes.
+3. **N2 — Runtime C (mínimo):** valores dinámicos Number/Bool/String, entornos, variables, truthiness, operadores y salida. La memoria asignada vive hasta finalizar el proceso; falta una política completa de gestión y pruebas de estrés.
+4. **N3 — Backend por subconjuntos (primer corte):** genera C desde el AST existente para literales, variables, asignación, operadores, ternario, bloques, if, while, break/continue y print. Arrays, mapas, indexación, llamadas y closures se rechazan explícitamente.
+5. **N4 — Build y diferencial (build operativo, diferencial pendiente):** `hl build` invoca el compilador C y produce un ejecutable. Falta comparar automáticamente stdout, stderr y códigos de salida contra el intérprete para todo el subconjunto y añadir pruebas de errores.
+6. **N5 — Cobertura:** incorporar colecciones, strings Unicode/indexación, funciones y closures, memoria con ciclos y el resto del AST; solo entonces declarar paridad completa y abordar ARM64/Windows.
 
 No reutilizar `prototypes/output.c` como backend funcional. No hacer obligatorio el checker estático para compilar. No declarar una característica implementada hasta tener tests y CI que la demuestren.
 

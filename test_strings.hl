@@ -1,7 +1,0 @@
-let saludo = "Hola, mundo desde Hacklang!";
-print saludo;
-
-print "Esto tambien funciona.";
-
-let num = 42;
-print num;

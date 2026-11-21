@@ -257,6 +257,74 @@ impl Parser {
         else { (Token::ParenOpen, Token::ParenClose) }
     }
 
+    // Legacy uses parentheses both for grouped expressions and statement blocks.
+    // In lambda bodies, distinguish them before choosing the parser path.
+    fn legacy_lambda_body_is_block(&self) -> bool {
+        if self.compact || *self.current_token() != Token::ParenOpen {
+            return false;
+        }
+
+        let start = self.position + 1;
+        let first = match self.tokens.get(start) {
+            Some(token) => token,
+            None => return false,
+        };
+
+        if matches!(
+            first,
+            Token::Let | Token::Print | Token::Return | Token::Break
+                | Token::Continue | Token::If | Token::While
+        ) {
+            return true;
+        }
+
+        if matches!(first, Token::Identifier(_)) {
+            match self.tokens.get(start + 1) {
+                Some(Token::Equals) => return true,
+                Some(Token::BracketOpen) => {
+                    let mut depth = 0usize;
+                    for (offset, token) in self.tokens.iter().enumerate().skip(start + 1) {
+                        match token {
+                            Token::BracketOpen => depth += 1,
+                            Token::BracketClose => {
+                                depth = depth.saturating_sub(1);
+                                if depth == 0 {
+                                    return matches!(self.tokens.get(offset + 1), Some(Token::Equals));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // A semicolon at the outer level cannot occur in a grouped expression,
+        // but is valid between statements in a legacy lambda block.
+        let mut paren_depth = 0usize;
+        let mut bracket_depth = 0usize;
+        let mut brace_depth = 0usize;
+        for token in self.tokens.iter().skip(start) {
+            match token {
+                Token::ParenOpen => paren_depth += 1,
+                Token::ParenClose if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
+                    return false;
+                }
+                Token::ParenClose => paren_depth = paren_depth.saturating_sub(1),
+                Token::BracketOpen => bracket_depth += 1,
+                Token::BracketClose => bracket_depth = bracket_depth.saturating_sub(1),
+                Token::BraceOpen => brace_depth += 1,
+                Token::BraceClose => brace_depth = brace_depth.saturating_sub(1),
+                Token::Semicolon if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
     fn parse_block_statement(&mut self) -> Result<Statement, String> {
         let (open, close) = self.block_delimiters();
         if *self.current_token() != open { return Err(format!("Se esperaba '{open:?}' al abrir el bloque")); }
@@ -323,7 +391,12 @@ impl Parser {
         self.advance(); // consume |
 
         let (block_open, block_close) = self.block_delimiters();
-        let body = if *self.current_token() == block_open {
+        let is_block = if self.compact {
+            *self.current_token() == block_open
+        } else {
+            self.legacy_lambda_body_is_block()
+        };
+        let body = if is_block {
             self.advance();
             let statements = self.parse_block()?;
             if *self.current_token() != block_close { return Err(format!("Se esperaba '{block_close:?}' al cerrar el cuerpo de la función")); }
@@ -507,7 +580,12 @@ impl Parser {
                 }
                 self.advance();
                 let (block_open, block_close) = self.block_delimiters();
-                let body = if *self.current_token() == block_open {
+                let is_block = if self.compact {
+                    *self.current_token() == block_open
+                } else {
+                    self.legacy_lambda_body_is_block()
+                };
+                let body = if is_block {
                     self.advance();
                     let statements = self.parse_block()?;
                     if *self.current_token() != block_close { return Err(format!("Se esperaba '{block_close:?}' al cerrar el cuerpo de la función")); }
@@ -746,6 +824,35 @@ mod tests {
                     assert!(matches!(false_branch.as_ref(), Expression::Identifier(name) if name == "b"));
                 }
             }
+            other => panic!("expected Let, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn legacy_lambda_parenthesized_expression_is_not_misparsed_as_block() {
+        let program = parse("let add = |x, y| (x + y);");
+        match &program.statements[0] {
+            Statement::Let(stmt) => match &stmt.value {
+                Expression::Lambda { params, body } => {
+                    assert_eq!(params, &vec!["x".to_string(), "y".to_string()]);
+                    assert!(matches!(body.as_ref(), Expression::Infix { operator: Token::Plus, .. }));
+                }
+                other => panic!("expected Lambda, got {:?}", other),
+            },
+            other => panic!("expected Let, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn legacy_lambda_parenthesized_statement_block_still_parses() {
+        let program = parse("let get = |x| (let y = x; return y;);");
+        match &program.statements[0] {
+            Statement::Let(stmt) => match &stmt.value {
+                Expression::Lambda { body, .. } => {
+                    assert!(matches!(body.as_ref(), Expression::Block(statements) if statements.len() == 2));
+                }
+                other => panic!("expected Lambda, got {:?}", other),
+            },
             other => panic!("expected Let, got {:?}", other),
         }
     }

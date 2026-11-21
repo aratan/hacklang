@@ -11,6 +11,7 @@ mod parser;
 mod evaluador;
 mod type_checker;
 mod formatter;
+mod native;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Command {
@@ -109,10 +110,6 @@ fn run() -> ExitCode {
     };
 
     let command = cli.command.unwrap_or(Command::Run);
-    if command == Command::Build {
-        eprintln!("Compilación nativa todavía no implementada. No se ha generado ningún ejecutable.");
-        return ExitCode::from(2);
-    }
 
     let filename = cli.filename.as_deref().expect("parse_args valida filename");
     let source_code = match fs::read_to_string(filename) {
@@ -145,6 +142,20 @@ fn run() -> ExitCode {
             return ExitCode::from(1);
         }
     };
+
+    if command == Command::Build {
+        let output = cli.output.as_deref().map(std::path::Path::new);
+        match native::compile_to_executable(&ast, std::path::Path::new(filename), output) {
+            Ok(executable) => {
+                println!("Ejecutable nativo generado: {}", executable.display());
+                return ExitCode::SUCCESS;
+            }
+            Err(error) => {
+                eprintln!("Error de compilación nativa: {error}");
+                return ExitCode::from(1);
+            }
+        }
+    }
 
     if cli.format {
         println!("{}", formatter::format_program(&ast));

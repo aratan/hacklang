@@ -373,7 +373,7 @@ mod tests {
         assert!(build.is_ok(), "native compilation failed: {build:?}");
         let run = Command::new(&executable).output().expect("run native executable");
         assert!(run.status.success());
-        assert_eq!(String::from_utf8_lossy(&run.stdout), "3\\n");
+        assert_eq!(String::from_utf8_lossy(&run.stdout), "3\n");
         let _ = fs::remove_dir_all(directory);
     }
 

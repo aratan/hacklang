@@ -20,7 +20,7 @@ fn main() {
     let filename = match args.iter().find(|arg| arg.as_str() != "--compact" && arg.as_str() != "--format" && arg.as_str() != "--diagnostics-json") {
         Some(filename) => filename,
         None => {
-            eprintln!("Uso: hacklangc [--compact] [--format] [--diagnostics-json] <nombre_de_archivo.hl>");
+            eprintln!("Uso: hl [--compact] [--format] [--diagnostics-json] <nombre_de_archivo.hl>");
             return;
         }
     };

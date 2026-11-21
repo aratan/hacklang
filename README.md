@@ -122,10 +122,23 @@ print add(3, 4);
 
 ## Cómo usar
 
+Desde la raíz del repositorio:
+
 ```bash
-cd hacklangc
-cargo run ../test.hl
+cargo run -- examples/test.hl
+cargo run -- --compact compact.hl
+cargo run -- --format programa.hl
+cargo run -- --diagnostics-json programa.hl
 ```
+
+Para generar el ejecutable optimizado `hl`:
+
+```bash
+cargo build --release
+./target/release/hl examples/test.hl
+```
+
+En Windows, el ejecutable se genera como `target/release/hl.exe`. Cargo gestiona los artefactos de compilación dentro de `target/`, que no se versiona.
 
 ### Sintaxis compacta experimental
 
@@ -149,23 +162,22 @@ print fact(5)
 Ejecutar un archivo compacto:
 
 ```bash
-cd hacklangc
-cargo run -- --compact ../compact.hl
+cargo run -- --compact compact.hl
 ```
 
 Convertir un programa legacy a la forma canónica compacta (sin ejecutarlo):
 
 ```bash
-cargo run -- --format ../programa.hl
+cargo run -- --format programa.hl
 ```
 
 Para formatear un archivo que ya usa el modo compacto:
 
 ```bash
-cargo run -- --compact --format ../compact.hl
+cargo run -- --compact --format compact.hl
 
 # Static diagnostics as JSON (analysis only; does not execute the program)
-cargo run -- --diagnostics-json ../programa.hl
+cargo run -- --diagnostics-json programa.hl
 ```
 
 En esta primera versión se compactan las declaraciones (`:=`), los bloques (`{}`), las condiciones de `if/while`, los cuerpos de lambdas y los mapas (`@{}`). Se mantienen `print`, `return`, `break` y `continue` como palabras clave para evitar colisiones con operadores existentes. No se exige punto y coma entre sentencias cuando el siguiente token permite determinar el final de la expresión.

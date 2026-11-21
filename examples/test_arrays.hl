@@ -1,0 +1,5 @@
+let mi_array = [10, "hola", 20 * 2, "mundo"];
+
+print mi_array[0];
+print mi_array[1];
+print mi_array[3];

@@ -5,3 +5,9 @@
 # SQLite databases
 mydatabase.db
 *.db
+
+# Rust build artifacts
+/target/
+/build/
+/dist/
+/output/

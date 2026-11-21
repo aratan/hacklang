@@ -265,7 +265,14 @@ impl Parser {
         }
 
         let start = self.position + 1;
-        let first = match self.tokens.get(start) {
+        // Legacy lambda blocks are sometimes wrapped in an extra grouping pair:
+        // |x| ((let value = x; return value;)). Skip only leading opening parens
+        // when identifying the first statement token.
+        let mut first_index = start;
+        while matches!(self.tokens.get(first_index), Some(Token::ParenOpen)) {
+            first_index += 1;
+        }
+        let first = match self.tokens.get(first_index) {
             Some(token) => token,
             None => return false,
         };
@@ -279,11 +286,11 @@ impl Parser {
         }
 
         if matches!(first, Token::Identifier(_)) {
-            match self.tokens.get(start + 1) {
+            match self.tokens.get(first_index + 1) {
                 Some(Token::Equals) => return true,
                 Some(Token::BracketOpen) => {
                     let mut depth = 0usize;
-                    for (offset, token) in self.tokens.iter().enumerate().skip(start + 1) {
+                    for (offset, token) in self.tokens.iter().enumerate().skip(first_index + 1) {
                         match token {
                             Token::BracketOpen => depth += 1,
                             Token::BracketClose => {
@@ -300,25 +307,15 @@ impl Parser {
             }
         }
 
-        // A semicolon at the outer level cannot occur in a grouped expression,
-        // but is valid between statements in a legacy lambda block.
+        // A semicolon anywhere before the matching outer ')' cannot belong to
+        // a valid grouped expression, but can separate statements in a block.
         let mut paren_depth = 0usize;
-        let mut bracket_depth = 0usize;
-        let mut brace_depth = 0usize;
         for token in self.tokens.iter().skip(start) {
             match token {
                 Token::ParenOpen => paren_depth += 1,
-                Token::ParenClose if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
-                    return false;
-                }
+                Token::ParenClose if paren_depth == 0 => return false,
                 Token::ParenClose => paren_depth = paren_depth.saturating_sub(1),
-                Token::BracketOpen => bracket_depth += 1,
-                Token::BracketClose => bracket_depth = bracket_depth.saturating_sub(1),
-                Token::BraceOpen => brace_depth += 1,
-                Token::BraceClose => brace_depth = brace_depth.saturating_sub(1),
-                Token::Semicolon if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
-                    return true;
-                }
+                Token::Semicolon => return true,
                 _ => {}
             }
         }
@@ -818,6 +815,20 @@ mod tests {
                 Expression::Lambda { params, body } => {
                     assert_eq!(params, &vec!["x".to_string(), "y".to_string()]);
                     assert!(matches!(body.as_ref(), Expression::Infix { operator: Token::Plus, .. }));
+                }
+                other => panic!("expected Lambda, got {:?}", other),
+            },
+            other => panic!("expected Let, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn legacy_lambda_nested_parenthesized_statement_block_still_parses() {
+        let program = parse("let factory = |x| ((let inner = |y| x + y; return inner;));");
+        match &program.statements[0] {
+            Statement::Let(stmt) => match &stmt.value {
+                Expression::Lambda { body, .. } => {
+                    assert!(matches!(body.as_ref(), Expression::Block(statements) if statements.len() == 2));
                 }
                 other => panic!("expected Lambda, got {:?}", other),
             },

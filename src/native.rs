@@ -325,6 +325,59 @@ mod tests {
     }
 
     #[test]
+    fn compiles_and_runs_a_native_program_with_variables_conditions_and_loops() {
+        use crate::ast::{AssignStatement, IfStatement, LetStatement, PrintStatement, WhileStatement};
+
+        let program = Program {
+            statements: vec![
+                Statement::Let(LetStatement {
+                    name: "counter".into(),
+                    value: Expression::NumberLiteral(0.0),
+                }),
+                Statement::While(WhileStatement {
+                    condition: Expression::Infix {
+                        left: Box::new(Expression::Identifier("counter".into())),
+                        operator: Token::Less,
+                        right: Box::new(Expression::NumberLiteral(3.0)),
+                    },
+                    body: vec![Statement::Assign(AssignStatement {
+                        name: "counter".into(),
+                        value: Expression::Infix {
+                            left: Box::new(Expression::Identifier("counter".into())),
+                            operator: Token::Plus,
+                            right: Box::new(Expression::NumberLiteral(1.0)),
+                        },
+                    })],
+                }),
+                Statement::If(IfStatement {
+                    condition: Expression::Infix {
+                        left: Box::new(Expression::Identifier("counter".into())),
+                        operator: Token::Greater,
+                        right: Box::new(Expression::NumberLiteral(2.0)),
+                    },
+                    true_body: vec![Statement::Print(PrintStatement {
+                        value: Expression::Identifier("counter".into()),
+                    })],
+                    false_body: Some(vec![Statement::Print(PrintStatement {
+                        value: Expression::NumberLiteral(0.0),
+                    })]),
+                }),
+            ],
+        };
+
+        let directory = temporary_directory().expect("temporary directory");
+        let source = directory.join("program.hl");
+        let executable = directory.join("program");
+        fs::write(&source, "native backend test").unwrap();
+        let build = compile_to_executable(&program, &source, Some(&executable));
+        assert!(build.is_ok(), "native compilation failed: {build:?}");
+        let run = Command::new(&executable).output().expect("run native executable");
+        assert!(run.status.success());
+        assert_eq!(String::from_utf8_lossy(&run.stdout), "3\\n");
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn reports_unsupported_closures_instead_of_generating_wrong_code() {
         let program = Program {
             statements: vec![Statement::Let(LetStatement {

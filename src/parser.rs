@@ -257,6 +257,71 @@ impl Parser {
         else { (Token::ParenOpen, Token::ParenClose) }
     }
 
+    // Legacy uses parentheses both for grouped expressions and statement blocks.
+    // In lambda bodies, distinguish them before choosing the parser path.
+    fn legacy_lambda_body_is_block(&self) -> bool {
+        if self.compact || *self.current_token() != Token::ParenOpen {
+            return false;
+        }
+
+        let start = self.position + 1;
+        // Legacy lambda blocks are sometimes wrapped in an extra grouping pair:
+        // |x| ((let value = x; return value;)). Skip only leading opening parens
+        // when identifying the first statement token.
+        let mut first_index = start;
+        while matches!(self.tokens.get(first_index), Some(Token::ParenOpen)) {
+            first_index += 1;
+        }
+        let first = match self.tokens.get(first_index) {
+            Some(token) => token,
+            None => return false,
+        };
+
+        if matches!(
+            first,
+            Token::Let | Token::Print | Token::Return | Token::Break
+                | Token::Continue | Token::If | Token::While
+        ) {
+            return true;
+        }
+
+        if matches!(first, Token::Identifier(_)) {
+            match self.tokens.get(first_index + 1) {
+                Some(Token::Equals) => return true,
+                Some(Token::BracketOpen) => {
+                    let mut depth = 0usize;
+                    for (offset, token) in self.tokens.iter().enumerate().skip(first_index + 1) {
+                        match token {
+                            Token::BracketOpen => depth += 1,
+                            Token::BracketClose => {
+                                depth = depth.saturating_sub(1);
+                                if depth == 0 {
+                                    return matches!(self.tokens.get(offset + 1), Some(Token::Equals));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // A semicolon anywhere before the matching outer ')' cannot belong to
+        // a valid grouped expression, but can separate statements in a block.
+        let mut paren_depth = 0usize;
+        for token in self.tokens.iter().skip(start) {
+            match token {
+                Token::ParenOpen => paren_depth += 1,
+                Token::ParenClose if paren_depth == 0 => return false,
+                Token::ParenClose => paren_depth = paren_depth.saturating_sub(1),
+                Token::Semicolon => return true,
+                _ => {}
+            }
+        }
+        false
+    }
+
     fn parse_block_statement(&mut self) -> Result<Statement, String> {
         let (open, close) = self.block_delimiters();
         if *self.current_token() != open { return Err(format!("Se esperaba '{open:?}' al abrir el bloque")); }
@@ -314,34 +379,46 @@ impl Parser {
 
     // --- Sentencia Lambda: |x, y| { cuerpo } ---
     fn parse_lambda_statement(&mut self) -> Result<Statement, String> {
+        let lambda = self.parse_lambda_expression()?;
+        if *self.current_token() == Token::Semicolon {
+            self.advance();
+        }
+        let params = match &lambda {
+            Expression::Lambda { params, .. } => params,
+            _ => unreachable!("parse_lambda_expression always returns a Lambda"),
+        };
+        let name = format!("__lambda_{}", params.join("_"));
+        Ok(Statement::Let(LetStatement { name, value: lambda }))
+    }
+
+    // Único punto de parsing para lambdas usadas como expresión o sentencia.
+    fn parse_lambda_expression(&mut self) -> Result<Expression, String> {
         self.advance(); // consume primer |
         let params = self.parse_params()?;
-        
         if !self.is_at_end() && *self.current_token() != Token::Pipe {
             return Err("Se esperaba '|' después de los parámetros".to_string());
         }
-        self.advance(); // consume |
+        self.advance(); // consume segundo |
 
         let (block_open, block_close) = self.block_delimiters();
-        let body = if *self.current_token() == block_open {
+        let is_block = if self.compact {
+            *self.current_token() == block_open
+        } else {
+            self.legacy_lambda_body_is_block()
+        };
+        let body = if is_block {
             self.advance();
             let statements = self.parse_block()?;
-            if *self.current_token() != block_close { return Err(format!("Se esperaba '{block_close:?}' al cerrar el cuerpo de la función")); }
+            if *self.current_token() != block_close {
+                return Err(format!("Se esperaba '{block_close:?}' al cerrar el cuerpo de la función"));
+            }
             self.advance();
             Expression::Block(statements)
         } else {
             self.parse_expression(Precedence::Lowest)?
         };
 
-        if *self.current_token() == Token::Semicolon {
-            self.advance();
-        }
-
-        let name = format!("__lambda_{}", params.join("_"));
-        Ok(Statement::Let(LetStatement {
-            name,
-            value: Expression::Lambda { params, body: Box::new(body) },
-        }))
+        Ok(Expression::Lambda { params, body: Box::new(body) })
     }
 
     fn parse_params(&mut self) -> Result<Vec<String>, String> {
@@ -499,24 +576,7 @@ impl Parser {
                 Ok(expr)
             }
             Token::Pipe => {
-                // Lambda: |x, y| { body }
-                self.advance();
-                let params = self.parse_params()?;
-                if !self.is_at_end() && *self.current_token() != Token::Pipe {
-                    return Err("Se esperaba '|' después de los parámetros".to_string());
-                }
-                self.advance();
-                let (block_open, block_close) = self.block_delimiters();
-                let body = if *self.current_token() == block_open {
-                    self.advance();
-                    let statements = self.parse_block()?;
-                    if *self.current_token() != block_close { return Err(format!("Se esperaba '{block_close:?}' al cerrar el cuerpo de la función")); }
-                    self.advance();
-                    Expression::Block(statements)
-                } else {
-                    self.parse_expression(Precedence::Lowest)?
-                };
-                Ok(Expression::Lambda { params, body: Box::new(body) })
+                self.parse_lambda_expression()
             }
             Token::BracketOpen => {
                 self.advance();
@@ -746,6 +806,54 @@ mod tests {
                     assert!(matches!(false_branch.as_ref(), Expression::Identifier(name) if name == "b"));
                 }
             }
+            other => panic!("expected Let, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn legacy_lambda_parenthesized_expression_is_not_misparsed_as_block() {
+        let program = parse("let add = |x, y| (x + y);");
+        match &program.statements[0] {
+            Statement::Let(stmt) => match &stmt.value {
+                Expression::Lambda { params, body } => {
+                    assert_eq!(params, &vec!["x".to_string(), "y".to_string()]);
+                    assert!(matches!(body.as_ref(), Expression::Infix { operator: Token::Plus, .. }));
+                }
+                other => panic!("expected Lambda, got {:?}", other),
+            },
+            other => panic!("expected Let, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn legacy_lambda_nested_parenthesized_statement_block_still_parses() {
+        let program = parse("let factory = |x| ((let inner = |y| x + y; return inner;));");
+        match &program.statements[0] {
+            Statement::Let(stmt) => match &stmt.value {
+                Expression::Lambda { body, .. } => {
+                    assert!(matches!(
+                        body.as_ref(),
+                        Expression::Block(statements)
+                            if statements.len() == 1
+                                && matches!(&statements[0], Statement::Block(inner) if inner.len() == 2)
+                    ));
+                }
+                other => panic!("expected Lambda, got {:?}", other),
+            },
+            other => panic!("expected Let, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn legacy_lambda_parenthesized_statement_block_still_parses() {
+        let program = parse("let get = |x| (let y = x; return y;);");
+        match &program.statements[0] {
+            Statement::Let(stmt) => match &stmt.value {
+                Expression::Lambda { body, .. } => {
+                    assert!(matches!(body.as_ref(), Expression::Block(statements) if statements.len() == 2));
+                }
+                other => panic!("expected Lambda, got {:?}", other),
+            },
             other => panic!("expected Let, got {:?}", other),
         }
     }

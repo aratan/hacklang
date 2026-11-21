@@ -435,7 +435,7 @@ impl Evaluator {
             Token::Greater => Ok(Value::Bool(l > r)),
             Token::Tilde => Ok(Value::Bool(l == r)),
             Token::Caret => Ok(Value::Bool((l - r).abs() > f64::EPSILON)),
-            _ => Ok(Value::Number(0.0)),
+            _ => Err(format!("Operador numérico no soportado: {:?}", op)),
         }
     }
 
@@ -612,6 +612,13 @@ mod tests {
         let result = eval_expr("10 / 0");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Division by zero"));
+    }
+
+    #[test]
+    fn unsupported_numeric_operator_returns_error_instead_of_zero() {
+        let evaluator = Evaluator::new();
+        let error = evaluator.num_op(4.0, 2.0, &Token::At).unwrap_err();
+        assert!(error.contains("Operador numérico no soportado"));
     }
 
     #[test]

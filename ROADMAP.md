@@ -2,9 +2,29 @@
 
 Este documento separa las capacidades existentes de las que faltan. Las propuestas son objetivos, no funcionalidades ya implementadas. La compatibilidad con la sintaxis legacy y el modo compacto experimental es un requisito: ninguna mejora debe cambiar silenciosamente el comportamiento existente.
 
+## Objetivo prioritario: interpretación y ejecutables nativos
+
+HackLang debe poder ejecutar un mismo programa mediante el intérprete Rust o mediante un ejecutable nativo generado desde el código fuente. La compilación nativa es ahora un objetivo principal del proyecto, no una optimización aplazada a una fase futura.
+
+Contrato de CLI previsto:
+
+```sh
+hl run programa.hl
+hl build programa.hl
+hl build programa.hl -o programa
+hl check programa.hl
+./programa
+```
+
+`hl programa.hl` seguirá funcionando como alias del intérprete. El primer objetivo de compilación será Linux x86-64 usando GCC o Clang. ARM64, Windows y la compilación cruzada quedan para fases posteriores.
+
+La arquitectura inicial mantiene un único front-end (lexer, parser, AST y análisis estático no bloqueante), el evaluador Rust como referencia semántica y un backend C que enlaza con un runtime nativo dinámico. No se añadirá una IR prematuramente: se reevaluará cuando optimizaciones o varios backends lo justifiquen.
+
+La especificación completa del contrato semántico, runtime, backend y criterios de aceptación está en [docs/NATIVE_COMPILER_DESIGN.md](docs/NATIVE_COMPILER_DESIGN.md).
+
 ## Estado actual y límites conocidos
 
-- Intérprete Rust: lexer → parser → AST → evaluador; no hay IR ni compilador nativo.
+- Intérprete Rust y compilador nativo C comparten lexer → parser → AST. `hl build` ya genera ejecutables para un subconjunto explícito; no hay IR adicional.
 - El evaluador recorre recursivamente el AST y limita la profundidad de evaluación a 256 niveles; no es configurable y todavía no existe una pila de operandos propia.
 - El parser limita a 256 niveles la profundidad de expresiones y sentencias anidadas para devolver errores controlados; no hay todavía un parser iterativo.
 - Los entornos usan `HashMap`, pero los mapas del lenguaje son `Vec<(Value, Value)>`: buscar una clave es lineal.
@@ -86,10 +106,23 @@ Estado: pendiente. No asumir que `read_file()`, `write_file()` o `exec()` existe
 - Añadir anotaciones opcionales para parámetros/retornos y genéricos donde aporten valor.
 - Mantener `unknown` como escape conservador cuando no haya evidencia suficiente; no inventar tipos.
 
-### P9 — Rendimiento y compilación
+### P9 — Compilador nativo y conformidad (prioridad actual)
+
+Estado real: primer camino de compilación C operativo para un subconjunto, todavía sin paridad completa.
+
+1. **N0 — Contrato semántico (parcial):** se ha corregido el fallback numérico silencioso y se han fijado algunos casos de parser con regresiones. Falta completar pruebas de operadores/coerciones, scopes, impresión, Unicode, errores y límites.
+2. **N1 — CLI/toolchain (implementado inicialmente):** `run`, `build`, `check`, alias legacy y códigos de salida. `build` detecta `cc`, GCC o Clang y no sobrescribe destinos existentes.
+3. **N2 — Runtime C (mínimo):** valores dinámicos Number/Bool/String, entornos, variables, truthiness, operadores y salida. La memoria asignada vive hasta finalizar el proceso; falta una política completa de gestión y pruebas de estrés.
+4. **N3 — Backend por subconjuntos (primer corte):** genera C desde el AST existente para literales, variables, asignación, operadores, ternario, bloques, if, while, break/continue y print. Arrays, mapas, indexación, llamadas y closures se rechazan explícitamente.
+5. **N4 — Build y diferencial (build operativo, diferencial pendiente):** `hl build` invoca el compilador C y produce un ejecutable. Falta comparar automáticamente stdout, stderr y códigos de salida contra el intérprete para todo el subconjunto y añadir pruebas de errores.
+6. **N5 — Cobertura:** incorporar colecciones, strings Unicode/indexación, funciones y closures, memoria con ciclos y el resto del AST; solo entonces declarar paridad completa y abordar ARM64/Windows.
+
+No reutilizar `prototypes/output.c` como backend funcional. No hacer obligatorio el checker estático para compilar. No declarar una característica implementada hasta tener tests y CI que la demuestren.
+
+### P10 — Rendimiento y optimización
 - Crear benchmarks reproducibles: tiempo, memoria, profundidad máxima y coste de colecciones.
 - Medir coste real de tokens con tokenizadores representativos y comparar legibilidad/tasa de generación correcta (Pass@1).
-- Evaluar bytecode/IR y compilación solo después de tener benchmarks que demuestren el cuello de botella.
+- Evaluar IR, bytecode, optimizaciones o backends alternativos cuando benchmarks o requisitos concretos lo justifiquen.
 - Mantener CI con tests, lint, formato, fuzz smoke tests y benchmarks no bloqueantes.
 
 ## Política de ejemplos y compatibilidad
@@ -98,6 +131,7 @@ Estado: pendiente. No asumir que `read_file()`, `write_file()` o `exec()` existe
 - Cada archivo `examples/*.hl` se ejecuta en CI; un ejemplo que no pase debe corregirse o trasladarse a `prototypes/unsupported/` con una explicación de la dependencia pendiente.
 - Los ejemplos no pueden documentar funciones de runtime que no estén implementadas.
 - Los cambios de gramática deben conservar la sintaxis legacy y probar por separado el modo compacto experimental.
+- Todo ejemplo que pase en el intérprete y pertenezca al subconjunto nativo declarado debe pasar también en el ejecutable compilado.
 
 ## Criterios para aceptar cada capacidad
 
@@ -106,3 +140,4 @@ Estado: pendiente. No asumir que `read_file()`, `write_file()` o `exec()` existe
 3. Sin regresiones en sintaxis legacy ni en modo compacto.
 4. Medición cuando se alegue mejora de rendimiento o ahorro de tokens.
 5. Límites seguros por defecto para operaciones de sistema y red.
+6. Pruebas diferenciales intérprete/nativo para cada semántica cubierta.

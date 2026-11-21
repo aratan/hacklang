@@ -1,0 +1,8 @@
+// PROTOTIPO NO EJECUTABLE.
+// read_file() y write_file() no están implementadas en el runtime actual.
+let filename = "hacklang_test.txt";
+let content = "Hola desde un archivo creado por Hacklang!";
+write_file(filename, content);
+let read_content = read_file(filename);
+print "Contenido leido del archivo:";
+print read_content;

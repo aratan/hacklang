@@ -39,6 +39,18 @@ Implementado y cubierto por pruebas:
 
 Se mantienen las palabras clave `print`, `return`, `break` y `continue`; no se han introducido abreviaturas que colisionen con el ternario o con operadores. La implementación compacta es una primera versión experimental, no todavía la sintaxis predeterminada.
 
+### Diferencias de delimitadores entre modos
+
+| Construcción | Legacy (predeterminado) | Compacto (`--compact`) |
+|---|---|---|
+| Declaración | `let nombre = expr;` | `nombre:=expr` |
+| Bloque | `( sentencias )` | `{ sentencias }` |
+| Mapa | `@(clave: valor)` | `@{clave:valor}` |
+| Lambda de expresión | `|a,b| (expr)` | `|a,b|expr` |
+| Condición | `if (cond) (...)` / `while (cond) (...)` | `if cond{...}` / `while cond{...}` |
+
+No mezclar delimitadores de ambos modos en un mismo archivo salvo que el parser documente expresamente esa construcción. En particular, `@{...}` es la forma compacta de mapa y no debe usarse en ejemplos legacy.
+
 ## Siguientes reducciones a evaluar
 
 - Impresión abreviada: no asignar `?` hasta resolver la interacción inequívoca con el operador ternario; alternativa segura a estudiar: una palabra clave corta nueva, medida con tokenizadores.
@@ -105,6 +117,8 @@ La tabla define un objetivo de experimento, no una promesa de compatibilidad ni 
 6. Promover la sintaxis compacta a predeterminada solo si reduce el coste total y no empeora de forma significativa la tasa de éxito.
 
 ## Estado actualizado del proyecto
+
+La CI ejecuta todos los archivos `examples/*.hl` usando el modo correspondiente indicado por cada prueba. Los ejemplos que dependen de funciones aún no implementadas (`read_file`, `write_file`, `exec`) se conservan fuera de `examples/`, en `prototypes/unsupported/`, y no definen la API del lenguaje.
 
 Ya se han cerrado dos limitaciones iniciales del comprobador:
 

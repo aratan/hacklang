@@ -1,0 +1,5 @@
+// PROTOTIPO NO EJECUTABLE.
+// exec() no está implementada en el runtime actual.
+print "Ejecutando un comando del sistema...";
+let directory_listing = exec("dir");
+print directory_listing;

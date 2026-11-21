@@ -24,5 +24,13 @@ jobs:
         run: cargo check
       - name: Build
         run: cargo build
-      - name: Run tests
+      - name: Run unit tests
         run: cargo test
+      - name: Execute every supported .hl example
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in examples/*.hl; do
+            echo "Checking $file"
+            cargo run --quiet -- "$file"
+          done

@@ -13,6 +13,8 @@ Este documento separa las capacidades existentes de las que faltan. Las propuest
 - El comprobador estático es inicial y no bloqueante. Usa `unknown` para llamadas, parámetros y expresiones cuya información aún no puede deducir.
 - Los errores se propagan con `Result<T, String>` en Rust, pero el lenguaje todavía no ofrece un mecanismo propio y uniforme para capturarlos y recuperarse.
 - No hay módulos/imports ni biblioteca estándar de sistema/red.
+- No hay builtins de archivos (`read_file`, `write_file`) ni ejecución de procesos (`exec`). Los ejemplos históricos que los invocaban están aislados en `prototypes/unsupported/`; no son parte de la API disponible.
+- El conjunto `examples/*.hl` contiene programas compatibles y CI los ejecuta después de compilar y pasar los tests Rust.
 
 ## Objetivo de diseño
 
@@ -49,6 +51,9 @@ HackLang es un lenguaje de programación de propósito general. Debe permitir co
 - Pruebas de interoperabilidad y límites de tamaño para entradas externas.
 
 ### P4 — E/S y capacidades del sistema
+
+Estado: pendiente. No asumir que `read_file()`, `write_file()` o `exec()` existen. Los prototipos históricos no son pruebas de funcionalidad.
+
 - Archivos/directorios: lectura, escritura, listado, metadatos y rutas.
 - Variables de entorno y argumentos de proceso.
 - Procesos: ejecutar, capturar stdout/stderr, códigos de salida y terminación controlada.
@@ -86,6 +91,13 @@ HackLang es un lenguaje de programación de propósito general. Debe permitir co
 - Medir coste real de tokens con tokenizadores representativos y comparar legibilidad/tasa de generación correcta (Pass@1).
 - Evaluar bytecode/IR y compilación solo después de tener benchmarks que demuestren el cuello de botella.
 - Mantener CI con tests, lint, formato, fuzz smoke tests y benchmarks no bloqueantes.
+
+## Política de ejemplos y compatibilidad
+
+- `examples/` contiene exclusivamente programas que deben funcionar con la versión actual de `hl`.
+- Cada archivo `examples/*.hl` se ejecuta en CI; un ejemplo que no pase debe corregirse o trasladarse a `prototypes/unsupported/` con una explicación de la dependencia pendiente.
+- Los ejemplos no pueden documentar funciones de runtime que no estén implementadas.
+- Los cambios de gramática deben conservar la sintaxis legacy y probar por separado el modo compacto experimental.
 
 ## Criterios para aceptar cada capacidad
 

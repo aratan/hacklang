@@ -24,7 +24,7 @@ hl check programa.hl
 ## Estado verificado en el código actual
 
 - Cargo define un único paquete y binario Rust `hl`; no hay dependencias externas.
-- `main.rs` ya reutiliza lexer (`tokenize_spanned`), parser (`Parser::new_spanned` / `new_compact_spanned`), formatter, checker (`TypeChecker::check`) y evaluador (`Evaluator`). No hay subcomandos `run/build/check`; las opciones `--compact`, `--format` y `--diagnostics-json` sí existen y deben preservarse.
+- `main.rs` reutiliza lexer (`tokenize_spanned`), parser (`Parser::new_spanned` / `new_compact_spanned`), formatter, checker (`TypeChecker::check`) y evaluador (`Evaluator`). La rama de trabajo ya incorpora `run` y `check`, mantiene la invocación legacy y preserva `--compact`, `--format` y `--diagnostics-json`. `build` reconoce la sintaxis pero informa explícitamente que el backend aún no existe.
 - El lexer ya produce `SpannedToken` y el parser acepta tokens con spans para enriquecer errores sintácticos. El AST (`Program`, `Statement`, `Expression`) todavía no conserva spans: no se debe volver a implementar tokenización ni localización desde cero. La mejora pendiente es propagar los spans existentes hasta nodos/diagnósticos del AST.
 - El checker admite `Unknown` y es deliberadamente no bloqueante. No puede usarse como garantía de que todos los tipos están resueltos.
 - `prototypes/output.c` es un prototipo histórico incompleto, no un backend reutilizable ni un runtime funcional.
@@ -166,7 +166,8 @@ No implementar filesystem, procesos, sockets ni biblioteca estándar de sistema 
 ### N0 — Contrato semántico y conformidad
 
 - Reutilizar la batería existente de tests de `evaluador.rs` (ya cubre closures, recursividad, scopes, GC de frames, truthiness, operadores básicos, colecciones, `len` y límites); ampliarla donde haya huecos, no duplicarla en otra suite Rust paralela.
-- Corregir el fallback silencioso de operadores no soportados en `num_op` antes de definir el contrato nativo.
+- [x] Corregir el fallback silencioso de operadores no soportados en `num_op`: ahora devuelve error explícito en vez de fabricar `Number(0)`; se añadió una regresión unitaria.
+
 - Convertir los casos existentes del evaluador en corpus de conformidad.
 - Añadir tests para todos los operadores, coerciones, mapas con claves repetidas, impresión, Unicode, scopes, closures, errores y límites.
 - Resolver los comportamientos ambiguos señalados en operadores y formato de colecciones.

@@ -1,6 +1,6 @@
 # HackLang
 
-Lenguaje de programación implementado en Rust. Actualmente dispone de un intérprete; la compilación de ejecutables nativos es el objetivo de desarrollo prioritario y todavía no está implementada.
+Lenguaje de programación con front-end e intérprete en Rust y un primer backend de compilación nativa a C. El backend inicial admite un subconjunto explícito del lenguaje; arrays, mapas, indexación y funciones/closures siguen pendientes.
 
 ## Arquitectura
 
@@ -11,8 +11,12 @@ flowchart LR
     C --> D["Parser<br/><i>parse_program()</i>"]
     D --> E["AST<br/><i>Program</i>"]
     E --> H["Type checker<br/><i>check()</i> (análisis no bloqueante)"]
-    H --> F["Evaluador<br/><i>evaluate()</i>"]
+    H --> F["Evaluador Rust<br/><i>evaluate()</i>"]
     F --> G["Output"]
+    E --> I["Generador C<br/><i>native.rs</i>"]
+    I --> J["Runtime C<br/><i>native_runtime.c</i>"]
+    J --> K["GCC / Clang"]
+    K --> L["Ejecutable nativo"]
 ```
 
 ### Componentes
@@ -134,6 +138,18 @@ Desde la raíz del repositorio:
 cargo run -- run examples/test.hl
 cargo run -- examples/test.hl
 
+# Compilar un programa del subconjunto nativo actual
+cat > hello.hl <<'EOF'
+let answer = 40 + 2;
+print answer;
+EOF
+cargo run -- build hello.hl
+./hello
+
+# Elegir el nombre del ejecutable
+cargo run -- build hello.hl -o hello-custom
+./hello-custom
+
 # Comprobar sintaxis y mostrar avisos del análisis estático, sin ejecutar
 cargo run -- check examples/test.hl
 
@@ -143,7 +159,7 @@ cargo run -- run --format programa.hl
 cargo run -- check --diagnostics-json programa.hl
 ```
 
-`hl build programa.hl [-o ejecutable]` está reservado en la CLI, pero devuelve un error explícito mientras el backend nativo no esté implementado. No genera un ejecutable todavía.
+`hl build programa.hl [-o ejecutable]` genera un ejecutable nativo mediante GCC o Clang. El primer subconjunto incluye números, booleanos, cadenas, variables, operadores, ternarios, if, while, break/continue y print. Arrays, mapas, indexación, llamadas, builtins y funciones/closures se rechazan explícitamente hasta que se implementen.
 
 Para generar el ejecutable optimizado `hl`:
 
@@ -196,20 +212,23 @@ cargo run -- --diagnostics-json programa.hl
 
 En esta primera versión se compactan las declaraciones (`:=`), los bloques (`{}`), las condiciones de `if/while`, los cuerpos de lambdas y los mapas (`@{}`). En modo legacy, las declaraciones usan `let`, los bloques usan `(...)` y los mapas usan `@(...)`. Se mantienen `print`, `return`, `break` y `continue` como palabras clave para evitar colisiones con operadores existentes. No se exige punto y coma entre sentencias cuando el siguiente token permite determinar el final de la expresión.
 
-## Objetivo de desarrollo: ejecutables nativos
+## Compilación nativa: primer subconjunto operativo
 
-El siguiente objetivo es que un mismo programa pueda ejecutarse con el intérprete Rust o compilarse a un ejecutable nativo del sistema. La interfaz prevista es `hl run`, `hl build` y `hl check`, manteniendo `hl programa.hl` como alias de ejecución. Estos subcomandos todavía no están implementados.
+La CLI dispone de `hl run`, `hl build` y `hl check`; `hl archivo.hl` sigue siendo el alias de interpretación. `build` reutiliza el mismo lexer, parser y AST y genera C desde el AST, enlazándolo con `src/native_runtime.c` mediante GCC o Clang.
 
-La estrategia es reutilizar el front-end existente (lexer, parser, AST y checker) y el evaluador Rust como referencia semántica. El backend nativo inicial generará C y enlazará un runtime propio con GCC o Clang. No se duplicará el parser ni se hará obligatorio el checker estático. La especificación y el inventario de componentes reutilizables están en [docs/NATIVE_COMPILER_DESIGN.md](docs/NATIVE_COMPILER_DESIGN.md).
+El backend inicial admite literales numéricos, booleanos y cadenas; variables y asignación; operadores aritméticos/comparativos, truthiness y ternario; bloques, if, while, break, continue y print. Rechaza con diagnóstico las construcciones que todavía no implementa: arrays, mapas, indexación, llamadas/builtins y funciones/closures.
+
+El runtime C usa valores dinámicos etiquetados. En esta primera iteración, los objetos asignados permanecen vivos hasta terminar el proceso; la gestión de memoria y la paridad completa siguen pendientes. No se crea un parser ni un AST alternativo, y el checker estático no es requisito para compilar. Diseño y límites: [docs/NATIVE_COMPILER_DESIGN.md](docs/NATIVE_COMPILER_DESIGN.md).
 
 ## Metodología
 
 ### Pipeline de ejecución
 
-HackLang sigue el patrón clásico de **intérprete sin IR** (Intermediate Representation). El flujo principal pasa por tres fases: lexer, parser y evaluador. No hay generación de código ni una representación intermedia adicional:
+HackLang mantiene un único front-end compartido. El intérprete recorre el AST en Rust; el backend nativo genera C directamente desde ese mismo AST. No hay una IR adicional:
 
 ```
-Source (.hl)  ──[Lexer]──▶  Tokens  ──[Parser]──▶  AST  ──[Evaluator]──▶  Output
+Source (.hl) ─▶ Lexer ─▶ Parser ─▶ AST ─┬─▶ Evaluator Rust ─▶ Output
+                                        └─▶ C Generator ─▶ Runtime C ─▶ GCC/Clang ─▶ Executable
 ```
 
 Cada fase es un módulo independiente de Rust (`lexer.rs`, `parser.rs`, `evaluador.rs`) que se comunica con el siguiente solo a través de su tipo de salida (`Vec<Token>` → `Program` → `Result<(), String>`). El análisis estático es una pasada independiente y no bloqueante entre el parser y el evaluador. No hay IR, optimizaciones ni generación de código.

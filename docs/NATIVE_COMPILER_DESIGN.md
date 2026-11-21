@@ -24,8 +24,8 @@ hl check programa.hl
 ## Estado verificado en el código actual
 
 - Cargo define un único paquete y binario Rust `hl`; no hay dependencias externas.
-- `main.rs` implementa lexer, parser, análisis estático no bloqueante y ejecución mediante `Evaluator`. Todavía no implementa subcomandos `run/build/check`.
-- El parser entrega `Program`; el AST usa enums `Statement` y `Expression`.
+- `main.rs` ya reutiliza lexer (`tokenize_spanned`), parser (`Parser::new_spanned` / `new_compact_spanned`), formatter, checker (`TypeChecker::check`) y evaluador (`Evaluator`). No hay subcomandos `run/build/check`; las opciones `--compact`, `--format` y `--diagnostics-json` sí existen y deben preservarse.
+- El lexer ya produce `SpannedToken` y el parser acepta tokens con spans para enriquecer errores sintácticos. El AST (`Program`, `Statement`, `Expression`) todavía no conserva spans: no se debe volver a implementar tokenización ni localización desde cero. La mejora pendiente es propagar los spans existentes hasta nodos/diagnósticos del AST.
 - El checker admite `Unknown` y es deliberadamente no bloqueante. No puede usarse como garantía de que todos los tipos están resueltos.
 - `prototypes/output.c` es un prototipo histórico incompleto, no un backend reutilizable ni un runtime funcional.
 - El evaluador limita la profundidad de evaluación a 256. El parser también tiene límites defensivos de anidamiento.
@@ -76,9 +76,10 @@ La suma Number/String y String/Number concatena la representación del número c
 
 - `let` crea o reemplaza una vinculación en el entorno actual.
 - `name = value` actualiza la vinculación existente más cercana; falla si no existe.
-- Los bloques como sentencia, las ramas `if`, los bucles `while` y las llamadas crean entornos hijos.
+- Los bloques como sentencia (`Statement::Block`), las ramas `if`, los bucles `while` y las llamadas crean entornos hijos.
 - El cuerpo de un `while` comparte el entorno creado para ese bucle entre iteraciones.
 - La condición de `if` se evalúa antes de crear el entorno de la rama.
+- `Expression::Block` (bloque usado como cuerpo de lambda) ejecuta sus sentencias en el entorno de llamada ya creado; no crea otro entorno adicional.
 - La asignación indexada solo acepta actualmente el nombre de una variable como destino directo.
 
 ### Funciones y flujo
@@ -96,8 +97,9 @@ La suma Number/String y String/Number concatena la representación del número c
 ### Colecciones, indexación y builtins
 
 - Los arrays son ordenados; el índice debe ser Number entero no negativo y estar dentro de rango.
-- Los mapas son pares ordenados. La búsqueda compara Values con igualdad estructural derivada de PartialEq y devuelve la primera clave coincidente.
+- Los mapas son pares ordenados. La búsqueda compara Values con igualdad estructural derivada de `PartialEq` y devuelve la primera clave coincidente.
 - Un literal de mapa puede contener claves repetidas; la lectura encuentra la primera. La asignación actualiza la primera coincidencia o añade una entrada al final.
+- La igualdad de `Value` deriva de `PartialEq`; por tanto, incluye igualdad estructural de arrays/mapas/funciones y las reglas de `f64` de Rust. El backend debe fijar y probar esos casos, no asumir igualdad por identidad.
 - La indexación de strings devuelve un string con el carácter Unicode en esa posición.
 - `len(x)` acepta exactamente un argumento: String (número de caracteres Unicode), Array o Map. Otros tipos y aridades fallan.
 - La asignación indexada de arrays exige que la posición ya exista; los mapas permiten insertar claves.
@@ -118,7 +120,20 @@ Source → Lexer → Parser → AST          ├→ comportamiento HackLang
                  └── C Code Generator → C source + native runtime → C compiler/linker → executable
 ```
 
-### Decisiones iniciales
+### Inventario de reutilización: no duplicar
+
+| Necesidad | Ya existe | Trabajo correcto |
+|---|---|---|
+| Tokenización y posiciones | `Lexer::tokenize_spanned`, `SpannedToken`, `SourceSpan` | Reutilizar; no crear otro lexer/span model |
+| Parsing legacy/compacto | `Parser::new_spanned`, `new_compact_spanned` | Reutilizar el parser actual |
+| AST | `Program`, `Statement`, `Expression` | Extender el AST solo para spans si se requiere; no crear un AST paralelo |
+| Formateo | `formatter::format_program` | Mantenerlo independiente del compilador |
+| Análisis estático | `TypeChecker::check`, `Unknown`, diagnósticos JSON | Reutilizarlo como análisis opcional, no como type lowering obligatorio |
+| Ejecución de referencia | `Evaluator::evaluate` | Mantenerlo como motor de `run` y oráculo diferencial |
+| Pruebas semánticas | Tests dentro de `evaluador.rs` y CI de ejemplos | Ampliar la suite existente y sumar harness diferencial, sin replicar tests manualmente |
+| Backend C | Solo `prototypes/output.c`, incompleto | Crear backend/runtime nuevo y aislado; no presentar el prototipo como reutilizable |
+
+## Decisiones iniciales
 
 1. Mantener lexer, parser, AST y checker como front-end único.
 2. Mantener el evaluador Rust como implementación de referencia y modo `run`.
@@ -127,7 +142,9 @@ Source → Lexer → Parser → AST          ├→ comportamiento HackLang
 5. El runtime nativo debe gestionar entornos, closures, strings, arrays, mapas, errores y memoria. No usar refcount simple sin resolver ciclos de closures recursivas.
 6. El compilador C se invocará como proceso externo. Primera plataforma: Linux x86-64 con GCC o Clang disponible. Detectar el compilador, comprobar su versión/ejecución y devolver errores legibles. No afirmar que el binario generado es independiente de libc o de la plataforma.
 7. La salida por defecto será el nombre del fuente sin extensión; `-o` permite elegir destino. No sobrescribir entradas ni archivos existentes sin una política explícita.
-8. Los temporales se crearán en un directorio controlado y se limpiarán tanto en éxito como en error. Los errores de compilación deben conservar diagnósticos útiles.
+8. Los errores actuales del CLI no establecen códigos de salida no-cero de forma consistente; corregir esto en la refactorización del CLI antes de usarlo en automatización.
+9. No duplicar funciones de parseo, lectura de fuente, chequeo, formato o ejecución para cada subcomando: extraer un pipeline compartido y enrutar las acciones después del parseo.
+10. Los temporales se crearán en un directorio controlado y se limpiarán tanto en éxito como en error. Los errores de compilación deben conservar diagnósticos útiles.
 
 ### Runtime nativo
 
@@ -148,6 +165,8 @@ No implementar filesystem, procesos, sockets ni biblioteca estándar de sistema 
 
 ### N0 — Contrato semántico y conformidad
 
+- Reutilizar la batería existente de tests de `evaluador.rs` (ya cubre closures, recursividad, scopes, GC de frames, truthiness, operadores básicos, colecciones, `len` y límites); ampliarla donde haya huecos, no duplicarla en otra suite Rust paralela.
+- Corregir el fallback silencioso de operadores no soportados en `num_op` antes de definir el contrato nativo.
 - Convertir los casos existentes del evaluador en corpus de conformidad.
 - Añadir tests para todos los operadores, coerciones, mapas con claves repetidas, impresión, Unicode, scopes, closures, errores y límites.
 - Resolver los comportamientos ambiguos señalados en operadores y formato de colecciones.
@@ -157,7 +176,9 @@ Aceptación: contrato escrito y tests Rust que lo fijan.
 
 ### N1 — CLI y toolchain
 
+- Reutilizar el pipeline actual de lectura → lexer spanned → parser → formatter/checker/evaluator. Extraerlo a funciones compartidas si hace falta para que `run`, `check` y `build` no implementen front-ends separados.
 - Introducir parser de argumentos para `run`, `build` y `check`, manteniendo aliases y flags actuales.
+- Corregir códigos de salida: ahora `main` imprime errores y hace `return`, lo que termina con código de proceso 0. Errores de argumentos, lectura, lexer, parser, runtime y toolchain deben devolver códigos distintos de cero.
 - Comprobar disponibilidad de GCC/Clang solo para `build`.
 - Definir códigos de salida y mensajes de error estables.
 

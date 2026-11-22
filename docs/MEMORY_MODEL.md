@@ -148,7 +148,7 @@ No introducir una IR independiente solo para este trabajo. Reutilizar el AST y l
 
 ## 10. Matriz de pruebas de diseño
 
-Estas pruebas son requisitos de conformidad, no tests ya implementados. Cada caso debe ejecutarse primero contra el evaluador actual para fijar el comportamiento observable y después contra el nuevo runtime. Las pruebas nativas deben comparar salida, valor final y errores.
+La matriz contiene requisitos de conformidad. Se ha añadido una primera batería automatizada al evaluador actual para fijar semántica observable; esto **no** demuestra ubicación stack/region, liberación real ni paridad nativa del nuevo modelo. Los IDs implementados se enumeran después de la tabla; los demás siguen pendientes y no deben darse por cubiertos.
 
 | ID | Caso | Resultado exigido |
 |---|---|---|
@@ -175,7 +175,41 @@ Estas pruebas son requisitos de conformidad, no tests ya implementados. Cada cas
 | MEM-021 | Recursividad profunda | Límite controlado y limpieza de todos los frames |
 | MEM-022 | Mismo programa interpretado y compilado | Salida, valores y errores equivalentes |
 
-## 11. Criterios de aceptación
+## 11. Cobertura automatizada actual
+
+Pruebas añadidas en `src/evaluador.rs`:
+
+| ID | Test | Qué fija hoy |
+|---|---|---|
+| MEM-004 | `mem_004_returned_array_remains_valid_after_creator_returns` | Array devuelto accesible tras retornar |
+| MEM-005 | `mem_005_nested_map_and_array_values_survive_escape` | Acceso a mapa/array anidado tras retorno |
+| MEM-006 | `mem_006_string_inside_returned_array_remains_valid` | String anidada en colección devuelta |
+| MEM-007 | `mem_007_returned_closure_keeps_immutable_capture` | Captura inmutable en closure escapada |
+| MEM-008 | `mem_008_returned_closure_observes_mutable_capture` | Mutación visible en llamadas posteriores |
+| MEM-009 | `mem_009_sibling_closures_share_the_same_mutable_capture` | Dos closures comparten el mismo entorno lógico |
+| MEM-010 | `mem_010_recursive_closure_remains_callable` | Recursividad de closure |
+| MEM-011 | `mem_011_mutually_recursive_closures_resolve_shared_scope` | Resolución mutua dentro del entorno compartido |
+| MEM-012 | `mem_012_closure_nested_in_escaping_collection_keeps_capture_alive` | Closure dentro de colección escapada |
+| MEM-013 | `mem_013_repeated_loop_calls_reuse_environment_frames` | Reutilización de frames en llamadas repetidas |
+| MEM-014 | `mem_014_break_and_continue_leave_nested_scopes_consistent` | Flujo de control en ámbitos anidados |
+| MEM-015 | `mem_015_return_from_nested_control_flow_preserves_returned_value` | Retorno de colección desde un bucle |
+| MEM-016 | `mem_016_error_during_nested_evaluation_is_reported` | Error de indexación propagado |
+| MEM-017 | `mem_017_reassigning_collection_keeps_new_value_observable` | Semántica observable de reasignación |
+| MEM-020 (parcial) | `mem_020_huge_collection_index_fails_without_panicking` | Índice enorme rechazado sin panic; no prueba overflow de capacidad |
+| MEM-021 (parcial) | `mem_021_deep_recursion_fails_with_controlled_error` | Límite de profundidad; limpieza completa aún no instrumentada |
+| MEM-022 (parcial) | `mem_022_collection_and_closure_semantics_are_stable_across_nested_calls` | Semántica del evaluador; no compara aún backend nativo |
+
+Pendiente de instrumentación o de una futura fase del lenguaje:
+
+- MEM-001..003: medir asignaciones y demostrar ubicación inline/stack/region.
+- MEM-018..019: HackLang aún no expone referencias explícitas; definir y comprobar aliasing/vida cuando se diseñe esa capacidad interna.
+- MEM-020 completo: probar overflow de tamaño/capacidad en el allocator de regiones.
+- MEM-021 completo: instrumentar destrucción de frames/regiones en todos los retornos y errores.
+- MEM-022 completo: comparar intérprete y binario para arrays, mapas y closures cuando el backend nativo los implemente.
+
+Estas pruebas fijan el comportamiento de referencia; no se han sustituido todavía la arena mark-and-sweep del evaluador ni las asignaciones del runtime C.
+
+## 12. Criterios de aceptación
 
 No se declarará implementado el modelo hasta que:
 

@@ -576,4 +576,39 @@ mod tests {
     }
 
 
+    #[test]
+    fn cfg_liveness_flows_through_if_branches_and_joins() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "x".into(), value: A::NumberLiteral(1.0) }),
+            S::If(crate::ast::IfStatement {
+                condition: A::BoolLiteral(true),
+                true_body: vec![S::Assign(crate::ast::AssignStatement { name: "x".into(), value: A::NumberLiteral(2.0) })],
+                false_body: Some(vec![S::Assign(crate::ast::AssignStatement { name: "x".into(), value: A::NumberLiteral(3.0) })]),
+            }),
+            S::Print(PrintStatement { value: A::Identifier("x".into()) }),
+        ]);
+        let cfg = &plan(&p).cfg;
+        assert!(cfg.blocks.iter().any(|block| block.successors.len() > 1));
+        assert!(cfg.blocks.iter().any(|block| block.live_out.contains(&BindingId(0))));
+    }
+
+    #[test]
+    fn cfg_liveness_creates_back_edge_for_while_loop() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "x".into(), value: A::NumberLiteral(1.0) }),
+            S::While(crate::ast::WhileStatement {
+                condition: A::Infix {
+                    left: Box::new(A::Identifier("x".into())),
+                    operator: crate::lexer::Token::Greater,
+                    right: Box::new(A::NumberLiteral(0.0)),
+                },
+                body: vec![S::Assign(crate::ast::AssignStatement { name: "x".into(), value: A::NumberLiteral(0.0) })],
+            }),
+            S::Print(PrintStatement { value: A::Identifier("x".into()) }),
+        ]);
+        let cfg = &plan(&p).cfg;
+        assert!(cfg.blocks.iter().any(|block| block.successors.iter().any(|next| (*next as usize) <= block.id as usize)));
+        assert!(cfg.blocks.iter().any(|block| block.live_in.contains(&BindingId(0))));
+    }
+
 }

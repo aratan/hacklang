@@ -26,7 +26,6 @@ pub struct Region {
     bytes: Vec<u8>,
     cursor: usize,
     tracked: Vec<Box<dyn Any>>,
-    epoch: u64,
 }
 
 impl Region {
@@ -66,6 +65,9 @@ impl Region {
                 .map_err(|_| RegionError::AllocationFailed)?;
             self.bytes.resize(end, 0);
         }
+        // Reused ranges may contain bytes from a previous allocation after restore.
+        // Clear every logical allocation, not only newly grown backing storage.
+        self.bytes[start..end].fill(0);
         self.cursor = end;
         Ok(start..end)
     }
@@ -86,7 +88,6 @@ impl Region {
             drop(self.tracked.pop());
         }
         self.cursor = mark.cursor;
-        self.epoch = self.epoch.checked_add(1).ok_or(RegionError::CapacityOverflow)?;
         Ok(())
     }
 
@@ -176,4 +177,17 @@ mod tests {
         assert_eq!(region.read(outer), Some(&[0; 8][..]));
         assert_eq!(region.read(inner), None);
     }
+    #[test]
+    fn reused_allocation_is_zero_initialized_after_restore() {
+        let mut region = Region::new();
+        let mark = region.mark();
+        let first = region.alloc_bytes(4, 1).unwrap();
+        assert!(region.write(first.clone(), &[9, 8, 7, 6]));
+        region.restore(mark).unwrap();
+        let second = region.alloc_bytes(4, 1).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(region.read(second), Some(&[0, 0, 0, 0][..]));
+    }
+
+
 }

@@ -111,6 +111,112 @@ impl Region {
     }
 }
 
+
+/// Stable identifier for a region descriptor in a RegionTable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RegionId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegionState {
+    Active,
+    Closed,
+}
+
+/// A descriptor owns one region and records its lexical parent. Descriptors
+/// contain no raw pointers and are invalidated explicitly by close().
+pub struct RegionDescriptor {
+    pub id: RegionId,
+    pub parent: Option<RegionId>,
+    pub state: RegionState,
+    region: Region,
+    initial_mark: RegionMark,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegionCheckpoint {
+    pub region: RegionId,
+    mark: RegionMark,
+}
+
+/// Per-activation descriptor table. The table owns all regions and enforces
+/// parent/child lifetime ordering.
+#[derive(Default)]
+pub struct RegionTable {
+    descriptors: Vec<RegionDescriptor>,
+}
+
+impl RegionTable {
+    pub fn new() -> Self { Self::default() }
+
+    pub fn create(&mut self, parent: Option<RegionId>) -> Result<RegionId, RegionError> {
+        if let Some(parent_id) = parent {
+            let parent_desc = self.descriptors.get(parent_id.0 as usize)
+                .ok_or(RegionError::InvalidMark)?;
+            if parent_desc.id != parent_id || parent_desc.state != RegionState::Active {
+                return Err(RegionError::InvalidMark);
+            }
+        }
+        let id = RegionId(u32::try_from(self.descriptors.len())
+            .map_err(|_| RegionError::CapacityOverflow)?);
+        let region = Region::new();
+        let initial_mark = region.mark();
+        self.descriptors.push(RegionDescriptor {
+            id, parent, state: RegionState::Active, region, initial_mark,
+        });
+        Ok(id)
+    }
+
+    fn active_mut(&mut self, id: RegionId) -> Result<&mut RegionDescriptor, RegionError> {
+        let descriptor = self.descriptors.get_mut(id.0 as usize)
+            .ok_or(RegionError::InvalidMark)?;
+        if descriptor.id != id || descriptor.state != RegionState::Active {
+            return Err(RegionError::InvalidMark);
+        }
+        Ok(descriptor)
+    }
+
+    pub fn state(&self, id: RegionId) -> Option<RegionState> {
+        self.descriptors.get(id.0 as usize)
+            .filter(|descriptor| descriptor.id == id)
+            .map(|descriptor| descriptor.state)
+    }
+
+    pub fn alloc_bytes(
+        &mut self, id: RegionId, size: usize, align: usize,
+    ) -> Result<Range<usize>, RegionError> {
+        self.active_mut(id)?.region.alloc_bytes(size, align)
+    }
+
+    pub fn checkpoint(&mut self, id: RegionId) -> Result<RegionCheckpoint, RegionError> {
+        let descriptor = self.active_mut(id)?;
+        Ok(RegionCheckpoint { region: id, mark: descriptor.region.mark() })
+    }
+
+    pub fn restore(&mut self, checkpoint: RegionCheckpoint) -> Result<(), RegionError> {
+        self.active_mut(checkpoint.region)?.region.restore(checkpoint.mark)
+    }
+
+    /// Close a region only after all its direct children have been closed.
+    /// Descendants are checked transitively by requiring each direct child closed.
+    pub fn close(&mut self, id: RegionId) -> Result<(), RegionError> {
+        if self.descriptors.iter().any(|child|
+            child.parent == Some(id) && child.state == RegionState::Active
+        ) {
+            return Err(RegionError::InvalidMark);
+        }
+        let descriptor = self.active_mut(id)?;
+        descriptor.region.restore(descriptor.initial_mark)?;
+        descriptor.state = RegionState::Closed;
+        Ok(())
+    }
+
+    pub fn used(&self, id: RegionId) -> Option<usize> {
+        self.descriptors.get(id.0 as usize)
+            .filter(|descriptor| descriptor.id == id && descriptor.state == RegionState::Active)
+            .map(|descriptor| descriptor.region.used())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,6 +293,41 @@ mod tests {
         let second = region.alloc_bytes(4, 1).unwrap();
         assert_eq!(first, second);
         assert_eq!(region.read(second), Some(&[0, 0, 0, 0][..]));
+    }
+
+
+    #[test]
+    fn descriptors_enforce_parent_child_close_order() {
+        let mut table = RegionTable::new();
+        let parent = table.create(None).unwrap();
+        let child = table.create(Some(parent)).unwrap();
+        assert_eq!(table.close(parent), Err(RegionError::InvalidMark));
+        table.close(child).unwrap();
+        table.close(parent).unwrap();
+        assert_eq!(table.state(parent), Some(RegionState::Closed));
+        assert_eq!(table.alloc_bytes(parent, 1, 1), Err(RegionError::InvalidMark));
+    }
+
+    #[test]
+    fn descriptor_checkpoint_restores_only_its_region() {
+        let mut table = RegionTable::new();
+        let region = table.create(None).unwrap();
+        table.alloc_bytes(region, 8, 8).unwrap();
+        let checkpoint = table.checkpoint(region).unwrap();
+        table.alloc_bytes(region, 16, 8).unwrap();
+        assert_eq!(table.used(region), Some(24));
+        table.restore(checkpoint).unwrap();
+        assert_eq!(table.used(region), Some(8));
+    }
+
+    #[test]
+    fn descriptor_rejects_unknown_parent_and_checkpoint_after_close() {
+        let mut table = RegionTable::new();
+        assert_eq!(table.create(Some(RegionId(99))), Err(RegionError::InvalidMark));
+        let region = table.create(None).unwrap();
+        let checkpoint = table.checkpoint(region).unwrap();
+        table.close(region).unwrap();
+        assert_eq!(table.restore(checkpoint), Err(RegionError::InvalidMark));
     }
 
 

@@ -57,6 +57,42 @@ El compilador realiza análisis de escape sobre el AST/representación de compil
 
 La primera versión puede ser conservadora. La optimización de stack no debe retrasar la corrección.
 
+### 2.4 Sintaxis de ámbitos: implícita, no anotada
+
+HackLang **no añadirá una sintaxis especial de memoria o de región** en la primera versión del modelo. Los ámbitos léxicos que ya reconoce el parser son la fuente única de delimitación:
+
+- Modo legacy: bloques delimitados por `(...)`.
+- Modo compacto: bloques delimitados por `{...}`.
+- Las ramas, cuerpos de bucle y llamadas conservan las reglas de ámbito ya definidas en la gramática y en el evaluador.
+
+El compilador deriva de esos nodos del AST los límites de vida y las regiones temporales. Al cerrar un ámbito, destruye sus valores locales y recupera su región, salvo los valores que hayan escapado. Estos últimos se promocionan automáticamente a una región propietaria de vida suficiente; el código fuente no cambia.
+
+Ejemplo legacy:
+
+```hacklang
+let message = "hello";
+if (ready) (
+  let temp = build(message);
+  print temp;
+)
+```
+
+Ejemplo compacto:
+
+```hacklang
+message := "hello"
+if ready {
+  temp := build(message)
+  print temp
+}
+```
+
+En ambos casos el bloque determina el ámbito. No se escribe `scope`, `region`, `free` ni una anotación de lifetime. Si `temp` no escapa, sus datos temporales se recuperan al salir del bloque. Si el resultado se devuelve, se captura en una closure que sobrevive o se almacena en un objeto de vida mayor, el análisis de escape prolonga automáticamente su almacenamiento.
+
+**Regla de diseño:** la sintaxis expresa intención y estructura del programa; el compilador decide la estrategia de memoria. No se añadirá sintaxis de propiedad (`move`), préstamo (`&`, `&mut`) o lifetime al código ordinario. Una anotación explícita solo se reconsiderará si aparece un caso real que no pueda resolverse de forma segura e inequívoca por inferencia, y deberá ser opcional.
+
+No debe confundirse un bloque léxico con una garantía física de stack: el bloque fija la vida lógica; el análisis de escape decide si el almacenamiento puede ser stack/region local o debe promocionarse. Esta distinción evita referencias colgantes sin obligar a la IA a generar anotaciones redundantes.
+
 ## 3. Propiedad y referencias inferidas
 
 El contrato combina propiedad determinista inspirada en Rust con ubicación automática mediante escape analysis:

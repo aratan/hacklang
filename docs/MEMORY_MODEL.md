@@ -318,7 +318,17 @@ Cada pila de datos tendrá un descriptor interno:
 
 El descriptor es un concepto de diseño, no una estructura implementada. Los punteros y generaciones no serán visibles en HackLang.
 
-#### 2.5.1 Clases de vida y asignación
+#### 2.6 Hechos de uso disponibles en HIR (implementación inicial)
+
+El planificador recoge ahora, por cada binding:
+
+- Número de lecturas detectadas en expresiones HIR.
+- Número de asignaciones posteriores a la declaración.
+- Conjunto ordenado de ámbitos léxicos desde los que se lee.
+
+Estos datos permiten construir y depurar el futuro análisis de vida y escape. **No constituyen todavía un análisis de liveness**: no modelan orden de ejecución, caminos alternativos, iteraciones ni puntos de salida. Por tanto, no autorizan a acortar la vida de un valor, reutilizar una lane adicional ni liberar almacenamiento. El plan actual sigue siendo conservador y el backend/runtime no consumen esta metadata.
+
+### 2.5.1 Clases de vida y asignación
 
 El análisis asignará cada valor dinámico a una de estas clases:
 

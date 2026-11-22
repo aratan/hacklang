@@ -962,4 +962,16 @@ mod tests {
         assert_eq!(ev.get_var("result"), Some(&Value::Number(42.0)));
     }
 
+    #[test]
+    fn mem_023_array_assignment_has_value_semantics_not_shared_identity() {
+        let ev = eval_program("let original = [1, 2]; let copy = original; copy[0] = 9; let result = original[0];").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(1.0)));
+    }
+
+    #[test]
+    fn mem_024_map_assignment_copies_nested_collection_values() {
+        let ev = eval_program("let original = @(\"payload\": [1]); let copy = original; copy[\"payload\"] = [9]; let result = original[\"payload\"][0];").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(1.0)));
+    }
+
 }

@@ -213,7 +213,7 @@ pub fn plan(program: &Program) -> MemoryPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ast::{Expression as A, LetStatement, Program as AP, Statement as S}, hir};
+    use crate::{ast::{Expression as A, LetStatement, PrintStatement, Program as AP, Statement as S}, hir};
 
     fn lower(statements: Vec<S>) -> Program { hir::lower(&AP { statements }).unwrap() }
 
@@ -341,7 +341,7 @@ mod tests {
         let p = lower(vec![
             S::Let(LetStatement { name: "value".into(), value: A::NumberLiteral(1.0) }),
             S::Block(vec![
-                S::Print(A::Identifier("value".into())),
+                S::Print(PrintStatement { value: A::Identifier("value".into()) }),
                 S::Print(A::Identifier("value".into())),
             ]),
             S::Print(A::Identifier("value".into())),

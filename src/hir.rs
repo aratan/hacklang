@@ -272,7 +272,7 @@ mod tests {
         assert_eq!(hir.bindings.len(), 1);
         assert_eq!(hir.bindings[0].name, "answer");
         assert_eq!(hir.statements.len(), 2);
-        assert!(matches!(hir.statements[1].kind, StmtKind::Print(Expression { kind: ExprKind::Read(BindingId(0)), .. })));
+        assert!(matches!(&hir.statements[1].kind, StmtKind::Print(Expression { kind: ExprKind::Read(BindingId(0)), .. })));
     }
 
     #[test]
@@ -290,8 +290,8 @@ mod tests {
         let inner = hir.bindings[1].id;
         assert_ne!(outer, inner);
         let StmtKind::Block { statements, .. } = &hir.statements[1].kind else { panic!("expected block"); };
-        assert!(matches!(statements[1].kind, StmtKind::Assign { binding, .. } if binding == inner));
-        assert!(matches!(hir.statements[2].kind, StmtKind::Assign { binding, .. } if binding == outer));
+        assert!(matches!(&statements[1].kind, StmtKind::Assign { binding, .. } if *binding == inner));
+        assert!(matches!(&hir.statements[2].kind, StmtKind::Assign { binding, .. } if *binding == outer));
     }
 
     #[test]
@@ -309,7 +309,7 @@ mod tests {
         })]);
         let hir = lower(&program).unwrap();
         let StmtKind::While { scope, body, .. } = &hir.statements[0].kind else { panic!("expected while"); };
-        let StmtKind::Let { binding, .. } = body[0].kind else { panic!("expected let"); };
+        let StmtKind::Let { binding, .. } = &body[0].kind else { panic!("expected let"); };
         assert_eq!(hir.bindings[binding.0 as usize].scope, *scope);
     }
 }

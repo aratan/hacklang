@@ -945,8 +945,8 @@ mod tests {
     }
 
     #[test]
-    fn mem_020_invalid_collection_index_fails_without_corrupting_other_values() {
-        let error = eval_program("let stable = 42; let values = [1]; let result = values[4];").unwrap_err();
+    fn mem_020_huge_collection_index_fails_without_panicking() {
+        let error = eval_program("let stable = 42; let values = [1]; let result = values[1e300];").unwrap_err();
         assert!(error.contains("fuera de rango"));
     }
 

@@ -214,6 +214,19 @@ El resultado se expone en `MemoryPlan.cfg`. Se han añadido pruebas de propagaci
 
 **Límite actual:** el CFG es una representación inicial para liveness de bindings; no modela aún `return` (no está admitido por este HIR), excepciones, efectos de llamadas, destrucción de temporales ni escapes transitivos. La construcción de `if` y bucles se mantiene deliberadamente conservadora. No se usa todavía para asignar físicamente lanes ni para liberar memoria.
 
+### 7.4 Interferencia y asignación de slots (metadata)
+
+A partir de `live_in` y `live_out`, el planificador construye un grafo de interferencia. Dos bindings se conectan cuando el análisis los considera simultáneamente vivos en un bloque, o cuando una definición coincide con un valor que sigue vivo a la salida del bloque. La asignación usa un coloreado voraz determinista: cada color representa un slot dentro de una pila de datos.
+
+La reutilización está particionada por pila:
+- Los valores `Inline` usan un espacio de slots de frame.
+- Los valores `ScopeRegion(scope)` usan la lane asignada al ámbito.
+- Los valores `OwnedRegion` quedan fuera del coloreado y no comparten slots por esta fase.
+
+El resultado se expone como `MemoryPlan.interference`, `binding_slots` y `stack_slot_counts`. Hay pruebas para vidas no solapadas, bindings simultáneamente vivos y temporales de ramas mutuamente excluyentes.
+
+Esta asignación sigue siendo **metadata del compilador**. No cambia offsets, reservas, destructores ni liberaciones del runtime C/Rust. El CFG y el análisis de liveness deben ampliarse antes de consumir físicamente estos slots; cualquier clase de vida desconocida permanece fuera de la reutilización.
+
 ## 8. Diferencias entre runtime actual y arquitectura objetivo
 
 | Área | Estado actual | Objetivo |

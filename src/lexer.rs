@@ -289,16 +289,44 @@ fn spanned(token: Token, start: usize, end: usize, chars: &[char], line_starts: 
         Err(format!("Cadena sin cerrar desde la posición {}", start - 1))
     }
 
-    // --- FUNCIÓN MEJORADA ---
+    // Gramática: dígitos [ "." dígitos ] [ ("e" | "E") [ "+" | "-" ] dígitos ].
+    // La notación científica evita que valores grandes/pequeños se tokenicen como identificadores.
     fn read_number(&mut self) -> Result<f64, String> {
         let start = self.position;
-        while self.position < self.chars.len() {
-            let c = self.chars[self.position];
-            if !c.is_digit(10) && c != '.' {
-                break;
-            }
+
+        while self.position < self.chars.len() && self.chars[self.position].is_ascii_digit() {
             self.position += 1;
         }
+
+        if self.position < self.chars.len() && self.chars[self.position] == '.' {
+            self.position += 1;
+            while self.position < self.chars.len() && self.chars[self.position].is_ascii_digit() {
+                self.position += 1;
+            }
+        }
+
+        if self.position < self.chars.len()
+            && matches!(self.chars[self.position], 'e' | 'E')
+        {
+            self.position += 1;
+            if self.position < self.chars.len()
+                && matches!(self.chars[self.position], '+' | '-')
+            {
+                self.position += 1;
+            }
+
+            let exponent_start = self.position;
+            while self.position < self.chars.len()
+                && self.chars[self.position].is_ascii_digit()
+            {
+                self.position += 1;
+            }
+            if exponent_start == self.position {
+                let number_str: String = self.chars[start..self.position].iter().collect();
+                return Err(format!("Error léxico: exponente incompleto en '{}'.", number_str));
+            }
+        }
+
         let number_str: String = self.chars[start..self.position].iter().collect();
         number_str.parse::<f64>()
             .map_err(|_| format!("Error léxico: '{}' no es un número válido.", number_str))
@@ -361,6 +389,24 @@ mod tests {
             Token::Number(Number(0.0)),
             Token::Eof,
         ]);
+    }
+
+    #[test]
+    fn test_scientific_notation() {
+        let mut lexer = Lexer::new("1e300 1.25e-3 2E+2".to_string());
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens, vec![
+            Token::Number(Number(1e300)),
+            Token::Number(Number(1.25e-3)),
+            Token::Number(Number(2e2)),
+            Token::Eof,
+        ]);
+    }
+
+    #[test]
+    fn incomplete_scientific_exponent_is_a_lexical_error() {
+        let mut lexer = Lexer::new("1e+".to_string());
+        assert!(lexer.tokenize().unwrap_err().contains("exponente incompleto"));
     }
 
     #[test]

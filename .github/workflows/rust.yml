@@ -58,3 +58,24 @@ jobs:
             exit 1
           fi
           test ! -e "$temp_dir/unsupported"
+
+          cat > "$temp_dir/runtime-error.hl" <<'EOF'
+          print 1 / 0;
+          EOF
+          set +e
+          cargo run --quiet -- run "$temp_dir/runtime-error.hl" > "$temp_dir/interpreter-error.out" 2> "$temp_dir/interpreter-error.err"
+          interpreter_status=$?
+          cargo run --quiet -- build "$temp_dir/runtime-error.hl" -o "$temp_dir/runtime-error" > /dev/null 2>&1
+          build_status=$?
+          if [ "$build_status" -ne 0 ]; then
+            echo "No se pudo compilar el caso de error de runtime" >&2
+            exit "$build_status"
+          fi
+          "$temp_dir/runtime-error" > "$temp_dir/native-error.out" 2> "$temp_dir/native-error.err"
+          native_status=$?
+          set -e
+
+          test "$interpreter_status" -eq 1
+          test "$native_status" -eq "$interpreter_status"
+          grep -q "Division by zero" "$temp_dir/interpreter-error.err"
+          grep -q "Division by zero" "$temp_dir/native-error.err"

@@ -177,12 +177,28 @@ El modelo debe respetar los ámbitos existentes:
 - No se permiten referencias que sobrevivan a una iteración cuando apuntan a datos temporales de esa iteración.
 - Los límites de profundidad actuales (256) siguen siendo independientes de la estrategia de memoria hasta que se diseñe y pruebe un cambio.
 
+## 7.1 Primer planificador HIR (implementación inicial)
+
+Se ha añadido `src/memory.rs` como primera fase ejecutable del análisis de almacenamiento. Se invoca durante `hl build` inmediatamente después de AST→HIR y antes de generar C.
+
+El planificador actual es deliberadamente conservador:
+
+- Number y Bool se clasifican como `Inline`.
+- String literal o concatenación se clasifica inicialmente en `ScopeRegion` del binding.
+- Una asignación posterior con string o valor de origen desconocido promueve el binding a `OwnedRegion`.
+- Las expresiones leídas desde otro binding se consideran desconocidas; ante la duda se promociona.
+- Las expresiones ternarias combinan conservadoramente las necesidades de ambas ramas.
+
+Incluye pruebas unitarias para escalares inline, strings locales, concatenación y promoción tras asignación.
+
+**Límite importante:** este planificador todavía no reserva regiones, no libera memoria y no cambia el runtime C ni el evaluador Rust. Es una fase de análisis conectada al camino real de compilación; el backend aún usa el runtime anterior. Tampoco se considera completo el análisis transitivo de arrays/maps/closures: esos tipos continúan fuera de HIR nativa. No se debe interpretar `ScopeRegion` como prueba de que el dato ya está físicamente en una arena.
+
 ## 8. Diferencias entre runtime actual y arquitectura objetivo
 
 | Área | Estado actual | Objetivo |
 |---|---|---|
 | Evaluador Rust | Arena de entornos con mark-and-sweep de frames; String/Vec/HashMap son gestionados por Rust | Propiedad/ámbitos deterministas y escape analysis; sin GC general |
-| Runtime C | `malloc` para strings, entornos y bindings; no libera individualmente durante la ejecución | Regiones, promoción y destrucción determinista |
+| Runtime C | `malloc` para strings, entornos y bindings; no libera individualmente durante la ejecución | Regiones, promoción y destrucción determinista |\n| Planificador HIR | `src/memory.rs` clasifica bindings conservadoramente; se ejecuta durante `hl build` | Análisis transitivo completo y asignación/liberación real por regiones |
 | Closures | ID estable de entorno capturado | Entorno con propietario explícito y ciclos resueltos estáticamente |
 | Arrays / Maps C | Aún no implementados | Buffers ligados a regiones propietarias |
 | Análisis de escape | No existe | Fase del compilador compartida por backend y futuras optimizaciones |

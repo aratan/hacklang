@@ -1,5 +1,4 @@
 use crate::hir::{BinaryOp, ExprKind, Expression, Program, StmtKind, Statement};
-use std::process::Command;
 
 #[derive(Default)]
 struct Generator {
@@ -110,8 +109,8 @@ impl Generator {
 }
 
 pub fn generate_c(program: &Program) -> Result<String, String> {
-    let mut body = String::new(); let mut gen = Generator::default();
-    for stmt in &program.statements { gen.stmt(program, stmt, &mut body)?; }
+    let mut body = String::new(); let mut generator = Generator::default();
+    for stmt in &program.statements { generator.stmt(program, stmt, &mut body)?; }
     let mut source = include_str!("native_runtime.c").to_string();
     source.push_str("\nint main(void) {\n    HlEnv *env = hl_env_new(NULL);\n");
     source.push_str(&body); source.push_str("    return 0;\n}\n"); Ok(source)

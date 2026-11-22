@@ -37,6 +37,8 @@ pub fn compile_to_executable(
     // HIR es la única entrada del backend nativo.
     let hir = crate::hir::lower(program)
         .map_err(|error| format!("No se pudo construir HIR: {error}"))?;
+    // Plan conservador: ningún valor se acorta de vida si el análisis no lo demuestra.
+    let _memory_plan = crate::memory::plan(&hir);
     let source_absolute = source_path.canonicalize()
         .map_err(|error| format!("No se pudo resolver el archivo fuente: {error}"))?;
     let output = requested_output

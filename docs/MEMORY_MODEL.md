@@ -227,6 +227,19 @@ El resultado se expone como `MemoryPlan.interference`, `binding_slots` y `stack_
 
 Esta asignación sigue siendo **metadata del compilador**. No cambia offsets, reservas, destructores ni liberaciones del runtime C/Rust. El CFG y el análisis de liveness deben ampliarse antes de consumir físicamente estos slots; cualquier clase de vida desconocida permanece fuera de la reutilización.
 
+### 7.5 Simulador seguro de regiones bump (Rust)
+
+Se añade `src/region.rs` como prototipo ejecutable y aislado del runtime productivo:
+
+- Reserva bump de rangos de bytes con alineación potencia de dos y comprobación de overflow.
+- Devuelve offsets (`Range<usize>`), nunca punteros crudos.
+- Los bytes recién reservados quedan inicializados a cero.
+- `mark()` captura cursor y número de recursos registrados; `restore()` retrocede el cursor y destruye los recursos añadidos desde la marca, en orden LIFO.
+- `track<T>()` permite probar destructores deterministas.
+- La capacidad física se conserva tras `restore` para reutilizarla; `used()` informa del tamaño lógico ocupado.
+
+Se registran pruebas de alineación, inicialización, restauración anidada, orden de destrucción y accesos fuera de rango. El módulo se compila dentro del binario, pero **no está conectado al planificador HIR, al ABI ni al runtime C**. Es un simulador de offsets y ciclo de vida, no una arena de objetos HackLang ni una garantía de seguridad de referencias. La integración requerirá descriptores tipados, propiedad explícita de los valores y pruebas diferenciales antes de sustituir cualquier asignación actual.
+
 ## 8. Diferencias entre runtime actual y arquitectura objetivo
 
 | Área | Estado actual | Objetivo |

@@ -121,6 +121,25 @@ En caso de duda, se promociona el almacenamiento; nunca se inventa una copia cua
 
 Los mapas actuales son pares ordenados y admiten las reglas de igualdad descritas en `NATIVE_COMPILER_DESIGN.md`; el modelo de memoria no puede cambiar su comportamiento.
 
+### 4.1 Semántica de valor de arrays y mapas (hallazgo verificado)
+
+El evaluador actual implementa colecciones con semántica de **valor**, no identidad compartida:
+
+- Leer un identificador clona el `Value`; para Array y Map, el `Clone` de Rust copia recursivamente sus elementos y entradas.
+- Leer un elemento por índice también devuelve un valor clonado.
+- Por tanto, `b = a` seguido de una mutación de `b` no modifica `a`.
+- Las closures son la excepción relevante: clonar un valor Function conserva el mismo `captured_env`, de modo que las variables capturadas siguen compartidas por identidad.
+
+Consecuencias para el compilador:
+
+- La promoción de arrays/mapas puede copiar sus buffers y valores de forma recursiva sin romper identidad observable, porque esa identidad compartida no existe en la semántica actual.
+- La copia debe incluir strings y colecciones anidadas; no basta con copiar el descriptor.
+- Las closures contenidas en una colección no se duplican semánticamente: sus handles siguen apuntando al mismo entorno capturado, que debe sobrevivir al escape de la colección.
+- Una futura optimización copy-on-write solo será válida si conserva exactamente esta semántica y no añade aliasing observable.
+- No introducir referencias mutables compartidas a colecciones sin una modificación explícita de la semántica del lenguaje.
+
+Esta regla se fija con las pruebas MEM-023 y MEM-024. Es un dato importante para simplificar la promoción de datos; no resuelve por sí solo los ciclos de entornos creados por closures recursivas.
+
 ## 5. Closures, recursividad y ciclos
 
 Este es el punto de mayor riesgo porque el evaluador actual captura el entorno léxico por identidad y permite observar mutaciones posteriores.
@@ -209,7 +228,7 @@ La matriz contiene requisitos de conformidad. Se ha añadido una primera baterí
 | MEM-019 | Referencia mutable aliasada | Rechazo o serialización segura de la mutación |
 | MEM-020 | Overflow de tamaño/capacidad | Error controlado |
 | MEM-021 | Recursividad profunda | Límite controlado y limpieza de todos los frames |
-| MEM-022 | Mismo programa interpretado y compilado | Salida, valores y errores equivalentes |
+| MEM-022 | Mismo programa interpretado y compilado | Salida, valores y errores equivalentes |\n| MEM-023 | Copia de Array y mutación posterior | La mutación de la copia no altera el original |\n| MEM-024 | Copia de Map con colección anidada | La mutación de la copia no altera el original ni sus valores anidados |
 
 ## 11. Cobertura automatizada actual
 
@@ -243,7 +262,7 @@ Pendiente de instrumentación o de una futura fase del lenguaje:
 - MEM-021 completo: instrumentar destrucción de frames/regiones en todos los retornos y errores.
 - MEM-022 completo: comparar intérprete y binario para arrays, mapas y closures cuando el backend nativo los implemente.
 
-Estas pruebas fijan el comportamiento de referencia; no se han sustituido todavía la arena mark-and-sweep del evaluador ni las asignaciones del runtime C.
+MEM-023 y MEM-024 fijan además la semántica de valor de las colecciones. Estas pruebas fijan el comportamiento de referencia; no se han sustituido todavía la arena mark-and-sweep del evaluador ni las asignaciones del runtime C.
 
 ## 12. Criterios de aceptación
 

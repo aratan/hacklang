@@ -1,6 +1,6 @@
 # HIR: representación intermedia de alto nivel
 
-Estado: **contrato de diseño aprobado para implementación incremental; HIR todavía no está implementada**.
+Estado: **HIR inicial implementada para el subconjunto del backend nativo; migración del generador C todavía parcial**.
 
 Este documento fija la frontera entre el frontend de HackLang y sus consumidores (intérprete, análisis y backend nativo). Su objetivo es permitir que el lenguaje crezca sin duplicar semántica ni atar el compilador al AST concreto del parser.
 
@@ -166,3 +166,24 @@ Cada fase debe cumplir:
 ## 9. Primer hito verificable
 
 El primer hito H1 no es «tener una estructura HIR bonita». Es convertir el subconjunto que ya compila a nativo en HIR, probar cobertura exhaustiva de ese subconjunto y hacer que el backend C consuma HIR sin cambiar un solo resultado del corpus diferencial.
+
+
+## 10. Estado de implementación (2026-11-22)
+
+Implementado en `src/hir.rs`:
+
+- IDs tipados `ScopeId`, `BindingId`, `ExprId` y `StmtId`.
+- Tabla de scopes con relación padre y clases Module, Block, Branch y Loop.
+- Tabla de bindings y resolución léxica de lecturas/asignaciones al binding más cercano.
+- Lowering AST → HIR para Number, Bool, String, lecturas, operadores binarios, ternario, let, asignación, print, bloques, if, while, break y continue.
+- Rechazo explícito de expresiones/sentencias fuera del subconjunto inicial y de nombres no resueltos.
+- Pruebas unitarias para IDs de bindings, shadowing, asignación, nombres no resueltos, control de bucles y scope compartido del while.
+
+La compilación nativa ejecuta ya el lowering a HIR como validación previa. **El generador C todavía recorre el AST**: no se declara aún que el backend consuma HIR. La siguiente migración sustituirá ese recorrido por HIR manteniendo el corpus diferencial.
+
+Limitaciones deliberadas de esta primera entrega:
+
+- No soporta todavía lambdas, llamadas, arrays, mapas, indexación, return ni asignación indexada en HIR.
+- No incorpora spans en nodos HIR; se añadirá al resolver la propagación de spans del AST, sin volver a tokenizar.
+- La resolución de nombres es léxica y secuencial; la semántica especial de autorreferencia de closures y builtins se añadirá con la fase de funciones.
+- El checker de tipos y el evaluador de referencia no se han migrado.

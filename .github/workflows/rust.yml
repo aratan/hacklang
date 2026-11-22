@@ -32,7 +32,11 @@ jobs:
           set -euo pipefail
           for file in examples/*.hl; do
             echo "Checking $file"
-            cargo run --quiet -- "$file"
+            if [[ "$file" == *_compact.hl ]]; then
+              cargo run --quiet -- run --compact "$file"
+            else
+              cargo run --quiet -- "$file"
+            fi
           done
       - name: Compare interpreter and native backend
         shell: bash

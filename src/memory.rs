@@ -17,8 +17,25 @@ pub enum StorageClass {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Stable index of a compiler-planned data stack within one activation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct DataStackId(pub u32);
+
+/// Lexical scope to data-stack assignment. Sibling scopes at the same depth
+/// reuse a lane; nested scopes receive a distinct lane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScopeStackPlan {
+    pub scope: ScopeId,
+    pub stack: DataStackId,
+    pub depth: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryPlan {
     pub bindings: HashMap<BindingId, StorageClass>,
+    /// Stack assignments for scopes that own at least one scope-region value.
+    /// This is planning metadata only; the current C runtime does not consume it.
+    pub scope_stacks: HashMap<ScopeId, ScopeStackPlan>,
 }
 
 fn is_dynamic_string(expr: &Expression) -> Option<bool> {
@@ -62,6 +79,38 @@ fn mark_assignments(statements: &[Statement], classes: &mut HashMap<BindingId, S
     }
 }
 
+fn scope_depth(program: &Program, scope: ScopeId) -> u32 {
+    let mut depth = 0;
+    let mut current = program.scopes[scope.0 as usize].parent;
+    while let Some(parent) = current {
+        depth += 1;
+        current = program.scopes[parent.0 as usize].parent;
+    }
+    depth
+}
+
+fn plan_scope_stacks(program: &Program, bindings: &HashMap<BindingId, StorageClass>) -> HashMap<ScopeId, ScopeStackPlan> {
+    let mut scopes: Vec<ScopeId> = bindings.values().filter_map(|class| match class {
+        StorageClass::ScopeRegion(scope) => Some(*scope),
+        StorageClass::Inline | StorageClass::OwnedRegion => None,
+    }).collect();
+    scopes.sort_unstable();
+    scopes.dedup();
+
+    let mut result = HashMap::new();
+    for scope in scopes {
+        let depth = scope_depth(program, scope);
+        // One lane per lexical depth: parent/child scopes never share storage,
+        // while sibling scopes can safely reuse it after their scope ends.
+        result.insert(scope, ScopeStackPlan {
+            scope,
+            stack: DataStackId(depth),
+            depth,
+        });
+    }
+    result
+}
+
 pub fn plan(program: &Program) -> MemoryPlan {
     let mut bindings = HashMap::new();
     fn visit(statements: &[Statement], program: &Program, result: &mut HashMap<BindingId, StorageClass>) {
@@ -88,7 +137,8 @@ pub fn plan(program: &Program) -> MemoryPlan {
     }
     visit(&program.statements, program, &mut bindings);
     mark_assignments(&program.statements, &mut bindings);
-    MemoryPlan { bindings }
+    let scope_stacks = plan_scope_stacks(program, &bindings);
+    MemoryPlan { bindings, scope_stacks }
 }
 
 #[cfg(test)]
@@ -97,6 +147,39 @@ mod tests {
     use crate::{ast::{Expression as A, LetStatement, Program as AP, Statement as S}, hir};
 
     fn lower(statements: Vec<S>) -> Program { hir::lower(&AP { statements }).unwrap() }
+
+    #[test]
+    fn sibling_scopes_reuse_a_stack_lane_but_nested_scopes_do_not() {
+        let p = lower(vec![
+            S::Block(vec![S::Let(LetStatement {
+                name: "left".into(),
+                value: A::StringLiteral("left".into()),
+            })]),
+            S::Block(vec![S::Let(LetStatement {
+                name: "right".into(),
+                value: A::StringLiteral("right".into()),
+            })]),
+            S::Block(vec![
+                S::Let(LetStatement {
+                    name: "outer".into(),
+                    value: A::StringLiteral("outer".into()),
+                }),
+                S::Block(vec![S::Let(LetStatement {
+                    name: "inner".into(),
+                    value: A::StringLiteral("inner".into()),
+                })]),
+            ]),
+        ]);
+        let memory = plan(&p);
+        let left = match memory.bindings[&BindingId(0)] { StorageClass::ScopeRegion(s) => s, _ => panic!("expected scope storage") };
+        let right = match memory.bindings[&BindingId(1)] { StorageClass::ScopeRegion(s) => s, _ => panic!("expected scope storage") };
+        let outer = match memory.bindings[&BindingId(2)] { StorageClass::ScopeRegion(s) => s, _ => panic!("expected scope storage") };
+        let inner = match memory.bindings[&BindingId(3)] { StorageClass::ScopeRegion(s) => s, _ => panic!("expected scope storage") };
+        assert_eq!(memory.scope_stacks[&left].stack, memory.scope_stacks[&right].stack);
+        assert_ne!(memory.scope_stacks[&outer].stack, memory.scope_stacks[&inner].stack);
+        assert_eq!(memory.scope_stacks[&left].depth, memory.scope_stacks[&right].depth);
+        assert_eq!(memory.scope_stacks[&inner].depth, memory.scope_stacks[&outer].depth + 1);
+    }
 
     #[test]
     fn scalar_bindings_are_inline_and_strings_start_in_their_scope_region() {

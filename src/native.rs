@@ -250,6 +250,9 @@ pub fn compile_to_executable(
     source_path: &Path,
     requested_output: Option<&Path>,
 ) -> Result<PathBuf, String> {
+    // HIR valida y normaliza el subconjunto nativo antes de generar C.
+    // Durante esta migración, el generador C sigue usando el AST como referencia.
+    let _hir = crate::hir::lower(program).map_err(|error| format!("No se pudo construir HIR: {error}"))?;
     let source_absolute = source_path.canonicalize()
         .map_err(|error| format!("No se pudo resolver el archivo fuente: {error}"))?;
     let output = requested_output

@@ -209,8 +209,8 @@ Cada ampliación debe reutilizar el AST actual y añadir pruebas diferenciales c
 ### N4 — Build y pruebas diferenciales (build operativo; conformidad pendiente)
 
 - `hl build` ya genera C temporal, compila y enlaza el runtime y produce un ejecutable nativo.
-- La CI actual valida el build y ejecuta tests Rust; todavía no compara de forma sistemática la salida del intérprete y la del ejecutable nativo.
-- Añadir corpus compartido, comparación de stdout/stderr/código de salida y casos de error.
+- La CI ya compara un programa smoke del subconjunto nativo con el intérprete y comprueba que ambos devuelven error ante una división por cero.
+- Falta ampliar el corpus diferencial y comparar de forma sistemática stdout, stderr y códigos de salida para más construcciones.
 - Añadir pruebas de memoria y ejecución repetida para detectar crecimiento no acotado o corrupción.
 
 Aceptación: ningún programa dentro del subconjunto declarado produce divergencias sin documentar.

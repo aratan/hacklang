@@ -82,7 +82,9 @@ impl Region {
         if mark.cursor > self.cursor || mark.finalizers > self.tracked.len() {
             return Err(RegionError::InvalidMark);
         }
-        while self.tracked.len() > mark.finalizers {\n            drop(self.tracked.pop());\n        }
+        while self.tracked.len() > mark.finalizers {
+            drop(self.tracked.pop());
+        }
         self.cursor = mark.cursor;
         self.epoch = self.epoch.checked_add(1).ok_or(RegionError::CapacityOverflow)?;
         Ok(())

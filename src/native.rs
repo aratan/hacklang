@@ -270,7 +270,7 @@ pub fn compile_to_executable(
         return Err(format!("El destino '{}' ya existe; no se sobrescribirá", output.display()));
     }
 
-    let c_source = generate_c(program)?;
+    let c_source = crate::hir_native::generate_c(&_hir)?;
     let compiler = select_c_compiler()?;
     let temporary = temporary_directory()?;
     let c_file = temporary.join("program.c");

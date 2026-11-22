@@ -241,3 +241,9 @@ La arquitectura objetivo está especificada en [MEMORY_MODEL.md](MEMORY_MODEL.md
 **Importante: no está implementado todavía.** El evaluador Rust actual mantiene una arena de entornos con mark-and-sweep de frames; los valores dinámicos siguen bajo gestión de Rust. El runtime C actual usa asignaciones `malloc` que no se liberan individualmente durante la ejecución. No se debe modificar ni ampliar esa gestión como si ya fuese el modelo objetivo.
 
 La matriz MEM-001..MEM-022 de `MEMORY_MODEL.md` es el contrato de pruebas. Antes de cambiar los runtimes hay que automatizar los casos semánticos sobre el evaluador actual y diseñar la representación de regiones/propietarios. La implementación nativa de arrays, mapas y closures queda condicionada a demostrar liberación determinista y ausencia de referencias colgantes.
+
+## Representación intermedia
+
+La siguiente frontera de arquitectura es HIR, definida en [HIR_DESIGN.md](HIR_DESIGN.md). Actualmente `native.rs` genera C recorriendo directamente el AST; HIR todavía no existe en código. La migración debe comenzar por el subconjunto nativo actual, mantener el evaluador AST como referencia y exigir equivalencia diferencial antes de cambiar la ruta de compilación. HIR no gestiona memoria ni genera punteros: identifica bindings, ámbitos, capturas, operaciones y ubicaciones de origen. La futura MIR hará explícitos control, temporales, regiones y destrucción cuando esas necesidades estén justificadas.
+
+No se introducirá una HIR espejo que duplique el AST sin aportar resolución de nombres, identidad de bindings, ámbitos o metadatos de análisis. El primer hito es que el backend C consuma HIR para el subconjunto actual y mantenga el corpus diferencial sin cambios observables.

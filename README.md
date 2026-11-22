@@ -376,7 +376,7 @@ El CLI se construye como el ejecutable `hl`. En desarrollo se invoca con `cargo 
 | **Evaluador** | ✅ Evaluación de expresiones, booleanos, sentencias, ámbitos léxicos y colecciones |
 | **Funciones** | ✅ Lambdas, closures léxicas, recursividad, llamadas de primera clase y aridad |
 | **Control de flujo** | ✅ `return`, `break` y `continue` |
-| **Memoria** | ✅ Mark-and-sweep de frames de entorno; los demás valores los gestiona Rust |
+| **Memoria actual** | Arena mark-and-sweep de frames en el evaluador; runtime C con asignaciones que viven hasta el final del proceso |
 | **Análisis de tipos** | ✅ Primera pasada no bloqueante: tipos primitivos, retornos explícitos, arrays/mapas con tipos de elemento/clave/valor, indexación, asignaciones, operadores y aridad de llamadas |
 | **Compilador nativo** | Primer backend C operativo para un subconjunto; sin paridad completa ni soporte de colecciones/funciones |
 | **Tests** | Tests Rust, ejecución de todos los ejemplos y smoke diferencial intérprete/nativo, incluida división por cero; falta ampliar la matriz de conformidad |
@@ -409,6 +409,10 @@ Limitaciones actuales: la asignación por índice solo admite como destino una v
 El lexer expone `tokenize() -> Result<Vec<Token>, String>` y el parser `parse_program() -> Result<Program, String>`. Un carácter desconocido, una cadena sin cerrar o una sentencia mal formada produce un error recuperable que el ejecutable muestra al usuario. Las pruebas cubren también cadenas Unicode para evitar errores al confundir índices de caracteres con índices de bytes.
 
 
+
+## Modelo de memoria objetivo
+
+Se ha especificado un modelo **stack-first, sin GC y sin gestión manual del usuario**, inspirado en regiones por ámbito (Goose), propiedad determinista (Rust) y análisis de escape automático (Go). Es una especificación de arquitectura, no una característica implementada: el evaluador y el runtime nativo conservan por ahora sus mecanismos actuales. Incluye reglas para escapes, arrays, mapas, closures, recursividad y una matriz de 22 pruebas de diseño. Consulta [docs/MEMORY_MODEL.md](docs/MEMORY_MODEL.md).
 
 ## Biblioteca estándar inicial
 

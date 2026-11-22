@@ -191,14 +191,14 @@ El planificador actual es deliberadamente conservador:
 
 Incluye pruebas unitarias para escalares inline, strings locales, concatenación y promoción tras asignación.
 
-**Límite importante:** este planificador todavía no reserva regiones, no libera memoria y no cambia el runtime C ni el evaluador Rust. Es una fase de análisis conectada al camino real de compilación; el backend aún usa el runtime anterior. Tampoco se considera completo el análisis transitivo de arrays/maps/closures: esos tipos continúan fuera de HIR nativa. No se debe interpretar `ScopeRegion` como prueba de que el dato ya está físicamente en una arena.
+**Límite importante:** el planificador todavía no decide la ubicación física ni dirige el runtime; `MemoryPlan` se calcula durante `hl build`, pero aún no se consume para seleccionar almacenamiento. El runtime C sí ha avanzado: cada `HlEnv` mantiene una lista de las asignaciones dinámicas que posee y las libera al cerrar el ámbito. Las strings se copian al entorno propietario en `hl_define` y `hl_assign`; así, una asignación desde un bloque interior a una variable exterior sobrevive al cierre del bloque. Los bucles crean una región por iteración, también para temporales de la condición. Esta implementación es un **registro de asignaciones por región**, no una arena contigua ni una asignación real en stack. La copia conservadora puede duplicar strings y acumular reasignaciones hasta cerrar la región propietaria. No hay todavía análisis de escape operativo, promoción transitiva ni soporte nativo para arrays/maps/closures.
 
 ## 8. Diferencias entre runtime actual y arquitectura objetivo
 
 | Área | Estado actual | Objetivo |
 |---|---|---|
 | Evaluador Rust | Arena de entornos con mark-and-sweep de frames; String/Vec/HashMap son gestionados por Rust | Propiedad/ámbitos deterministas y escape analysis; sin GC general |
-| Runtime C | `malloc` para strings, entornos y bindings; no libera individualmente durante la ejecución | Regiones, promoción y destrucción determinista |\n| Planificador HIR | `src/memory.rs` clasifica bindings conservadoramente y promueve lecturas/asignaciones de vida desconocida a `OwnedRegion`; se ejecuta durante `hl build` | Análisis transitivo completo y asignación/liberación real por regiones |
+| Runtime C | Regiones de ámbito con lista de asignaciones `malloc`; libera strings y bindings al cerrar bloques, ramas, iteraciones y proceso. `hl_define`/`hl_assign` copian strings al propietario del binding para evitar referencias colgantes | Arenas contiguas, stack-first, análisis de escape y promoción sin copias cuando sea seguro |\n| Planificador HIR | `src/memory.rs` clasifica bindings conservadoramente y promueve lecturas/asignaciones de vida desconocida a `OwnedRegion`; se ejecuta durante `hl build` | Análisis transitivo completo y asignación/liberación real por regiones |
 | Closures | ID estable de entorno capturado | Entorno con propietario explícito y ciclos resueltos estáticamente |
 | Arrays / Maps C | Aún no implementados | Buffers ligados a regiones propietarias |
 | Análisis de escape | No existe | Fase del compilador compartida por backend y futuras optimizaciones |
@@ -211,7 +211,7 @@ No describir el sistema actual como si ya implementara el modelo objetivo.
 2. **Representación interna**: diseñar regiones, propietarios, descriptores y referencias; documentar invariantes y operaciones de promoción.
 3. **Análisis conservador**: calcular escapes y emitir diagnósticos internos explicables. Sin optimizaciones agresivas.
 4. **Evaluador Rust**: introducir el modelo como implementación de referencia y comparar resultados con el evaluador actual.
-5. **Runtime C**: implementar regiones y liberación en todos los caminos; después arrays/maps/indexación.
+5. **Runtime C**: completar instrumentación y pruebas de liberación en todos los caminos de control; después sustituir el registro de asignaciones por arenas cuando las mediciones lo justifiquen y añadir arrays/maps/indexación.
 6. **Closures y recursividad nativas**: solo cuando los ciclos y la propiedad tengan pruebas específicas.
 7. **Optimización**: reducir promociones y asignaciones tras medir; añadir una futura orden `hl explain-memory` para explicar decisiones stack/region/owned.
 

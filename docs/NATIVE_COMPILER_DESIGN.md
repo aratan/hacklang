@@ -242,6 +242,23 @@ La arquitectura objetivo está especificada en [MEMORY_MODEL.md](MEMORY_MODEL.md
 
 La matriz MEM-001..MEM-022 de `MEMORY_MODEL.md` es el contrato de pruebas. Antes de cambiar los runtimes hay que automatizar los casos semánticos sobre el evaluador actual y diseñar la representación de regiones/propietarios. La implementación nativa de arrays, mapas y closures queda condicionada a demostrar liberación determinista y ausencia de referencias colgantes.
 
+
+### Planificación de memoria previa al backend
+
+La propuesta detallada está en [MEMORY_MODEL.md](MEMORY_MODEL.md), sección 2.5. La secuencia de compilación prevista queda fijada así:
+
+```text
+AST → HIR → análisis de vida/escape → plan de propietarios y data stacks
+                                      ↓
+                              validación de invariantes
+                                      ↓
+                              backend (C inicialmente)
+```
+
+El análisis será independiente del backend: no generará C ni reservará memoria. Su resultado describirá, como mínimo, para cada binding y temporal dinámico, el propietario, clase de almacenamiento, lane, ámbito de vida, posibles escapes y acciones de transferencia/promoción.
+
+**No se añadirá todavía una MIR ni se cambiará el ABI del runtime C.** Primero se ampliará el análisis HIR existente con metadatos explícitos y pruebas unitarias. El backend actual seguirá ignorando esos metadatos hasta que el planificador pueda demostrar los invariantes de MEMORY_MODEL.md. Esta frontera evita mezclar una propuesta de asignación física con el comportamiento operativo actual.
+
 ## Representación intermedia
 
 La frontera HIR, definida en [HIR_DESIGN.md](HIR_DESIGN.md), ya está implementada para el subconjunto nativo inicial. `native.rs` ejecuta el lowering AST→HIR y delega la generación C a `hir_native.rs`; el generador AST anterior se ha retirado para evitar dos rutas de backend. El evaluador AST sigue siendo la referencia y la CI compara su salida con el ejecutable nativo.

@@ -417,3 +417,7 @@ Se ha especificado un modelo **stack-first, sin GC y sin gestión manual del usu
 ## Biblioteca estándar inicial
 
 - `len(x)`: número de caracteres Unicode en strings o cantidad de elementos en arrays y mapas. Acepta un argumento y valida tipos en análisis estático.
+
+## Arquitectura del compilador
+
+El frontend (lexer, parser y AST) es único para intérprete y compilador nativo. La siguiente evolución prevista es una HIR compartida, con migración incremental y pruebas de equivalencia; todavía no está implementada. Consulta [docs/HIR_DESIGN.md](docs/HIR_DESIGN.md) para el contrato, las fases y los criterios de aceptación. El backend C actual recorre directamente el AST.

@@ -300,3 +300,103 @@ No se declarará implementado el modelo hasta que:
 - Los retornos, errores y saltos de control liberen correctamente.
 - La matriz de pruebas esté automatizada y el intérprete y el ejecutable nativo mantengan paridad.
 - Se midan asignaciones y memoria máxima en programas representativos para verificar que stack-first aporta una mejora real.
+
+### 2.5 Planificación de pilas de datos (arquitectura propuesta)
+
+El modelo evolucionará desde «una región por ámbito» hacia un plan de **N pilas de datos por activación**, asignadas por el compilador. Un ámbito lógico no implica necesariamente una reserva física propia. Varios ámbitos con vidas no solapadas podrán reutilizar la misma pila.
+
+Cada pila de datos tendrá un descriptor interno:
+
+| Campo | Función |
+|---|---|
+| `owner` | Frame, grupo de closures o propietario de mayor duración que controla la pila |
+| `base` / `cursor` | Inicio y frontera actual de asignación |
+| `capacity` | Capacidad del segmento activo |
+| `parent` | Propietario al que se transfiere/promueve el contenido si escapa |
+| `generation` | Detección interna de handles usados después de liberar una región |
+| `lane` | Clase de vida asignada por el planificador |
+
+El descriptor es un concepto de diseño, no una estructura implementada. Los punteros y generaciones no serán visibles en HackLang.
+
+#### 2.5.1 Clases de vida y asignación
+
+El análisis asignará cada valor dinámico a una de estas clases:
+
+1. **Inline/frame:** valor pequeño y de tamaño conocido, almacenado directamente en el frame o dentro de su contenedor.
+2. **Data stack local:** temporal dinámico cuya vida está contenida en una activación o conjunto de ámbitos.
+3. **Data stack de ámbito:** datos que deben sobrevivir a varios bloques internos, pero no a su propietario.
+4. **Owned data stack:** datos que escapan del frame creador y pasan a un propietario de vida mayor (por ejemplo, el llamador o un grupo de closures).
+5. **Static:** constantes y código sin estado capturado.
+
+Owned data stack no significa «heap libre sin dueño»: es una región con propietario explícito y destrucción determinista. La reserva física podrá proceder de segmentos obtenidos al crecer la región, pero toda reserva deberá pertenecer a un propietario recuperable.
+
+#### 2.5.2 Asignación de lanes
+
+El compilador construirá primero intervalos de vida para los valores dinámicos. Dos valores solo podrán compartir lane si sus vidas no se solapan o si sus asignaciones son estrictamente anidadas y el orden de restauración lo permite.
+
+La asignación inicial será conservadora:
+
+- Las vidas anidadas podrán compartir una lane mediante cursor y marcas (*mark/restore*).
+- Las ramas mutuamente excluyentes podrán reutilizar espacio si el análisis demuestra que no hay salida de una rama que conserve referencias a la otra.
+- Las iteraciones podrán restaurar la marca de temporales al final de cada vuelta; los valores que sobreviven a la iteración se asignarán a una lane exterior.
+- Las llamadas recursivas tendrán descriptores por activación; nunca compartirán un cursor mutable global.
+- Si no se demuestra que dos vidas son compatibles, se asignarán a lanes distintas o a un propietario de vida mayor.
+
+La primera versión no intentará minimizar globalmente el número de lanes. La prioridad será que el plan sea determinista, verificable y correcto. La reducción de lanes será una optimización posterior basada en mediciones.
+
+#### 2.5.3 Bump allocation, marcas y restauración
+
+Una asignación en una lane lineal avanza su cursor alineado. Al entrar en un ámbito o comenzar una iteración se guarda una marca; al abandonarlo se ejecutan primero los destructores registrados y después se restaura el cursor a esa marca.
+
+El orden de salida será siempre inverso al de adquisición. La misma secuencia de limpieza se generará para salida normal, `break`, `continue`, `return` y propagación de error. No se permite restaurar una marca mientras exista un valor vivo que dependa del espacio posterior a ella.
+
+La operación de restauración recupera espacio en bloque; no ejecuta un `free` por objeto. Los recursos externos que requieran cierre sí tendrán destructores explícitos internos, ejecutados exactamente una vez antes de restaurar.
+
+#### 2.5.4 Valores que crecen y estabilidad de direcciones
+
+Una pila lineal no puede permitir que un buffer cambie de dirección mientras existan referencias internas válidas hacia él. Por ello:
+
+- Los objetos de tamaño fijo y los temporales son candidatos directos a bump allocation.
+- Un objeto redimensionable tendrá descriptor estable y buffer en un segmento cuya reubicación esté controlada.
+- Si el buffer puede crecer, el compilador deberá demostrar que no hay referencias interiores vivas durante la operación de crecimiento, o utilizar handles/indirección estable.
+- La primera implementación podrá reservar un segmento mayor o promover el objeto a una owned data stack; no debe introducir realloc silencioso que invalide referencias.
+- No se impondrá todavía la restricción Goose de «un único valor redimensionable en la cima de cada pila». Se evaluará como posible optimización, no como regla del lenguaje.
+
+Los handles internos podrán incluir propietario y generación para detectar errores durante desarrollo y pruebas. No sustituyen al análisis estático ni justifican referencias colgantes.
+
+#### 2.5.5 Escape y transferencia de propiedad
+
+El análisis trabajará sobre el grafo de valores y propietarios, no solo sobre el binding que recibe una asignación:
+
+- Si un valor se devuelve, su almacenamiento pasa al propietario de retorno antes de destruir el frame.
+- Si un valor se inserta en una colección que escapa, se analiza transitivamente su contenido.
+- Si una closure escapa, su entorno y todas las capturas necesarias sobreviven con ella.
+- Si varias closures comparten capturas mutables, comparten el mismo entorno lógico; la promoción mueve la propiedad del entorno/grupo, no clona las capturas.
+- Las colecciones mantienen la semántica de valor actual: una copia debe preservar la independencia de sus buffers y elementos, sin duplicar semánticamente la identidad de los entornos capturados.
+- Una lectura de vida desconocida nunca se asigna a una lane más corta por conjetura.
+
+La transferencia debe preservar la semántica observable. Cuando sea seguro, se moverá el bloque completo o se cambiará el propietario del segmento. Cuando no lo sea, se hará una copia profunda conforme a la semántica de valor existente. La elección será explícita en el plan.
+
+#### 2.5.6 Reutilización del análisis de Go y garantías de Rust
+
+De Go se adopta la idea de analizar estáticamente si un valor escapa y decidir su ubicación; no se adopta su GC como requisito del runtime de HackLang.
+
+De Rust se adoptan las garantías de propiedad, vida y exclusividad de mutación, pero no se trasladará al usuario la obligación de escribir anotaciones `&`, `&mut` o lifetimes. HackLang inferirá las restricciones internas. Si no puede demostrar seguridad, ampliará la vida del propietario o rechazará el caso cuando la ampliación no sea posible.
+
+De Goose se adopta la planificación de varias pilas de datos, bump allocation y restauración por ámbito. No se copia su conjunto de restricciones ni se presupone que una única pila por ámbito sea suficiente para closures, recursividad y objetos redimensionables de HackLang.
+
+#### 2.5.7 Invariantes que el plan deberá demostrar
+
+Antes de que el backend consuma el plan, cada programa deberá satisfacer:
+
+1. Cada objeto dinámico tiene exactamente un propietario de almacenamiento.
+2. Toda referencia apunta a un objeto cuyo propietario vive al menos tanto como la referencia.
+3. Ninguna restauración de cursor invalida un valor vivo.
+4. Cada destructor se ejecuta como máximo una vez y antes de recuperar su almacenamiento.
+5. Una transferencia de propietario conserva los valores y aliasing que exige la semántica actual.
+6. La recursividad crea estado de pila independiente por activación.
+7. Los errores y saltos no locales ejecutan la misma limpieza que una salida normal.
+8. Los fallos de reserva y los desbordamientos de tamaño producen errores controlados.
+
+El planificador deberá poder explicar, para cada binding y temporal, su clase de almacenamiento, lane, propietario, ámbito de vida y motivo de promoción. Esta explicación será la base de una futura orden `hl explain-memory`.
+

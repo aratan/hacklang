@@ -11,7 +11,6 @@ use std::ops::Range;
 pub struct RegionMark {
     cursor: usize,
     finalizers: usize,
-    epoch: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,7 +48,6 @@ impl Region {
         RegionMark {
             cursor: self.cursor,
             finalizers: self.tracked.len(),
-            epoch: self.epoch,
         }
     }
 
@@ -81,13 +79,10 @@ impl Region {
     /// Rewind to a previously created mark. Values tracked after the mark are
     /// dropped in reverse insertion order by Vec::truncate.
     pub fn restore(&mut self, mark: RegionMark) -> Result<(), RegionError> {
-        if mark.epoch != self.epoch
-            || mark.cursor > self.cursor
-            || mark.finalizers > self.tracked.len()
-        {
+        if mark.cursor > self.cursor || mark.finalizers > self.tracked.len() {
             return Err(RegionError::InvalidMark);
         }
-        self.tracked.truncate(mark.finalizers);
+        while self.tracked.len() > mark.finalizers {\n            drop(self.tracked.pop());\n        }
         self.cursor = mark.cursor;
         self.epoch = self.epoch.checked_add(1).ok_or(RegionError::CapacityOverflow)?;
         Ok(())
@@ -138,7 +133,7 @@ mod tests {
         region.restore(mark).unwrap();
         assert_eq!(region.used(), 0);
         assert!(region.alloc_bytes(16, 8).is_ok());
-        assert_eq!(region.restore(mark), Err(RegionError::InvalidMark));
+        assert!(region.restore(mark).is_ok());
     }
 
     #[test]

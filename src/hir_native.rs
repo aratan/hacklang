@@ -1,0 +1,136 @@
+use crate::hir::{BinaryOp, ExprKind, Expression, Program, StmtKind, Statement};
+use std::process::Command;
+
+#[derive(Default)]
+struct Generator {
+    temp: usize,
+    scope: usize,
+    loop_id: usize,
+    scopes: Vec<String>,
+    loops: Vec<(String, String, usize)>,
+}
+
+impl Generator {
+    fn line(out: &mut String, value: impl AsRef<str>) { out.push_str(value.as_ref()); out.push('\n'); }
+    fn temp(&mut self) -> String { let value = format!("v{}", self.temp); self.temp += 1; value }
+    fn c_string(value: &str) -> String {
+        let mut out = String::from("\"");
+        for byte in value.bytes() {
+            match byte {
+                b'"' => out.push_str("\\\""), b'\\' => out.push_str("\\\\"),
+                b'\n' => out.push_str("\\n"), b'\r' => out.push_str("\\r"),
+                b'\t' => out.push_str("\\t"), 0x20..=0x7e => out.push(byte as char),
+                other => out.push_str(&format!("\\{:03o}", other)),
+            }
+        }
+        out.push('"'); out
+    }
+    fn binding(program: &Program, id: crate::hir::BindingId) -> Result<String, String> {
+        program.bindings.get(id.0 as usize).map(|b| Self::c_string(&b.name))
+            .ok_or_else(|| format!("BindingId inválido: {}", id.0))
+    }
+    fn expr(&mut self, p: &Program, e: &Expression, out: &mut String) -> Result<String, String> {
+        let v = self.temp();
+        let rhs = match &e.kind {
+            ExprKind::Number(n) if n.is_finite() => format!("hl_number({n:.17})"),
+            ExprKind::Number(_) => return Err("NaN e infinito no backend nativo aún no están soportados".into()),
+            ExprKind::Bool(b) => format!("hl_bool({})", if *b { 1 } else { 0 }),
+            ExprKind::String(s) => format!("hl_string({})", Self::c_string(s)),
+            ExprKind::Read(id) => format!("hl_get(env, {})", Self::binding(p, *id)?),
+            ExprKind::Binary { op, left, right } => {
+                let a = self.expr(p, left, out)?; let b = self.expr(p, right, out)?;
+                let f = match op { BinaryOp::Add=>"hl_add", BinaryOp::Sub=>"hl_sub", BinaryOp::Mul=>"hl_mul",
+                    BinaryOp::Div=>"hl_div", BinaryOp::Less=>"hl_less", BinaryOp::Greater=>"hl_greater",
+                    BinaryOp::Equal=>"hl_equal", BinaryOp::NotEqual=>"hl_not_equal" };
+                format!("{f}({a}, {b})")
+            }
+            ExprKind::Ternary { condition, when_true, when_false } => {
+                let c = self.expr(p, condition, out)?;
+                Self::line(out, format!("HlValue {v};"));
+                Self::line(out, format!("if (hl_truthy({c})) {{"));
+                let a = self.expr(p, when_true, out)?; Self::line(out, format!("{v} = {a};"));
+                Self::line(out, "} else {");
+                let b = self.expr(p, when_false, out)?; Self::line(out, format!("{v} = {b};"));
+                Self::line(out, "}"); return Ok(v);
+            }
+        };
+        Self::line(out, format!("HlValue {v} = {rhs};")); Ok(v)
+    }
+    fn block(&mut self, p: &Program, statements: &[Statement], out: &mut String) -> Result<(), String> {
+        let id = self.scope; self.scope += 1; let prev = format!("prev_{id}");
+        Self::line(out, "{"); Self::line(out, format!("HlEnv *{prev} = env;"));
+        Self::line(out, "env = hl_env_new(env);"); self.scopes.push(prev.clone());
+        for s in statements { self.stmt(p, s, out)?; }
+        self.scopes.pop(); Self::line(out, format!("env = {prev};")); Self::line(out, "}"); Ok(())
+    }
+    fn restore(&self, out: &mut String, depth: usize) {
+        for prev in self.scopes[depth..].iter().rev() { Self::line(out, format!("env = {prev};")); }
+    }
+    fn stmt(&mut self, p: &Program, s: &Statement, out: &mut String) -> Result<(), String> {
+        match &s.kind {
+            StmtKind::Let { binding, value } => {
+                let v = self.expr(p, value, out)?;
+                Self::line(out, format!("hl_define(env, {}, {v});", Self::binding(p, *binding)?));
+            }
+            StmtKind::Assign { binding, value } => {
+                let v = self.expr(p, value, out)?;
+                Self::line(out, format!("hl_assign(env, {}, {v});", Self::binding(p, *binding)?));
+            }
+            StmtKind::Print(e) => { let v = self.expr(p, e, out)?; Self::line(out, format!("hl_print({v});")); }
+            StmtKind::Block { statements, .. } => self.block(p, statements, out)?,
+            StmtKind::If { condition, then_body, else_body, .. } => {
+                let c = self.expr(p, condition, out)?;
+                Self::line(out, format!("if (hl_truthy({c}))")); self.block(p, then_body, out)?;
+                if !else_body.is_empty() { Self::line(out, "else"); self.block(p, else_body, out)?; }
+            }
+            StmtKind::While { condition, body, .. } => {
+                let id = self.loop_id; self.loop_id += 1;
+                let prev = format!("loop_prev_{id}"); let cond = format!("loop_cond_{id}"); let end = format!("loop_end_{id}");
+                Self::line(out, format!("HlEnv *{prev} = env;")); Self::line(out, "env = hl_env_new(env);");
+                self.scopes.push(prev.clone()); let depth = self.scopes.len();
+                self.loops.push((cond.clone(), end.clone(), depth));
+                Self::line(out, format!("{cond}: ;"));
+                let c = self.expr(p, condition, out)?;
+                Self::line(out, format!("if (!hl_truthy({c})) goto {end};"));
+                for child in body { self.stmt(p, child, out)?; }
+                Self::line(out, format!("goto {cond};")); Self::line(out, format!("{end}: ;"));
+                self.loops.pop(); self.scopes.pop(); Self::line(out, format!("env = {prev};"));
+            }
+            StmtKind::Break => {
+                let (_, end, depth) = self.loops.last().cloned().ok_or("break fuera de bucle en HIR")?;
+                self.restore(out, depth); Self::line(out, format!("goto {end};"));
+            }
+            StmtKind::Continue => {
+                let (cond, _, depth) = self.loops.last().cloned().ok_or("continue fuera de bucle en HIR")?;
+                self.restore(out, depth); Self::line(out, format!("goto {cond};"));
+            }
+        }
+        Ok(())
+    }
+}
+
+pub fn generate_c(program: &Program) -> Result<String, String> {
+    let mut body = String::new(); let mut gen = Generator::default();
+    for stmt in &program.statements { gen.stmt(program, stmt, &mut body)?; }
+    let mut source = include_str!("native_runtime.c").to_string();
+    source.push_str("\nint main(void) {\n    HlEnv *env = hl_env_new(NULL);\n");
+    source.push_str(&body); source.push_str("    return 0;\n}\n"); Ok(source)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hir;
+    use crate::ast::{Program as AstProgram, Statement as AstStmt, LetStatement, PrintStatement};
+    #[test]
+    fn emits_c_from_resolved_hir_bindings() {
+        let ast = AstProgram { statements: vec![
+            AstStmt::Let(LetStatement { name:"x".into(), value:crate::ast::Expression::NumberLiteral(7.0) }),
+            AstStmt::Print(PrintStatement { value:crate::ast::Expression::Identifier("x".into()) })
+        ]};
+        let lowered = hir::lower(&ast).unwrap();
+        let c = generate_c(&lowered).unwrap();
+        assert!(c.contains("hl_define(env, \"x\""));
+        assert!(c.contains("hl_get(env, \"x\""));
+    }
+}

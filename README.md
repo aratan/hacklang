@@ -379,7 +379,7 @@ El CLI se construye como el ejecutable `hl`. En desarrollo se invoca con `cargo 
 | **Memoria** | ✅ Mark-and-sweep de frames de entorno; los demás valores los gestiona Rust |
 | **Análisis de tipos** | ✅ Primera pasada no bloqueante: tipos primitivos, retornos explícitos, arrays/mapas con tipos de elemento/clave/valor, indexación, asignaciones, operadores y aridad de llamadas |
 | **Compilador nativo** | Primer backend C operativo para un subconjunto; sin paridad completa ni soporte de colecciones/funciones |
-| **Tests** | Tests Rust y ejecución de todos los `examples/*.hl` en GitHub Actions; falta una matriz diferencial completa intérprete/nativo |
+| **Tests** | Tests Rust, ejecución de todos los ejemplos y smoke diferencial intérprete/nativo, incluida división por cero; falta ampliar la matriz de conformidad |
 
 
 ## Funcionalidad del runtime

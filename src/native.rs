@@ -268,7 +268,7 @@ mod tests {
         compile_to_executable(&program, &source, Some(&executable)).expect("native compilation");
         let run = Command::new(&executable).output().expect("run native executable");
         assert!(run.status.success(), "native program failed: {}", String::from_utf8_lossy(&run.stderr));
-        assert_eq!(String::from_utf8_lossy(&run.stdout), "iteration\\n4\\n");
+        assert_eq!(String::from_utf8_lossy(&run.stdout), "iteration\n4\n");
         let _ = fs::remove_dir_all(directory);
     }
 

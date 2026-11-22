@@ -852,4 +852,114 @@ mod tests {
         assert!(!ev.free_env_ids.is_empty(), "a returned frame should be available for reuse");
     }
 
+
+    // -- MEM-004..MEM-017: observable lifetime/ownership semantics baseline --
+    // These tests pin current language behavior; they do not claim stack/region
+    // placement is implemented. Placement and release are verified in later phases.
+
+    #[test]
+    fn mem_004_returned_array_remains_valid_after_creator_returns() {
+        let ev = eval_program("let make = |x| [x, x + 1]; let values = make(40); let result = values[1];").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(41.0)));
+    }
+
+    #[test]
+    fn mem_005_nested_map_and_array_values_survive_escape() {
+        let ev = eval_program("let make = |x| @(\"payload\": [x, x + 1]); let data = make(8); let result = data[\"payload\"][1];").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(9.0)));
+    }
+
+    #[test]
+    fn mem_006_string_inside_returned_array_remains_valid() {
+        let ev = eval_program("let make = |x| [x, \"alive\"]; let values = make(1); let result = values[1];").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::String("alive".into())));
+    }
+
+    #[test]
+    fn mem_007_returned_closure_keeps_immutable_capture() {
+        let ev = eval_program("let make = |x| |y| x + y; let add = make(30); let result = add(12);").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(42.0)));
+    }
+
+    #[test]
+    fn mem_008_returned_closure_observes_mutable_capture() {
+        let ev = eval_program("let make = |x| (let change = |n| (x = x + n; return x;); return change;); let change = make(10); let first = change(2); let second = change(3);").unwrap();
+        assert_eq!(ev.get_var("first"), Some(&Value::Number(12.0)));
+        assert_eq!(ev.get_var("second"), Some(&Value::Number(15.0)));
+    }
+
+    #[test]
+    fn mem_009_sibling_closures_share_the_same_mutable_capture() {
+        let ev = eval_program("let make = |x| (let increment = |n| (x = x + n; return x;); let read = |n| x; return [increment, read];); let pair = make(10); let changed = pair[0](5); let observed = pair[1](0);").unwrap();
+        assert_eq!(ev.get_var("changed"), Some(&Value::Number(15.0)));
+        assert_eq!(ev.get_var("observed"), Some(&Value::Number(15.0)));
+    }
+
+    #[test]
+    fn mem_010_recursive_closure_remains_callable() {
+        let ev = eval_program("let factorial = |n| n < 2 ? 1 : n * factorial(n - 1); let result = factorial(6);").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(720.0)));
+    }
+
+    #[test]
+    fn mem_011_mutually_recursive_closures_resolve_shared_scope() {
+        let ev = eval_program("let even = |n| n ~ 0 ? true : odd(n - 1); let odd = |n| n ~ 0 ? false : even(n - 1); let result = even(8);").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Bool(true)));
+    }
+
+    #[test]
+    fn mem_012_closure_nested_in_escaping_collection_keeps_capture_alive() {
+        let ev = eval_program("let make = |x| [|y| x + y]; let functions = make(20); let add = functions[0]; let result = add(22);").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(42.0)));
+    }
+
+    #[test]
+    fn mem_013_repeated_loop_calls_reuse_environment_frames() {
+        let ev = eval_program("let identity = |x| x; let i = 0; let sum = 0; while (i < 100) (sum = sum + identity(i); i = i + 1;); let result = sum;").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(4950.0)));
+        assert!(ev.environments.len() <= 4, "repeated calls should not retain one frame per iteration");
+    }
+
+    #[test]
+    fn mem_014_break_and_continue_leave_nested_scopes_consistent() {
+        let ev = eval_program("let i = 0; let sum = 0; while (i < 8) ((let temporary = i; i = i + 1; if (temporary ~ 2) (continue;); if (temporary ~ 6) (break;); sum = sum + temporary;)); let result = sum;").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(13.0)));
+    }
+
+    #[test]
+    fn mem_015_return_from_nested_control_flow_preserves_returned_value() {
+        let ev = eval_program("let find = |n| (while (n > 0) (if (n ~ 3) (return [n, \"found\"];); n = n - 1;); return [0, \"missing\"];); let result = find(5); let label = result[1];").unwrap();
+        assert_eq!(ev.get_var("label"), Some(&Value::String("found".into())));
+    }
+
+    #[test]
+    fn mem_016_error_during_nested_evaluation_is_reported() {
+        let error = eval_program("let make = |x| [x, x + 1]; let values = make(1); let result = values[99];").unwrap_err();
+        assert!(error.contains("fuera de rango"));
+    }
+
+    #[test]
+    fn mem_017_reassigning_collection_keeps_new_value_observable() {
+        let ev = eval_program("let values = [1, 2]; values = [7, 8, 9]; let result = values[2];").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(9.0)));
+    }
+
+    #[test]
+    fn mem_020_invalid_collection_index_fails_without_corrupting_other_values() {
+        let error = eval_program("let stable = 42; let values = [1]; let result = values[4];").unwrap_err();
+        assert!(error.contains("fuera de rango"));
+    }
+
+    #[test]
+    fn mem_021_deep_recursion_fails_with_controlled_error() {
+        let error = eval_program("let recurse = |n| recurse(n + 1); recurse(0);").unwrap_err();
+        assert!(error.contains("Límite de profundidad de evaluación"));
+    }
+
+    #[test]
+    fn mem_022_collection_and_closure_semantics_are_stable_across_nested_calls() {
+        let ev = eval_program("let build = |base| (let values = [base, base + 1]; let mapper = |offset| values[1] + offset; return mapper;); let mapper = build(40); let result = mapper(1);").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(42.0)));
+    }
+
 }

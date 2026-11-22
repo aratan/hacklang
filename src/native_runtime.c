@@ -14,31 +14,51 @@ typedef struct {
     union { double number; int boolean; const char *string; } as;
 } HlValue;
 
+typedef struct HlEnv HlEnv;
+typedef struct HlAllocation {
+    void *memory;
+    struct HlAllocation *next;
+} HlAllocation;
 typedef struct HlBinding {
     const char *name;
     HlValue value;
+    HlEnv *owner;
     struct HlBinding *next;
 } HlBinding;
-
-typedef struct HlEnv {
-    struct HlEnv *parent;
+struct HlEnv {
+    HlEnv *parent;
     HlBinding *bindings;
-} HlEnv;
+    HlAllocation *allocations;
+};
 
 static void hl_fail(const char *message) {
     fprintf(stderr, "Error en tiempo de ejecución: %s\n", message);
     exit(1);
 }
 
-static void *hl_alloc(size_t size) {
-    void *memory = malloc(size);
-    if (!memory) hl_fail("memoria agotada");
+static void *hl_alloc(HlEnv *environment, size_t size) {
+    void *memory = malloc(size ? size : 1);
+    HlAllocation *allocation = (HlAllocation *)malloc(sizeof(HlAllocation));
+    if (!memory || !allocation) hl_fail("memoria agotada");
+    allocation->memory = memory;
+    allocation->next = environment->allocations;
+    environment->allocations = allocation;
     return memory;
 }
-
-static char *hl_copy_string(const char *value) {
+static void hl_env_free(HlEnv *environment) {
+    if (!environment) return;
+    HlAllocation *allocation = environment->allocations;
+    while (allocation) {
+        HlAllocation *next = allocation->next;
+        free(allocation->memory);
+        free(allocation);
+        allocation = next;
+    }
+    free(environment);
+}
+static char *hl_copy_string(HlEnv *environment, const char *value) {
     size_t size = strlen(value) + 1;
-    char *copy = (char *)hl_alloc(size);
+    char *copy = (char *)hl_alloc(environment, size);
     memcpy(copy, value, size);
     return copy;
 }
@@ -49,13 +69,15 @@ static HlValue hl_number(double value) {
 static HlValue hl_bool(int value) {
     HlValue result; result.tag = HL_BOOL; result.as.boolean = value != 0; return result;
 }
-static HlValue hl_string(const char *value) {
-    HlValue result; result.tag = HL_STRING; result.as.string = hl_copy_string(value); return result;
+static HlValue hl_string(HlEnv *environment, const char *value) {
+    HlValue result; result.tag = HL_STRING; result.as.string = hl_copy_string(environment, value); return result;
 }
 static HlEnv *hl_env_new(HlEnv *parent) {
-    HlEnv *environment = (HlEnv *)hl_alloc(sizeof(HlEnv));
+    HlEnv *environment = (HlEnv *)malloc(sizeof(HlEnv));
+    if (!environment) hl_fail("memoria agotada");
     environment->parent = parent;
     environment->bindings = NULL;
+    environment->allocations = NULL;
     return environment;
 }
 
@@ -71,12 +93,18 @@ static HlBinding *hl_find(HlEnv *environment, const char *name) {
     }
     return NULL;
 }
+static HlValue hl_store_value(HlEnv *owner, HlValue value) {
+    if (value.tag == HL_STRING) value.as.string = hl_copy_string(owner, value.as.string);
+    return value;
+}
 static void hl_define(HlEnv *environment, const char *name, HlValue value) {
     HlBinding *item = hl_find_local(environment, name);
+    value = hl_store_value(environment, value);
     if (item) { item->value = value; return; }
-    item = (HlBinding *)hl_alloc(sizeof(HlBinding));
-    item->name = hl_copy_string(name);
+    item = (HlBinding *)hl_alloc(environment, sizeof(HlBinding));
+    item->name = hl_copy_string(environment, name);
     item->value = value;
+    item->owner = environment;
     item->next = environment->bindings;
     environment->bindings = item;
 }
@@ -87,7 +115,7 @@ static void hl_assign(HlEnv *environment, const char *name, HlValue value) {
         snprintf(message, sizeof(message), "Variable '%s' no definida para asignación", name);
         hl_fail(message);
     }
-    item->value = value;
+    item->value = hl_store_value(item->owner, value);
 }
 static HlValue hl_get(HlEnv *environment, const char *name) {
     HlBinding *item = hl_find(environment, name);
@@ -164,12 +192,12 @@ static void hl_number_text(double value, char *buffer, size_t size) {
     }
     if (size > 0) buffer[length < size ? length : size - 1] = '\0';
 }
-static const char *hl_to_text(HlValue value) {
+static const char *hl_to_text(HlEnv *environment, HlValue value) {
     if (value.tag == HL_STRING) return value.as.string;
     if (value.tag == HL_BOOL) return value.as.boolean ? "true" : "false";
     char buffer[512];
     hl_number_text(value.as.number, buffer, sizeof(buffer));
-    return hl_copy_string(buffer);
+    return hl_copy_string(environment, buffer);
 }
 static void hl_print(HlValue value) {
     switch (value.tag) {
@@ -187,13 +215,13 @@ static int hl_is_string_number_pair(HlValue left, HlValue right) {
     return (left.tag == HL_STRING && right.tag == HL_NUMBER)
         || (left.tag == HL_NUMBER && right.tag == HL_STRING);
 }
-static HlValue hl_mixed_text(HlValue left, HlValue right) {
-    const char *left_text = hl_to_text(left);
-    const char *right_text = hl_to_text(right);
+static HlValue hl_mixed_text(HlEnv *environment, HlValue left, HlValue right) {
+    const char *left_text = hl_to_text(environment, left);
+    const char *right_text = hl_to_text(environment, right);
     size_t size = strlen(left_text) + strlen(right_text) + 3;
-    char *joined = (char *)hl_alloc(size);
+    char *joined = (char *)hl_alloc(environment, size);
     snprintf(joined, size, "%s(%s)", left_text, right_text);
-    return hl_string(joined);
+    return hl_string(environment, joined);
 }
 static void hl_require_numbers(HlValue left, HlValue right, const char *operation) {
     if (left.tag != HL_NUMBER || right.tag != HL_NUMBER) {
@@ -202,54 +230,54 @@ static void hl_require_numbers(HlValue left, HlValue right, const char *operatio
         hl_fail(message);
     }
 }
-static HlValue hl_add(HlValue left, HlValue right) {
+static HlValue hl_add(HlEnv *environment, HlValue left, HlValue right) {
     if (left.tag == HL_NUMBER && right.tag == HL_NUMBER)
         return hl_number(left.as.number + right.as.number);
     if (left.tag == HL_STRING && right.tag == HL_NUMBER) {
-        const char *number = hl_to_text(right);
+        const char *number = hl_to_text(environment, right);
         size_t size = strlen(left.as.string) + strlen(number) + 1;
-        char *joined = (char *)hl_alloc(size);
+        char *joined = (char *)hl_alloc(environment, size);
         snprintf(joined, size, "%s%s", left.as.string, number);
-        return hl_string(joined);
+        return hl_string(environment, joined);
     }
     if (left.tag == HL_NUMBER && right.tag == HL_STRING) {
-        const char *number = hl_to_text(left);
+        const char *number = hl_to_text(environment, left);
         size_t size = strlen(number) + strlen(right.as.string) + 1;
-        char *joined = (char *)hl_alloc(size);
+        char *joined = (char *)hl_alloc(environment, size);
         snprintf(joined, size, "%s%s", number, right.as.string);
-        return hl_string(joined);
+        return hl_string(environment, joined);
     }
     hl_fail("Type mismatch: valores incompatibles con el operador Plus");
     return hl_number(0);
 }
-static HlValue hl_sub(HlValue left, HlValue right) {
-    if (hl_is_string_number_pair(left, right)) return hl_mixed_text(left, right);
+static HlValue hl_sub(HlEnv *environment, HlValue left, HlValue right) {
+    if (hl_is_string_number_pair(left, right)) return hl_mixed_text(environment, left, right);
     hl_require_numbers(left, right, "Minus"); return hl_number(left.as.number - right.as.number);
 }
-static HlValue hl_mul(HlValue left, HlValue right) {
-    if (hl_is_string_number_pair(left, right)) return hl_mixed_text(left, right);
+static HlValue hl_mul(HlEnv *environment, HlValue left, HlValue right) {
+    if (hl_is_string_number_pair(left, right)) return hl_mixed_text(environment, left, right);
     hl_require_numbers(left, right, "Star"); return hl_number(left.as.number * right.as.number);
 }
-static HlValue hl_div(HlValue left, HlValue right) {
-    if (hl_is_string_number_pair(left, right)) return hl_mixed_text(left, right);
+static HlValue hl_div(HlEnv *environment, HlValue left, HlValue right) {
+    if (hl_is_string_number_pair(left, right)) return hl_mixed_text(environment, left, right);
     hl_require_numbers(left, right, "Slash");
     if (right.as.number == 0.0) hl_fail("Division by zero");
     return hl_number(left.as.number / right.as.number);
 }
-static HlValue hl_less(HlValue left, HlValue right) {
-    if (hl_is_string_number_pair(left, right)) return hl_mixed_text(left, right);
+static HlValue hl_less(HlEnv *environment, HlValue left, HlValue right) {
+    if (hl_is_string_number_pair(left, right)) return hl_mixed_text(environment, left, right);
     hl_require_numbers(left, right, "Less"); return hl_bool(left.as.number < right.as.number);
 }
-static HlValue hl_greater(HlValue left, HlValue right) {
-    if (hl_is_string_number_pair(left, right)) return hl_mixed_text(left, right);
+static HlValue hl_greater(HlEnv *environment, HlValue left, HlValue right) {
+    if (hl_is_string_number_pair(left, right)) return hl_mixed_text(environment, left, right);
     hl_require_numbers(left, right, "Greater"); return hl_bool(left.as.number > right.as.number);
 }
-static HlValue hl_equal(HlValue left, HlValue right) {
-    if (hl_is_string_number_pair(left, right)) return hl_mixed_text(left, right);
+static HlValue hl_equal(HlEnv *environment, HlValue left, HlValue right) {
+    if (hl_is_string_number_pair(left, right)) return hl_mixed_text(environment, left, right);
     hl_require_numbers(left, right, "Tilde"); return hl_bool(left.as.number == right.as.number);
 }
-static HlValue hl_not_equal(HlValue left, HlValue right) {
-    if (hl_is_string_number_pair(left, right)) return hl_mixed_text(left, right);
+static HlValue hl_not_equal(HlEnv *environment, HlValue left, HlValue right) {
+    if (hl_is_string_number_pair(left, right)) return hl_mixed_text(environment, left, right);
     hl_require_numbers(left, right, "Caret");
     return hl_bool(fabs(left.as.number - right.as.number) > DBL_EPSILON);
 }

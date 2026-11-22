@@ -225,14 +225,14 @@ El runtime C usa valores dinámicos etiquetados. En esta primera iteración, los
 
 ### Pipeline de ejecución
 
-HackLang mantiene un único front-end compartido. El intérprete recorre el AST en Rust; el backend nativo genera C directamente desde ese mismo AST. No hay una IR adicional:
+HackLang mantiene un único front-end compartido. El intérprete recorre el AST en Rust; el backend nativo transforma AST→HIR y genera C desde HIR. La HIR es la frontera semántica del backend, no un segundo frontend:
 
 ```
 Source (.hl) ─▶ Lexer ─▶ Parser ─▶ AST ─┬─▶ Evaluator Rust ─▶ Output
                                         └─▶ HIR ─▶ C Generator ─▶ Runtime C ─▶ GCC/Clang ─▶ Executable
 ```
 
-Cada fase es un módulo independiente de Rust (`lexer.rs`, `parser.rs`, `evaluador.rs`) que se comunica con el siguiente solo a través de su tipo de salida (`Vec<Token>` → `Program` → `Result<(), String>`). El análisis estático es una pasada independiente y no bloqueante entre el parser y el evaluador. No hay IR ni optimizaciones todavía; el backend genera C directamente desde el AST para un subconjunto documentado.
+Cada fase es un módulo independiente de Rust (`lexer.rs`, `parser.rs`, `evaluador.rs`, `hir.rs`, `hir_native.rs`) que se comunica con la siguiente mediante tipos explícitos. El análisis estático sigue siendo una pasada independiente y no bloqueante entre el parser y el evaluador. HIR resuelve ámbitos e identidad de bindings; todavía no hay optimizaciones de alto nivel ni paridad nativa completa.
 
 ### Flujo de errores
 
@@ -413,7 +413,7 @@ El lexer expone `tokenize() -> Result<Vec<Token>, String>` y el parser `parse_pr
 
 ## Modelo de memoria objetivo
 
-Se ha especificado un modelo **stack-first, sin GC y sin gestión manual del usuario**, inspirado en regiones por ámbito (Goose), propiedad determinista (Rust) y análisis de escape automático (Go). Es una especificación de arquitectura, no una característica implementada: el evaluador y el runtime nativo conservan por ahora sus mecanismos actuales. Incluye reglas para escapes, arrays, mapas, closures, recursividad y una matriz de 22 pruebas de diseño. Consulta [docs/MEMORY_MODEL.md](docs/MEMORY_MODEL.md).
+Se ha especificado un modelo **stack-first, sin GC y sin gestión manual del usuario**, inspirado en regiones por ámbito (Goose), propiedad determinista (Rust) y análisis de escape automático (Go). Es una especificación de arquitectura, no una característica implementada: el evaluador y el runtime nativo conservan por ahora sus mecanismos actuales. Incluye reglas para escapes, arrays, mapas, closures, recursividad y una matriz de 27 casos de diseño, con cobertura automatizada parcial. Consulta [docs/MEMORY_MODEL.md](docs/MEMORY_MODEL.md).
 
 ## Biblioteca estándar inicial
 

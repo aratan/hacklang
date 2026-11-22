@@ -1,13 +1,13 @@
 # Diseño del intérprete y compilador nativo
 
-Estado: diseño y contrato de conformidad. El backend C inicial ya está implementado en `src/native.rs` y `src/native_runtime.c`; este documento separa lo operativo de lo pendiente.
+Estado: diseño y contrato de conformidad. El backend C inicial ya está implementado en `src/hir_native.rs`, `src/native.rs` (orquestación de build) y `src/native_runtime.c`; este documento separa lo operativo de lo pendiente.
 
 ## Objetivo
 
 HackLang debe ofrecer dos formas de ejecutar el mismo programa:
 
 - Interpretación: el AST se evalúa con el runtime Rust existente.
-- Compilación: el AST se transforma en código C, se enlaza con el runtime nativo de HackLang y un compilador C produce un ejecutable del sistema anfitrión.
+- Compilación: el AST se reduce a HIR con bindings y ámbitos resueltos; HIR se transforma en C, se enlaza con el runtime nativo de HackLang y un compilador C produce un ejecutable del sistema anfitrión.
 
 Contrato de usuario previsto:
 
@@ -24,7 +24,7 @@ hl check programa.hl
 ## Estado verificado en el código actual
 
 - Cargo define un único paquete y binario Rust `hl`; no hay dependencias externas.
-- `main.rs` reutiliza lexer (`tokenize_spanned`), parser (`Parser::new_spanned` / `new_compact_spanned`), formatter, checker (`TypeChecker::check`) y evaluador (`Evaluator`). `run` y `check` están implementados, se mantiene la invocación legacy y las opciones existentes. `build` llama a `native::compile_to_executable`, genera C desde el AST, incorpora `native_runtime.c` y ejecuta `cc`, GCC o Clang.
+- `main.rs` reutiliza lexer (`tokenize_spanned`), parser (`Parser::new_spanned` / `new_compact_spanned`), formatter, checker (`TypeChecker::check`) y evaluador (`Evaluator`). `run` y `check` están implementados, se mantiene la invocación legacy y las opciones existentes. `build` llama a `native::compile_to_executable`, ejecuta AST→HIR, genera C desde HIR mediante `hir_native::generate_c`, incorpora `native_runtime.c` y ejecuta `cc`, GCC o Clang.
 - El lexer ya produce `SpannedToken` y el parser acepta tokens con spans para enriquecer errores sintácticos. El AST (`Program`, `Statement`, `Expression`) todavía no conserva spans: no se debe volver a implementar tokenización ni localización desde cero. La mejora pendiente es propagar los spans existentes hasta nodos/diagnósticos del AST.
 - El checker admite `Unknown` y es deliberadamente no bloqueante. No puede usarse como garantía de que todos los tipos están resueltos.
 - `prototypes/output.c` es un prototipo histórico incompleto, no un backend reutilizable ni un runtime funcional.
@@ -116,8 +116,8 @@ La representación de colecciones es una interfaz observable y debe definirse ex
 
 ```text
                  ┌── Evaluator Rust ──┐
-Source → Lexer → Parser → AST          ├→ comportamiento HackLang
-                 └── C Code Generator → C source + native runtime → C compiler/linker → executable
+Source → Lexer → Parser → AST → HIR ──┬→ C Code Generator → C source + native runtime → C compiler/linker → executable
+                                       └→ (futuro) análisis y otros backends
 ```
 
 ### Inventario de reutilización: no duplicar
@@ -131,13 +131,13 @@ Source → Lexer → Parser → AST          ├→ comportamiento HackLang
 | Análisis estático | `TypeChecker::check`, `Unknown`, diagnósticos JSON | Reutilizarlo como análisis opcional, no como type lowering obligatorio |
 | Ejecución de referencia | `Evaluator::evaluate` | Mantenerlo como motor de `run` y oráculo diferencial |
 | Pruebas semánticas | Tests dentro de `evaluador.rs` y CI de ejemplos | Ampliar la suite existente y sumar harness diferencial, sin replicar tests manualmente |
-| Backend C | `src/native.rs` y `src/native_runtime.c` implementan el primer subconjunto; `prototypes/output.c` sigue siendo histórico | Extender el backend existente y sus pruebas; no crear un segundo backend ni reutilizar el prototipo histórico |
+| Backend C | `src/hir_native.rs` genera C desde HIR; `src/native.rs` orquesta lowering, toolchain y salida; `src/native_runtime.c` implementa el runtime inicial | Extender el backend HIR y sus pruebas; no crear un segundo backend ni reutilizar el prototipo histórico |
 
 ## Decisiones iniciales
 
 1. Mantener lexer, parser, AST y checker como front-end único.
 2. Mantener el evaluador Rust como implementación de referencia y modo `run`.
-3. Implementar inicialmente un generador C desde el AST, sin añadir una IR solo por anticipación. Revaluar una IR cuando optimizaciones, múltiples backends o complejidad real lo justifiquen.
+3. Mantener HIR como frontera del backend nativo; no generar C directamente desde el AST. No introducir MIR/SSA hasta que optimizaciones, gestión de control o análisis de memoria lo justifiquen.
 4. El C generado utilizará un runtime dinámico con Values etiquetados. No dependerá de que el checker resuelva estáticamente cada tipo.
 5. El runtime nativo debe gestionar entornos, closures, strings, arrays, mapas, errores y memoria. No usar refcount simple sin resolver ciclos de closures recursivas.
 6. El compilador C se invocará como proceso externo. Primera plataforma: Linux x86-64 con GCC o Clang disponible. Detectar el compilador, comprobar su versión/ejecución y devolver errores legibles. No afirmar que el binario generado es independiente de libc o de la plataforma.
@@ -196,7 +196,7 @@ Pendiente: gestión de memoria acotada, pruebas de estrés y conformidad complet
 
 ### N3 — Backend por subconjuntos (primer corte implementado)
 
-Ya genera C para literales Number/Bool/String, variables y asignación, operadores soportados, ternario, bloques, if, while, break, continue y print.
+`src/hir_native.rs` genera C desde HIR para literales Number/Bool/String, variables y asignación, operadores soportados, ternario, bloques, if, while, break, continue y print.
 
 Pendiente, en este orden:
 1. pruebas diferenciales y cerrar divergencias semánticas del subconjunto actual;
@@ -244,6 +244,6 @@ La matriz MEM-001..MEM-022 de `MEMORY_MODEL.md` es el contrato de pruebas. Antes
 
 ## Representación intermedia
 
-La siguiente frontera de arquitectura es HIR, definida en [HIR_DESIGN.md](HIR_DESIGN.md). Actualmente `native.rs` genera C recorriendo directamente el AST; HIR todavía no existe en código. La migración debe comenzar por el subconjunto nativo actual, mantener el evaluador AST como referencia y exigir equivalencia diferencial antes de cambiar la ruta de compilación. HIR no gestiona memoria ni genera punteros: identifica bindings, ámbitos, capturas, operaciones y ubicaciones de origen. La futura MIR hará explícitos control, temporales, regiones y destrucción cuando esas necesidades estén justificadas.
+La frontera HIR, definida en [HIR_DESIGN.md](HIR_DESIGN.md), ya está implementada para el subconjunto nativo inicial. `native.rs` ejecuta el lowering AST→HIR y delega la generación C a `hir_native.rs`; el generador AST anterior se ha retirado para evitar dos rutas de backend. El evaluador AST sigue siendo la referencia y la CI compara su salida con el ejecutable nativo.
 
-No se introducirá una HIR espejo que duplique el AST sin aportar resolución de nombres, identidad de bindings, ámbitos o metadatos de análisis. El primer hito es que el backend C consuma HIR para el subconjunto actual y mantenga el corpus diferencial sin cambios observables.
+HIR aporta resolución de nombres, identidad de bindings y ámbitos. No gestiona memoria ni genera punteros: identifica estructura semántica para que análisis posteriores puedan operar sobre ella. La futura MIR hará explícitos control, temporales, regiones y destrucción cuando esas necesidades estén justificadas.

@@ -423,4 +423,39 @@ mod tests {
         assert_eq!(facts.assignment_count, 1);
     }
 
+    #[test]
+    fn usage_analysis_builds_conservative_live_interval_for_reads_after_nested_scope() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "value".into(), value: A::NumberLiteral(1.0) }),
+            S::Block(vec![S::Print(PrintStatement { value: A::Identifier("value".into()) })]),
+            S::Print(PrintStatement { value: A::Identifier("value".into()) }),
+        ]);
+        let facts = &plan(&p).usage[&BindingId(0)];
+        assert!(facts.declaration_position.is_some());
+        assert!(facts.first_use_position.unwrap() > facts.declaration_position.unwrap());
+        assert!(facts.last_use_position.unwrap() >= facts.first_use_position.unwrap());
+        assert!(!facts.loop_carried);
+    }
+
+    #[test]
+    fn usage_inside_loop_is_kept_live_through_the_loop_exit() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "counter".into(), value: A::NumberLiteral(3.0) }),
+            S::While(crate::ast::WhileStatement {
+                condition: A::Infix {
+                    left: Box::new(A::Identifier("counter".into())),
+                    operator: crate::lexer::Token::Greater,
+                    right: Box::new(A::NumberLiteral(0.0)),
+                },
+                body: vec![S::Print(PrintStatement { value: A::Identifier("counter".into()) })],
+            }),
+            S::Print(PrintStatement { value: A::Identifier("counter".into()) }),
+        ]);
+        let facts = &plan(&p).usage[&BindingId(0)];
+        assert!(facts.loop_carried);
+        assert!(facts.last_use_position.unwrap() > facts.first_use_position.unwrap());
+        assert!(facts.last_use_position.unwrap() >= facts.last_write_position.unwrap_or(0));
+    }
+
+
 }

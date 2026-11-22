@@ -240,6 +240,21 @@ Se añade `src/region.rs` como prototipo ejecutable y aislado del runtime produc
 
 Se registran pruebas de alineación, inicialización, restauración anidada, orden de destrucción y accesos fuera de rango. El módulo se compila dentro del binario, pero **no está conectado al planificador HIR, al ABI ni al runtime C**. Es un simulador de offsets y ciclo de vida, no una arena de objetos HackLang ni una garantía de seguridad de referencias. La integración requerirá descriptores tipados, propiedad explícita de los valores y pruebas diferenciales antes de sustituir cualquier asignación actual.
 
+### 7.6 Descriptores y tabla de regiones
+
+`src/region.rs` incorpora ahora `RegionId`, `RegionDescriptor`, `RegionState`, `RegionCheckpoint` y `RegionTable`.
+
+- Cada descriptor tiene identificador estable, padre opcional y estado explícito `Active/Closed`.
+- La tabla valida que el padre exista y siga activo al crear una región hija.
+- Las reservas y checkpoints se realizan a través del identificador de región.
+- Un padre no puede cerrarse mientras tenga hijos directos activos; la regla se aplica transitivamente al cerrar cada nivel.
+- Cerrar una región restaura su marca inicial, ejecuta los destructores registrados y bloquea operaciones posteriores.
+- Los checkpoints pertenecen a una región concreta; no se pueden aplicar a otra región ni después de cerrarla.
+
+También se corrige la reutilización de memoria: cada rango reservado se pone a cero incluso cuando reutiliza capacidad existente después de un `restore`. Así no se exponen bytes residuales de una asignación anterior.
+
+**Límite:** la tabla es todavía un modelo Rust de propiedad y ciclo de vida. No contiene referencias entre objetos HackLang, no realiza promoción entre regiones y no cambia el ABI ni el runtime C. El siguiente paso será definir y probar la promoción de valores entre regiones antes de conectar los descriptores al planificador HIR.
+
 ## 8. Diferencias entre runtime actual y arquitectura objetivo
 
 | Área | Estado actual | Objetivo |

@@ -65,6 +65,14 @@ pub struct ControlFlowGraph {
     pub exit: u32,
 }
 
+/// Physical slot assignment within a planned data stack. Metadata only:
+/// the runtime does not consume these offsets yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BindingSlotPlan {
+    pub stack: DataStackId,
+    pub slot: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryPlan {
     pub bindings: HashMap<BindingId, StorageClass>,
@@ -75,6 +83,12 @@ pub struct MemoryPlan {
     pub usage: HashMap<BindingId, BindingUsage>,
     /// Structured control-flow graph and solved live-in/live-out sets.
     pub cfg: ControlFlowGraph,
+    /// Interference graph for bindings eligible for frame/region slot reuse.
+    pub interference: HashMap<BindingId, std::collections::HashSet<BindingId>>,
+    /// Greedy, deterministic slot assignment, partitioned by data stack.
+    pub binding_slots: HashMap<BindingId, BindingSlotPlan>,
+    /// Number of slots reserved in each data stack.
+    pub stack_slot_counts: HashMap<DataStackId, u32>,
 }
 
 
@@ -171,6 +185,89 @@ fn solve_liveness(cfg: &mut ControlFlowGraph) {
             }
         }
     }
+}
+
+
+fn stack_for_binding(
+    binding: BindingId,
+    class: StorageClass,
+    program: &Program,
+    scope_stacks: &HashMap<ScopeId, ScopeStackPlan>,
+) -> Option<DataStackId> {
+    match class {
+        StorageClass::Inline => Some(DataStackId(u32::MAX)),
+        StorageClass::ScopeRegion(scope) => scope_stacks.get(&scope).map(|plan| plan.stack),
+        StorageClass::OwnedRegion => {
+            let _ = (binding, program);
+            None
+        }
+    }
+}
+
+fn build_interference(
+    cfg: &ControlFlowGraph,
+    bindings: &HashMap<BindingId, StorageClass>,
+    program: &Program,
+    scope_stacks: &HashMap<ScopeId, ScopeStackPlan>,
+) -> HashMap<BindingId, std::collections::HashSet<BindingId>> {
+    let eligible: std::collections::HashSet<BindingId> = bindings.iter()
+        .filter_map(|(id, class)| stack_for_binding(*id, *class, program, scope_stacks).map(|_| *id))
+        .collect();
+    let mut graph: HashMap<BindingId, std::collections::HashSet<BindingId>> =
+        eligible.iter().map(|id| (*id, Default::default())).collect();
+
+    let mut connect = |a: BindingId, b: BindingId| {
+        if a == b || !eligible.contains(&a) || !eligible.contains(&b) { return; }
+        let same_stack = stack_for_binding(a, bindings[&a], program, scope_stacks)
+            == stack_for_binding(b, bindings[&b], program, scope_stacks);
+        if same_stack {
+            graph.get_mut(&a).unwrap().insert(b);
+            graph.get_mut(&b).unwrap().insert(a);
+        }
+    };
+
+    for block in &cfg.blocks {
+        let mut simultaneous = block.live_in.clone();
+        simultaneous.extend(block.live_out.iter().copied());
+        for defined in &block.defs {
+            for live in &block.live_out { connect(*defined, *live); }
+        }
+        let ids: Vec<_> = simultaneous.into_iter().collect();
+        for i in 0..ids.len() {
+            for j in (i + 1)..ids.len() { connect(ids[i], ids[j]); }
+        }
+    }
+    graph
+}
+
+fn assign_binding_slots(
+    graph: &HashMap<BindingId, std::collections::HashSet<BindingId>>,
+    bindings: &HashMap<BindingId, StorageClass>,
+    program: &Program,
+    scope_stacks: &HashMap<ScopeId, ScopeStackPlan>,
+) -> (HashMap<BindingId, BindingSlotPlan>, HashMap<DataStackId, u32>) {
+    let mut ordered: Vec<_> = graph.keys().copied().collect();
+    ordered.sort_unstable_by_key(|id| {
+        (std::cmp::Reverse(graph.get(id).map_or(0, |edges| edges.len())), id.0)
+    });
+    let mut assigned: HashMap<BindingId, BindingSlotPlan> = HashMap::new();
+    let mut counts: HashMap<DataStackId, u32> = HashMap::new();
+
+    for binding in ordered {
+        let stack = stack_for_binding(binding, bindings[&binding], program, scope_stacks)
+            .expect("only eligible bindings have interference nodes");
+        let unavailable: std::collections::HashSet<u32> = graph[&binding].iter()
+            .filter_map(|neighbor| assigned.get(neighbor))
+            .filter(|slot| slot.stack == stack)
+            .map(|slot| slot.slot)
+            .collect();
+        let mut slot = 0;
+        while unavailable.contains(&slot) { slot += 1; }
+        assigned.insert(binding, BindingSlotPlan { stack, slot });
+        let count = counts.entry(stack).or_insert(0);
+        *count = (*count).max(slot + 1);
+    }
+    (assigned, counts)
 }
 
 fn is_dynamic_string(expr: &Expression) -> Option<bool> {
@@ -383,7 +480,10 @@ pub fn plan(program: &Program) -> MemoryPlan {
     normalize_usage(&mut usage);
     let mut cfg = build_control_flow_graph(program);
     solve_liveness(&mut cfg);
-    MemoryPlan { bindings, scope_stacks, usage, cfg }
+    let interference = build_interference(&cfg, &bindings, program, &scope_stacks);
+    let (binding_slots, stack_slot_counts) =
+        assign_binding_slots(&interference, &bindings, program, &scope_stacks);
+    MemoryPlan { bindings, scope_stacks, usage, cfg, interference, binding_slots, stack_slot_counts }
 }
 
 #[cfg(test)]

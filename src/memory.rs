@@ -29,12 +29,24 @@ pub struct ScopeStackPlan {
     pub depth: u32,
 }
 
+/// Conservative usage facts collected from HIR. These are not yet a
+/// control-flow liveness proof and must not be used to shorten storage lives.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BindingUsage {
+    pub read_count: u32,
+    pub assignment_count: u32,
+    /// Lexical scopes in which this binding is read, sorted and deduplicated.
+    pub read_scopes: Vec<ScopeId>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryPlan {
     pub bindings: HashMap<BindingId, StorageClass>,
     /// Stack assignments for scopes that own at least one scope-region value.
     /// This is planning metadata only; the current C runtime does not consume it.
     pub scope_stacks: HashMap<ScopeId, ScopeStackPlan>,
+    /// Read/write facts for future liveness and escape analysis.
+    pub usage: HashMap<BindingId, BindingUsage>,
 }
 
 fn is_dynamic_string(expr: &Expression) -> Option<bool> {
@@ -110,6 +122,61 @@ fn plan_scope_stacks(program: &Program, bindings: &HashMap<BindingId, StorageCla
     result
 }
 
+
+fn collect_expr_usage(expr: &Expression, scope: ScopeId, usage: &mut HashMap<BindingId, BindingUsage>) {
+    match &expr.kind {
+        ExprKind::Read(binding) => {
+            let facts = usage.entry(*binding).or_default();
+            facts.read_count += 1;
+            facts.read_scopes.push(scope);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            collect_expr_usage(left, scope, usage);
+            collect_expr_usage(right, scope, usage);
+        }
+        ExprKind::Ternary { condition, when_true, when_false } => {
+            collect_expr_usage(condition, scope, usage);
+            collect_expr_usage(when_true, scope, usage);
+            collect_expr_usage(when_false, scope, usage);
+        }
+        ExprKind::Number(_) | ExprKind::Bool(_) | ExprKind::String(_) => {}
+    }
+}
+
+fn collect_usage(statements: &[Statement], scope: ScopeId, usage: &mut HashMap<BindingId, BindingUsage>) {
+    for statement in statements {
+        match &statement.kind {
+            StmtKind::Let { value, .. } | StmtKind::Print(value) => {
+                collect_expr_usage(value, scope, usage);
+            }
+            StmtKind::Assign { binding, value } => {
+                collect_expr_usage(value, scope, usage);
+                usage.entry(*binding).or_default().assignment_count += 1;
+            }
+            StmtKind::Block { scope: child, statements } => collect_usage(statements, *child, usage),
+            StmtKind::If { condition, then_scope, then_body, else_scope, else_body } => {
+                collect_expr_usage(condition, scope, usage);
+                collect_usage(then_body, *then_scope, usage);
+                if let Some(child) = else_scope {
+                    collect_usage(else_body, *child, usage);
+                }
+            }
+            StmtKind::While { scope: child, condition, body } => {
+                collect_expr_usage(condition, *child, usage);
+                collect_usage(body, *child, usage);
+            }
+            StmtKind::Break | StmtKind::Continue => {}
+        }
+    }
+}
+
+fn normalize_usage(usage: &mut HashMap<BindingId, BindingUsage>) {
+    for facts in usage.values_mut() {
+        facts.read_scopes.sort_unstable_by_key(|scope| scope.0);
+        facts.read_scopes.dedup();
+    }
+}
+
 pub fn plan(program: &Program) -> MemoryPlan {
     let mut bindings = HashMap::new();
     fn visit(statements: &[Statement], program: &Program, result: &mut HashMap<BindingId, StorageClass>) {
@@ -137,7 +204,10 @@ pub fn plan(program: &Program) -> MemoryPlan {
     visit(&program.statements, program, &mut bindings);
     mark_assignments(&program.statements, &mut bindings);
     let scope_stacks = plan_scope_stacks(program, &bindings);
-    MemoryPlan { bindings, scope_stacks }
+    let mut usage = HashMap::new();
+    collect_usage(&program.statements, ScopeId(0), &mut usage);
+    normalize_usage(&mut usage);
+    MemoryPlan { bindings, scope_stacks, usage }
 }
 
 #[cfg(test)]
@@ -264,6 +334,36 @@ mod tests {
         let plan = plan(&p);
         assert_eq!(plan.bindings[&BindingId(0)], StorageClass::ScopeRegion(ScopeId(0)));
         assert_eq!(plan.bindings[&BindingId(1)], StorageClass::OwnedRegion);
+    }
+
+    #[test]
+    fn usage_analysis_counts_reads_and_records_nested_lexical_scopes() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "value".into(), value: A::NumberLiteral(1.0) }),
+            S::Block(vec![
+                S::Print(A::Identifier("value".into())),
+                S::Print(A::Identifier("value".into())),
+            ]),
+            S::Print(A::Identifier("value".into())),
+        ]);
+        let memory = plan(&p);
+        let facts = &memory.usage[&BindingId(0)];
+        assert_eq!(facts.read_count, 3);
+        assert_eq!(facts.read_scopes.len(), 2);
+        assert_eq!(facts.read_scopes[0], ScopeId(0));
+        assert_eq!(facts.read_scopes[1], ScopeId(1));
+        assert_eq!(facts.assignment_count, 0);
+    }
+
+    #[test]
+    fn usage_analysis_counts_assignments_without_treating_them_as_reads() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "value".into(), value: A::NumberLiteral(1.0) }),
+            S::Assign(crate::ast::AssignStatement { name: "value".into(), value: A::NumberLiteral(2.0) }),
+        ]);
+        let facts = &plan(&p).usage[&BindingId(0)];
+        assert_eq!(facts.read_count, 0);
+        assert_eq!(facts.assignment_count, 1);
     }
 
 }

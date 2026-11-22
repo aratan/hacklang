@@ -7,6 +7,7 @@ use std::process::ExitCode;
 // Un único front-end compartido para run/check/build.
 mod lexer;
 mod ast;
+mod hir;
 mod parser;
 mod evaluador;
 mod type_checker;

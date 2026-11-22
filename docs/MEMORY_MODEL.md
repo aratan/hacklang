@@ -250,6 +250,8 @@ Pruebas añadidas en `src/evaluador.rs`:
 | MEM-015 | `mem_015_return_from_nested_control_flow_preserves_returned_value` | Retorno de colección desde un bucle |
 | MEM-016 | `mem_016_error_during_nested_evaluation_is_reported` | Error de indexación propagado |
 | MEM-017 | `mem_017_reassigning_collection_keeps_new_value_observable` | Semántica observable de reasignación |
+| MEM-023 | `mem_023_array_assignment_has_value_semantics_not_shared_identity` | Mutar una copia de array no modifica el original |
+| MEM-024 | `mem_024_map_assignment_copies_nested_collection_values` | Mutar una copia de mapa no modifica el original anidado |
 | MEM-020 (parcial) | `mem_020_huge_collection_index_fails_without_panicking` | Índice enorme rechazado sin panic; no prueba overflow de capacidad |
 | MEM-021 (parcial) | `mem_021_deep_recursion_fails_with_controlled_error` | Límite de profundidad; limpieza completa aún no instrumentada |
 | MEM-022 (parcial) | `mem_022_collection_and_closure_semantics_are_stable_across_nested_calls` | Semántica del evaluador; no compara aún backend nativo |

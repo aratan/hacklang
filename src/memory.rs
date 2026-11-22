@@ -46,14 +46,130 @@ pub struct BindingUsage {
     pub read_scopes: Vec<ScopeId>,
 }
 
+
+/// Basic block in a control-flow graph built from structured HIR.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlFlowBlock {
+    pub id: u32,
+    pub uses: std::collections::HashSet<BindingId>,
+    pub defs: std::collections::HashSet<BindingId>,
+    pub successors: Vec<u32>,
+    pub live_in: std::collections::HashSet<BindingId>,
+    pub live_out: std::collections::HashSet<BindingId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ControlFlowGraph {
+    pub blocks: Vec<ControlFlowBlock>,
+    pub entry: u32,
+    pub exit: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryPlan {
     pub bindings: HashMap<BindingId, StorageClass>,
     /// Stack assignments for scopes that own at least one scope-region value.
     /// This is planning metadata only; the current C runtime does not consume it.
     pub scope_stacks: HashMap<ScopeId, ScopeStackPlan>,
-    /// Read/write facts for future liveness and escape analysis.
-    pub usage: HashMap<BindingId, BindingUsage>,
+
+    /// Structured control-flow graph and solved live-in/live-out sets.
+    pub cfg: ControlFlowGraph,
+}
+
+
+fn new_cfg_block(cfg: &mut ControlFlowGraph) -> u32 {
+    let id = cfg.blocks.len() as u32;
+    cfg.blocks.push(ControlFlowBlock { id, uses: Default::default(), defs: Default::default(), successors: Vec::new(), live_in: Default::default(), live_out: Default::default() });
+    id
+}
+fn add_edge(cfg: &mut ControlFlowGraph, from: u32, to: u32) {
+    let successors = &mut cfg.blocks[from as usize].successors;
+    if !successors.contains(&to) { successors.push(to); }
+}
+fn expr_uses(expr: &Expression, uses: &mut std::collections::HashSet<BindingId>) {
+    match &expr.kind {
+        ExprKind::Read(id) => { uses.insert(*id); }
+        ExprKind::Binary { left, right, .. } => { expr_uses(left, uses); expr_uses(right, uses); }
+        ExprKind::Ternary { condition, when_true, when_false } => { expr_uses(condition, uses); expr_uses(when_true, uses); expr_uses(when_false, uses); }
+        ExprKind::Number(_) | ExprKind::Bool(_) | ExprKind::String(_) => {}
+    }
+}
+fn build_cfg_sequence(
+    statements: &[Statement], incoming: Vec<u32>, cfg: &mut ControlFlowGraph,
+    breaks: &mut Vec<u32>, continues: &mut Vec<u32>,
+) -> Vec<u32> {
+    let mut current = incoming;
+    for statement in statements {
+        match &statement.kind {
+            StmtKind::Let { binding, value } | StmtKind::Assign { binding, value } => {
+                let id = new_cfg_block(cfg);
+                for prev in current.drain(..) { add_edge(cfg, prev, id); }
+                expr_uses(value, &mut cfg.blocks[id as usize].uses);
+                cfg.blocks[id as usize].defs.insert(*binding);
+                current.push(id);
+            }
+            StmtKind::Print(value) => {
+                let id = new_cfg_block(cfg);
+                for prev in current.drain(..) { add_edge(cfg, prev, id); }
+                expr_uses(value, &mut cfg.blocks[id as usize].uses);
+                current.push(id);
+            }
+            StmtKind::Block { statements, .. } => current = build_cfg_sequence(statements, current, cfg, breaks, continues),
+            StmtKind::If { condition, then_body, else_body, .. } => {
+                let branch = new_cfg_block(cfg);
+                for prev in current.drain(..) { add_edge(cfg, prev, branch); }
+                expr_uses(condition, &mut cfg.blocks[branch as usize].uses);
+                let then_exits = build_cfg_sequence(then_body, vec![branch], cfg, breaks, continues);
+                let else_exits = if else_body.is_empty() { vec![branch] } else { build_cfg_sequence(else_body, vec![branch], cfg, breaks, continues) };
+                let join = new_cfg_block(cfg);
+                for exit in then_exits.into_iter().chain(else_exits) { add_edge(cfg, exit, join); }
+                current.push(join);
+            }
+            StmtKind::While { condition, body, .. } => {
+                let header = new_cfg_block(cfg);
+                for prev in current.drain(..) { add_edge(cfg, prev, header); }
+                expr_uses(condition, &mut cfg.blocks[header as usize].uses);
+                let after = new_cfg_block(cfg);
+                add_edge(cfg, header, after);
+                breaks.push(after); continues.push(header);
+                let body_exits = build_cfg_sequence(body, vec![header], cfg, breaks, continues);
+                breaks.pop(); continues.pop();
+                for exit in body_exits { add_edge(cfg, exit, header); }
+                current.push(after);
+            }
+            StmtKind::Break | StmtKind::Continue => {
+                let id = new_cfg_block(cfg);
+                for prev in current.drain(..) { add_edge(cfg, prev, id); }
+                let target = if matches!(&statement.kind, StmtKind::Break) { breaks.last() } else { continues.last() };
+                if let Some(target) = target { add_edge(cfg, id, *target); }
+            }
+        }
+    }
+    current
+}
+fn build_control_flow_graph(program: &Program) -> ControlFlowGraph {
+    let mut cfg = ControlFlowGraph::default();
+    let entry = new_cfg_block(&mut cfg); cfg.entry = entry;
+    let exits = build_cfg_sequence(&program.statements, vec![entry], &mut cfg, &mut Vec::new(), &mut Vec::new());
+    let exit = new_cfg_block(&mut cfg);
+    for from in exits { add_edge(&mut cfg, from, exit); }
+    cfg.exit = exit;
+    cfg
+}
+fn solve_liveness(cfg: &mut ControlFlowGraph) {
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for index in (0..cfg.blocks.len()).rev() {
+            let mut out = std::collections::HashSet::new();
+            for successor in cfg.blocks[index].successors.clone() { out.extend(cfg.blocks[successor as usize].live_in.iter().copied()); }
+            let mut input = cfg.blocks[index].uses.clone();
+            input.extend(out.difference(&cfg.blocks[index].defs).copied());
+            if out != cfg.blocks[index].live_out || input != cfg.blocks[index].live_in {
+                cfg.blocks[index].live_out = out; cfg.blocks[index].live_in = input; changed = true;
+            }
+        }
+    }
 }
 
 fn is_dynamic_string(expr: &Expression) -> Option<bool> {
@@ -264,7 +380,9 @@ pub fn plan(program: &Program) -> MemoryPlan {
     let mut loop_touched = Vec::new();
     collect_usage(&program.statements, ScopeId(0), &mut usage, &mut position, &mut loop_touched);
     normalize_usage(&mut usage);
-    MemoryPlan { bindings, scope_stacks, usage }
+    let mut cfg = build_control_flow_graph(program);
+    solve_liveness(&mut cfg);
+    MemoryPlan { bindings, scope_stacks, usage, cfg }
 }
 
 #[cfg(test)]

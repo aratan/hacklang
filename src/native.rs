@@ -146,6 +146,66 @@ mod tests {
     }
 
     #[test]
+    fn escaped_string_assignment_survives_inner_region_release() {
+        let program = Program {
+            statements: vec![
+                Statement::Let(LetStatement { name: "outer".into(), value: Expression::StringLiteral("initial".into()) }),
+                Statement::Block(vec![
+                    Statement::Let(LetStatement { name: "inner".into(), value: Expression::StringLiteral("promoted".into()) }),
+                    Statement::Assign(AssignStatement { name: "outer".into(), value: Expression::Identifier("inner".into()) }),
+                ]),
+                Statement::Print(PrintStatement { value: Expression::Identifier("outer".into()) }),
+            ],
+        };
+        let directory = temporary_directory().expect("temporary directory");
+        let source = directory.join("escape.hl");
+        let executable = directory.join("escape");
+        fs::write(&source, "native region escape test").unwrap();
+        compile_to_executable(&program, &source, Some(&executable)).expect("native compilation");
+        let run = Command::new(&executable).output().expect("run native executable");
+        assert!(run.status.success());
+        assert_eq!(String::from_utf8_lossy(&run.stdout), "promoted\n");
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn loop_iteration_regions_preserve_values_until_print_and_release_each_iteration() {
+        let program = Program {
+            statements: vec![
+                Statement::Let(LetStatement { name: "i".into(), value: Expression::NumberLiteral(0.0) }),
+                Statement::While(WhileStatement {
+                    condition: Expression::Infix {
+                        left: Box::new(Expression::Identifier("i".into())),
+                        operator: crate::lexer::Token::Less,
+                        right: Box::new(Expression::NumberLiteral(3.0)),
+                    },
+                    body: vec![
+                        Statement::Let(LetStatement { name: "local".into(), value: Expression::StringLiteral("iteration".into()) }),
+                        Statement::Print(PrintStatement { value: Expression::Identifier("local".into()) }),
+                        Statement::Assign(AssignStatement {
+                            name: "i".into(),
+                            value: Expression::Infix {
+                                left: Box::new(Expression::Identifier("i".into())),
+                                operator: crate::lexer::Token::Plus,
+                                right: Box::new(Expression::NumberLiteral(1.0)),
+                            },
+                        }),
+                    ],
+                }),
+            ],
+        };
+        let directory = temporary_directory().expect("temporary directory");
+        let source = directory.join("loop_regions.hl");
+        let executable = directory.join("loop_regions");
+        fs::write(&source, "native loop region test").unwrap();
+        compile_to_executable(&program, &source, Some(&executable)).expect("native compilation");
+        let run = Command::new(&executable).output().expect("run native executable");
+        assert!(run.status.success());
+        assert_eq!(String::from_utf8_lossy(&run.stdout), "iteration\niteration\niteration\n");
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn rejects_unsupported_closures_during_ast_to_hir_lowering() {
         let program = Program {
             statements: vec![Statement::Let(LetStatement {

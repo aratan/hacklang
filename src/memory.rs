@@ -134,4 +134,54 @@ mod tests {
         let plan = plan(&p);
         assert_eq!(plan.bindings[&BindingId(0)], StorageClass::ScopeRegion(ScopeId(0)));
     }
+    #[test]
+    fn unknown_read_assignment_is_promoted_instead_of_assumed_stack_safe() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "source".into(), value: A::StringLiteral("value".into()) }),
+            S::Let(LetStatement { name: "target".into(), value: A::NumberLiteral(0.0) }),
+            S::Assign(crate::ast::AssignStatement {
+                name: "target".into(),
+                value: A::Identifier("source".into()),
+            }),
+        ]);
+        let plan = plan(&p);
+        assert_eq!(plan.bindings[&BindingId(1)], StorageClass::OwnedRegion);
+    }
+
+    #[test]
+    fn conditional_string_assignment_is_promoted_across_all_control_flow_paths() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "target".into(), value: A::NumberLiteral(0.0) }),
+            S::If(crate::ast::IfStatement {
+                condition: A::BoolLiteral(true),
+                true_body: vec![S::Assign(crate::ast::AssignStatement {
+                    name: "target".into(),
+                    value: A::StringLiteral("escaped".into()),
+                })],
+                false_body: Some(vec![S::Assign(crate::ast::AssignStatement {
+                    name: "target".into(),
+                    value: A::NumberLiteral(1.0),
+                })]),
+            }),
+        ]);
+        let plan = plan(&p);
+        assert_eq!(plan.bindings[&BindingId(0)], StorageClass::OwnedRegion);
+    }
+
+    #[test]
+    fn string_temporary_from_outer_binding_is_never_confined_to_inner_scope() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "source".into(), value: A::StringLiteral("outer".into()) }),
+            S::Block(vec![
+                S::Let(LetStatement {
+                    name: "copy".into(),
+                    value: A::Identifier("source".into()),
+                }),
+            ]),
+        ]);
+        let plan = plan(&p);
+        assert_eq!(plan.bindings[&BindingId(0)], StorageClass::ScopeRegion(ScopeId(0)));
+        assert_eq!(plan.bindings[&BindingId(1)], StorageClass::OwnedRegion);
+    }
+
 }

@@ -34,3 +34,27 @@ jobs:
             echo "Checking $file"
             cargo run --quiet -- "$file"
           done
+      - name: Compare interpreter and native backend
+        shell: bash
+        run: |
+          set -euo pipefail
+          temp_dir="$(mktemp -d)"
+          trap 'rm -rf "$temp_dir"' EXIT
+
+          source="examples/native_smoke.hl"
+          cargo run --quiet -- run "$source" > "$temp_dir/interpreter.log"
+          awk '
+            /^--- Ejecutando código Hacklang ---$/ { capture = 1; next }
+            /^--------------------------------$/ { capture = 0 }
+            capture { print }
+          ' "$temp_dir/interpreter.log" > "$temp_dir/interpreter.out"
+
+          cargo run --quiet -- build "$source" -o "$temp_dir/native" > /dev/null
+          "$temp_dir/native" > "$temp_dir/native.out"
+          diff -u "$temp_dir/interpreter.out" "$temp_dir/native.out"
+
+          if cargo run --quiet -- build examples/test_functions.hl -o "$temp_dir/unsupported" > /dev/null 2>&1; then
+            echo "El backend aceptó inesperadamente un programa con funciones no soportadas" >&2
+            exit 1
+          fi
+          test ! -e "$temp_dir/unsupported"

@@ -1,0 +1,14 @@
+// Corpus de conformidad del primer subconjunto nativo.
+let total = 0;
+let i = 0;
+
+while (i < 6) (
+    i = i + 1;
+    if (i ~ 3) ( continue; );
+    if (i ~ 5) ( break; );
+    total = total + i;
+);
+
+print total;
+print "sum=" + total;
+print total > 0 ? "ok" : "bad";

@@ -35,6 +35,13 @@ pub struct ScopeStackPlan {
 pub struct BindingUsage {
     pub read_count: u32,
     pub assignment_count: u32,
+    /// Monotonic event index at which the binding is declared.
+    pub declaration_position: Option<u32>,
+    pub first_use_position: Option<u32>,
+    pub last_use_position: Option<u32>,
+    pub last_write_position: Option<u32>,
+    /// True when a loop may read/write this binding across iterations.
+    pub loop_carried: bool,
     /// Lexical scopes in which this binding is read, sorted and deduplicated.
     pub read_scopes: Vec<ScopeId>,
 }
@@ -123,47 +130,95 @@ fn plan_scope_stacks(program: &Program, bindings: &HashMap<BindingId, StorageCla
 }
 
 
-fn collect_expr_usage(expr: &Expression, scope: ScopeId, usage: &mut HashMap<BindingId, BindingUsage>) {
+fn touch_binding(
+    binding: BindingId,
+    position: u32,
+    usage: &mut HashMap<BindingId, BindingUsage>,
+    loop_touched: &mut [std::collections::HashSet<BindingId>],
+) {
+    let facts = usage.entry(binding).or_default();
+    facts.first_use_position = Some(facts.first_use_position.map_or(position, |old| old.min(position)));
+    facts.last_use_position = Some(facts.last_use_position.map_or(position, |old| old.max(position)));
+    for touched in loop_touched {
+        touched.insert(binding);
+    }
+}
+
+fn collect_expr_usage(
+    expr: &Expression,
+    scope: ScopeId,
+    usage: &mut HashMap<BindingId, BindingUsage>,
+    position: &mut u32,
+    loop_touched: &mut [std::collections::HashSet<BindingId>],
+) {
     match &expr.kind {
         ExprKind::Read(binding) => {
+            *position += 1;
             let facts = usage.entry(*binding).or_default();
             facts.read_count += 1;
             facts.read_scopes.push(scope);
+            touch_binding(*binding, *position, usage, loop_touched);
         }
         ExprKind::Binary { left, right, .. } => {
-            collect_expr_usage(left, scope, usage);
-            collect_expr_usage(right, scope, usage);
+            collect_expr_usage(left, scope, usage, position, loop_touched);
+            collect_expr_usage(right, scope, usage, position, loop_touched);
         }
         ExprKind::Ternary { condition, when_true, when_false } => {
-            collect_expr_usage(condition, scope, usage);
-            collect_expr_usage(when_true, scope, usage);
-            collect_expr_usage(when_false, scope, usage);
+            collect_expr_usage(condition, scope, usage, position, loop_touched);
+            collect_expr_usage(when_true, scope, usage, position, loop_touched);
+            collect_expr_usage(when_false, scope, usage, position, loop_touched);
         }
         ExprKind::Number(_) | ExprKind::Bool(_) | ExprKind::String(_) => {}
     }
 }
 
-fn collect_usage(statements: &[Statement], scope: ScopeId, usage: &mut HashMap<BindingId, BindingUsage>) {
+fn collect_usage(
+    statements: &[Statement],
+    scope: ScopeId,
+    usage: &mut HashMap<BindingId, BindingUsage>,
+    position: &mut u32,
+    loop_touched: &mut Vec<std::collections::HashSet<BindingId>>,
+) {
     for statement in statements {
+        *position += 1;
         match &statement.kind {
-            StmtKind::Let { value, .. } | StmtKind::Print(value) => {
-                collect_expr_usage(value, scope, usage);
+            StmtKind::Let { binding, value } => {
+                usage.entry(*binding).or_default().declaration_position = Some(*position);
+                collect_expr_usage(value, scope, usage, position, loop_touched);
+            }
+            StmtKind::Print(value) => {
+                collect_expr_usage(value, scope, usage, position, loop_touched);
             }
             StmtKind::Assign { binding, value } => {
-                collect_expr_usage(value, scope, usage);
-                usage.entry(*binding).or_default().assignment_count += 1;
+                collect_expr_usage(value, scope, usage, position, loop_touched);
+                *position += 1;
+                let facts = usage.entry(*binding).or_default();
+                facts.assignment_count += 1;
+                facts.last_write_position = Some(*position);
+                touch_binding(*binding, *position, usage, loop_touched);
             }
-            StmtKind::Block { scope: child, statements } => collect_usage(statements, *child, usage),
+            StmtKind::Block { scope: child, statements } => {
+                collect_usage(statements, *child, usage, position, loop_touched);
+            }
             StmtKind::If { condition, then_scope, then_body, else_scope, else_body } => {
-                collect_expr_usage(condition, scope, usage);
-                collect_usage(then_body, *then_scope, usage);
+                collect_expr_usage(condition, scope, usage, position, loop_touched);
+                collect_usage(then_body, *then_scope, usage, position, loop_touched);
                 if let Some(child) = else_scope {
-                    collect_usage(else_body, *child, usage);
+                    collect_usage(else_body, *child, usage, position, loop_touched);
                 }
             }
             StmtKind::While { scope: child, condition, body } => {
-                collect_expr_usage(condition, *child, usage);
-                collect_usage(body, *child, usage);
+                let mut touched = std::collections::HashSet::new();
+                loop_touched.push(std::mem::take(&mut touched));
+                collect_expr_usage(condition, *child, usage, position, loop_touched);
+                collect_usage(body, *child, usage, position, loop_touched);
+                let touched = loop_touched.pop().expect("loop tracking stack is balanced");
+                *position += 1; // Conservative loop-exit boundary.
+                for binding in touched {
+                    let facts = usage.entry(binding).or_default();
+                    facts.loop_carried = true;
+                    facts.last_use_position = Some(facts.last_use_position.map_or(*position, |old| old.max(*position)));
+                }
             }
             StmtKind::Break | StmtKind::Continue => {}
         }
@@ -205,7 +260,9 @@ pub fn plan(program: &Program) -> MemoryPlan {
     mark_assignments(&program.statements, &mut bindings);
     let scope_stacks = plan_scope_stacks(program, &bindings);
     let mut usage = HashMap::new();
-    collect_usage(&program.statements, ScopeId(0), &mut usage);
+    let mut position = 0;
+    let mut loop_touched = Vec::new();
+    collect_usage(&program.statements, ScopeId(0), &mut usage, &mut position, &mut loop_touched);
     normalize_usage(&mut usage);
     MemoryPlan { bindings, scope_stacks, usage }
 }

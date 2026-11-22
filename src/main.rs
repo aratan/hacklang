@@ -8,7 +8,7 @@ use std::process::ExitCode;
 mod lexer;
 mod ast;
 mod hir;
-mod memory;
+mod memory;\nmod region;
 mod hir_native;
 mod parser;
 mod evaluador;

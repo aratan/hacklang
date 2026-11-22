@@ -129,9 +129,10 @@ Condiciones obligatorias:
 
 ### Fase H2 — primer consumidor
 
-- Migrar el generador C para consumir HIR.
-- Comparar ejecutables HIR con la línea base AST para todo el corpus nativo.
-- Mantener el rechazo temprano de nodos no soportados.
+- [x] Migrar el generador C para consumir HIR en el subconjunto inicial.
+- [x] Comparar ejecutables HIR con el intérprete en el corpus nativo de CI.
+- [x] Mantener el rechazo temprano de nodos no soportados.
+- [ ] Ampliar el corpus diferencial con shadowing, scopes anidados y todas las rutas de control.
 
 ### Fase H3 — análisis y expansión
 
@@ -165,10 +166,12 @@ Cada fase debe cumplir:
 
 ## 9. Primer hito verificable
 
-El primer hito H1 no es «tener una estructura HIR bonita». Es convertir el subconjunto que ya compila a nativo en HIR, probar cobertura exhaustiva de ese subconjunto y hacer que el backend C consuma HIR sin cambiar un solo resultado del corpus diferencial.
+El hito H1/H2 no es «tener una estructura HIR bonita». Es convertir el subconjunto que ya compila a nativo en HIR, probar su cobertura y hacer que el backend C consuma HIR sin cambiar los resultados del corpus diferencial.
 
 
 ## 10. Estado de implementación (2026-11-22)
+
+<small>Actualizado tras la migración HIR→C del 22-11-2026.</small>
 
 Implementado en `src/hir.rs`:
 
@@ -179,7 +182,7 @@ Implementado en `src/hir.rs`:
 - Rechazo explícito de expresiones/sentencias fuera del subconjunto inicial y de nombres no resueltos.
 - Pruebas unitarias para IDs de bindings, shadowing, asignación, nombres no resueltos, control de bucles y scope compartido del while.
 
-La compilación nativa ejecuta ya el lowering a HIR como validación previa. **El generador C todavía recorre el AST**: no se declara aún que el backend consuma HIR. La siguiente migración sustituirá ese recorrido por HIR manteniendo el corpus diferencial.
+La compilación nativa ejecuta el lowering AST→HIR y `src/hir_native.rs` genera C directamente desde HIR. `src/native.rs` conserva temporalmente el generador AST anterior como referencia histórica/pruebas, pero la ruta `hl build` utiliza HIR. La CI compara el resultado del intérprete y el binario nativo para el corpus de smoke test; se está ampliando la cobertura diferencial.
 
 Limitaciones deliberadas de esta primera entrega:
 

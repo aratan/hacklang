@@ -232,3 +232,12 @@ Aceptación: ningún programa dentro del subconjunto declarado produce divergenc
 ## Regla de calidad
 
 Nunca anunciar «compilación nativa completa» mientras exista una variante AST, un comportamiento observable o un caso de error del intérprete sin soporte nativo y sin una exclusión explícita del subconjunto soportado.
+
+
+## Modelo de memoria objetivo
+
+La arquitectura objetivo está especificada en [MEMORY_MODEL.md](MEMORY_MODEL.md). Define almacenamiento stack-first, regiones por ámbito, promoción por escape analysis y destrucción determinista, sin GC general ni gestión manual del usuario. También fija los requisitos de seguridad para closures mutables, recursividad, ciclos, colecciones y limpieza ante errores.
+
+**Importante: no está implementado todavía.** El evaluador Rust actual mantiene una arena de entornos con mark-and-sweep de frames; los valores dinámicos siguen bajo gestión de Rust. El runtime C actual usa asignaciones `malloc` que no se liberan individualmente durante la ejecución. No se debe modificar ni ampliar esa gestión como si ya fuese el modelo objetivo.
+
+La matriz MEM-001..MEM-022 de `MEMORY_MODEL.md` es el contrato de pruebas. Antes de cambiar los runtimes hay que automatizar los casos semánticos sobre el evaluador actual y diseñar la representación de regiones/propietarios. La implementación nativa de arrays, mapas y closures queda condicionada a demostrar liberación determinista y ausencia de referencias colgantes.

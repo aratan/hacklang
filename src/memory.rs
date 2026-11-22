@@ -712,4 +712,53 @@ mod tests {
         assert!(cfg.blocks.iter().any(|block| block.live_in.contains(&BindingId(0))));
     }
 
+    #[test]
+    fn non_overlapping_scalar_lifetimes_reuse_the_same_frame_slot() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "first".into(), value: A::NumberLiteral(1.0) }),
+            S::Print(PrintStatement { value: A::Identifier("first".into()) }),
+            S::Let(LetStatement { name: "second".into(), value: A::NumberLiteral(2.0) }),
+            S::Print(PrintStatement { value: A::Identifier("second".into()) }),
+        ]);
+        let memory = plan(&p);
+        assert!(!memory.interference[&BindingId(0)].contains(&BindingId(1)));
+        assert_eq!(memory.binding_slots[&BindingId(0)].stack, memory.binding_slots[&BindingId(1)].stack);
+        assert_eq!(memory.binding_slots[&BindingId(0)].slot, memory.binding_slots[&BindingId(1)].slot);
+        assert_eq!(memory.stack_slot_counts[&DataStackId(u32::MAX)], 1);
+    }
+
+    #[test]
+    fn simultaneously_live_scalar_bindings_receive_distinct_slots() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "first".into(), value: A::NumberLiteral(1.0) }),
+            S::Let(LetStatement { name: "second".into(), value: A::NumberLiteral(2.0) }),
+            S::Print(PrintStatement { value: A::Identifier("first".into()) }),
+            S::Print(PrintStatement { value: A::Identifier("second".into()) }),
+        ]);
+        let memory = plan(&p);
+        assert!(memory.interference[&BindingId(0)].contains(&BindingId(1)));
+        assert_ne!(memory.binding_slots[&BindingId(0)].slot, memory.binding_slots[&BindingId(1)].slot);
+        assert_eq!(memory.stack_slot_counts[&DataStackId(u32::MAX)], 2);
+    }
+
+    #[test]
+    fn mutually_exclusive_branch_temporaries_can_reuse_a_frame_slot() {
+        let p = lower(vec![
+            S::If(crate::ast::IfStatement {
+                condition: A::BoolLiteral(true),
+                true_body: vec![
+                    S::Let(LetStatement { name: "left".into(), value: A::NumberLiteral(1.0) }),
+                    S::Print(PrintStatement { value: A::Identifier("left".into()) }),
+                ],
+                false_body: Some(vec![
+                    S::Let(LetStatement { name: "right".into(), value: A::NumberLiteral(2.0) }),
+                    S::Print(PrintStatement { value: A::Identifier("right".into()) }),
+                ]),
+            }),
+        ]);
+        let memory = plan(&p);
+        assert_eq!(memory.binding_slots[&BindingId(0)].slot, memory.binding_slots[&BindingId(1)].slot);
+        assert!(!memory.interference[&BindingId(0)].contains(&BindingId(1)));
+    }
+
 }

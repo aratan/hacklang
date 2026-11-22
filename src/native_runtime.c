@@ -107,25 +107,74 @@ static int hl_truthy(HlValue value) {
     return 0;
 }
 
-/* Find the shortest decimal representation that round-trips to the same double. */
+/* Produce Rust Display-compatible fixed decimal text from a shortest round-trip value. */
+static void hl_append_char(char *buffer, size_t size, size_t *length, char value) {
+    if (*length + 1 < size) buffer[(*length)++] = value;
+}
 static void hl_number_text(double value, char *buffer, size_t size) {
+    if (isnan(value)) { snprintf(buffer, size, "NaN"); return; }
+    if (isinf(value)) { snprintf(buffer, size, "%sinf", signbit(value) ? "-" : ""); return; }
+
+    char shortest[64];
     for (int precision = 1; precision <= 17; ++precision) {
-        snprintf(buffer, size, "%.*g", precision, value);
-        if (strtod(buffer, NULL) == value) return;
+        snprintf(shortest, sizeof(shortest), "%.*g", precision, value);
+        if (strtod(shortest, NULL) == value) break;
     }
-    snprintf(buffer, size, "%.17g", value);
+
+    char *exponent_mark = strchr(shortest, 'e');
+    if (!exponent_mark) exponent_mark = strchr(shortest, 'E');
+    if (!exponent_mark) { snprintf(buffer, size, "%s", shortest); return; }
+
+    int exponent = (int)strtol(exponent_mark + 1, NULL, 10);
+    char digits[32];
+    size_t digit_count = 0;
+    int decimal_position = 0;
+    int after_decimal = 0;
+    for (const char *cursor = shortest; cursor < exponent_mark; ++cursor) {
+        if (*cursor == '.') { after_decimal = 1; continue; }
+        if (*cursor >= '0' && *cursor <= '9') {
+            if (!after_decimal) ++decimal_position;
+            if (digit_count < sizeof(digits)) digits[digit_count++] = *cursor;
+        }
+    }
+    decimal_position += exponent;
+
+    size_t length = 0;
+    const char *sign = shortest[0] == '-' ? "-" : "";
+    if (*sign) hl_append_char(buffer, size, &length, '-');
+
+    if (decimal_position <= 0) {
+        hl_append_char(buffer, size, &length, '0');
+        hl_append_char(buffer, size, &length, '.');
+        for (int i = 0; i < -decimal_position; ++i)
+            hl_append_char(buffer, size, &length, '0');
+        for (size_t i = 0; i < digit_count; ++i)
+            hl_append_char(buffer, size, &length, digits[i]);
+    } else if ((size_t)decimal_position >= digit_count) {
+        for (size_t i = 0; i < digit_count; ++i)
+            hl_append_char(buffer, size, &length, digits[i]);
+        for (size_t i = digit_count; i < (size_t)decimal_position; ++i)
+            hl_append_char(buffer, size, &length, '0');
+    } else {
+        for (int i = 0; i < decimal_position; ++i)
+            hl_append_char(buffer, size, &length, digits[i]);
+        hl_append_char(buffer, size, &length, '.');
+        for (size_t i = (size_t)decimal_position; i < digit_count; ++i)
+            hl_append_char(buffer, size, &length, digits[i]);
+    }
+    if (size > 0) buffer[length < size ? length : size - 1] = '\0';
 }
 static const char *hl_to_text(HlValue value) {
     if (value.tag == HL_STRING) return value.as.string;
     if (value.tag == HL_BOOL) return value.as.boolean ? "true" : "false";
-    char buffer[64];
+    char buffer[512];
     hl_number_text(value.as.number, buffer, sizeof(buffer));
     return hl_copy_string(buffer);
 }
 static void hl_print(HlValue value) {
     switch (value.tag) {
         case HL_NUMBER: {
-            char buffer[64];
+            char buffer[512];
             hl_number_text(value.as.number, buffer, sizeof(buffer));
             puts(buffer);
             break;

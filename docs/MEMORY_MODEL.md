@@ -198,7 +198,7 @@ Incluye pruebas unitarias para escalares inline, strings locales, concatenación
 | Área | Estado actual | Objetivo |
 |---|---|---|
 | Evaluador Rust | Arena de entornos con mark-and-sweep de frames; String/Vec/HashMap son gestionados por Rust | Propiedad/ámbitos deterministas y escape analysis; sin GC general |
-| Runtime C | `malloc` para strings, entornos y bindings; no libera individualmente durante la ejecución | Regiones, promoción y destrucción determinista |\n| Planificador HIR | `src/memory.rs` clasifica bindings conservadoramente; se ejecuta durante `hl build` | Análisis transitivo completo y asignación/liberación real por regiones |
+| Runtime C | `malloc` para strings, entornos y bindings; no libera individualmente durante la ejecución | Regiones, promoción y destrucción determinista |\n| Planificador HIR | `src/memory.rs` clasifica bindings conservadoramente y promueve lecturas/asignaciones de vida desconocida a `OwnedRegion`; se ejecuta durante `hl build` | Análisis transitivo completo y asignación/liberación real por regiones |
 | Closures | ID estable de entorno capturado | Entorno con propietario explícito y ciclos resueltos estáticamente |
 | Arrays / Maps C | Aún no implementados | Buffers ligados a regiones propietarias |
 | Análisis de escape | No existe | Fase del compilador compartida por backend y futuras optimizaciones |
@@ -270,6 +270,10 @@ Pruebas añadidas en `src/evaluador.rs`:
 | MEM-017 | `mem_017_reassigning_collection_keeps_new_value_observable` | Semántica observable de reasignación |
 | MEM-023 | `mem_023_array_assignment_has_value_semantics_not_shared_identity` | Mutar una copia de array no modifica el original |
 | MEM-024 | `mem_024_map_assignment_copies_nested_collection_values` | Mutar una copia de mapa no modifica el original anidado |
+
+| MEM-025 | `unknown_read_assignment_is_promoted_instead_of_assumed_stack_safe` | Lectura de vida desconocida promueve a región propietaria |
+| MEM-026 | `conditional_string_assignment_is_promoted_across_all_control_flow_paths` | Asignación dinámica en cualquier rama promueve el binding |
+| MEM-027 | `string_temporary_from_outer_binding_is_never_confined_to_inner_scope` | Un valor leído desde fuera no se confina a una región interior |
 | MEM-020 (parcial) | `mem_020_huge_collection_index_fails_without_panicking` | Índice enorme rechazado sin panic; no prueba overflow de capacidad |
 | MEM-021 (parcial) | `mem_021_deep_recursion_fails_with_controlled_error` | Límite de profundidad; limpieza completa aún no instrumentada |
 | MEM-022 (parcial) | `mem_022_collection_and_closure_semantics_are_stable_across_nested_calls` | Semántica del evaluador; no compara aún backend nativo |

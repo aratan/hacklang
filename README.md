@@ -231,7 +231,7 @@ Source (.hl) ─▶ Lexer ─▶ Parser ─▶ AST ─┬─▶ Evaluator Rust �
                                         └─▶ C Generator ─▶ Runtime C ─▶ GCC/Clang ─▶ Executable
 ```
 
-Cada fase es un módulo independiente de Rust (`lexer.rs`, `parser.rs`, `evaluador.rs`) que se comunica con el siguiente solo a través de su tipo de salida (`Vec<Token>` → `Program` → `Result<(), String>`). El análisis estático es una pasada independiente y no bloqueante entre el parser y el evaluador. No hay IR, optimizaciones ni generación de código.
+Cada fase es un módulo independiente de Rust (`lexer.rs`, `parser.rs`, `evaluador.rs`) que se comunica con el siguiente solo a través de su tipo de salida (`Vec<Token>` → `Program` → `Result<(), String>`). El análisis estático es una pasada independiente y no bloqueante entre el parser y el evaluador. No hay IR ni optimizaciones todavía; el backend genera C directamente desde el AST para un subconjunto documentado.
 
 ### Flujo de errores
 
@@ -344,7 +344,7 @@ Cada decisión de diseño se tomó preguntando "¿esto añade complejidad sin ne
 
 ### YAGNI (You Aren't Gonna Need It)
 
-El runtime implementa primero las construcciones necesarias para ejecutar programas pequeños: funciones, closures léxicas, arrays, mapas e indexación. Las características que aún no existen deben fallar explícitamente; no deben simularse con valores por defecto ni con resultados silenciosos.
+El intérprete Rust implementa funciones, closures léxicas, arrays, mapas e indexación. El backend nativo C todavía no cubre esas construcciones y debe rechazarlas explícitamente. Las características que aún no existen deben fallar explícitamente; no deben simularse con valores por defecto ni con resultados silenciosos.
 
 ### DRY — con límites
 
@@ -367,7 +367,7 @@ El lexer y el parser devuelven `Result`: los caracteres desconocidos, las cadena
 
 ## Estado
 
-El CLI se construye como el ejecutable `hl`. En desarrollo se invoca con `cargo run -- ...`; en release, Cargo genera `target/release/hl` (o `hl.exe` en Windows). No existe actualmente un comando `compile` ni generación de binarios nativos a partir de `.hl`.
+El CLI se construye como el ejecutable `hl`. En desarrollo se invoca con `cargo run -- ...`; en release, Cargo genera `target/release/hl` (o `hl.exe` en Windows). `hl build` genera ejecutables nativos mediante el backend C para el subconjunto descrito en «Compilación nativa»; no equivale aún a cobertura completa del lenguaje.
 
 | Componente | Estado |
 |---|---|
@@ -378,7 +378,8 @@ El CLI se construye como el ejecutable `hl`. En desarrollo se invoca con `cargo 
 | **Control de flujo** | ✅ `return`, `break` y `continue` |
 | **Memoria** | ✅ Mark-and-sweep de frames de entorno; los demás valores los gestiona Rust |
 | **Análisis de tipos** | ✅ Primera pasada no bloqueante: tipos primitivos, retornos explícitos, arrays/mapas con tipos de elemento/clave/valor, indexación, asignaciones, operadores y aridad de llamadas |
-| **Tests** | Tests Rust y ejecución de todos los `examples/*.hl` en GitHub Actions |
+| **Compilador nativo** | Primer backend C operativo para un subconjunto; sin paridad completa ni soporte de colecciones/funciones |
+| **Tests** | Tests Rust y ejecución de todos los `examples/*.hl` en GitHub Actions; falta una matriz diferencial completa intérprete/nativo |
 
 
 ## Funcionalidad del runtime

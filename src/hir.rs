@@ -176,7 +176,12 @@ impl Lowerer {
                 when_true: Box::new(self.expr(true_branch)?),
                 when_false: Box::new(self.expr(false_branch)?),
             },
-            other => return Err(LowerError { message: format!("Expresión todavía no admitida en HIR inicial: {:?}", other) }),
+            AstExpr::Lambda { .. } => return Err(LowerError { message: "Las funciones y closures todavía no están soportadas por HIR nativa".into() }),
+            AstExpr::FunctionCall { .. } => return Err(LowerError { message: "Las llamadas a funciones y builtins todavía no están soportadas por HIR nativa".into() }),
+            AstExpr::Array(_) => return Err(LowerError { message: "Los arrays todavía no están soportados por HIR nativa".into() }),
+            AstExpr::Map(_) => return Err(LowerError { message: "Los mapas todavía no están soportados por HIR nativa".into() }),
+            AstExpr::Index { .. } => return Err(LowerError { message: "La indexación todavía no está soportada por HIR nativa".into() }),
+            AstExpr::Block(_) => return Err(LowerError { message: "Los bloques como expresión todavía no están soportados por HIR nativa".into() }),
         };
         let id = ExprId(self.next_expr);
         self.next_expr += 1;

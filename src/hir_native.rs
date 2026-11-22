@@ -91,10 +91,10 @@ impl Generator {
                 self.scopes.push(prev.clone()); let depth = self.scopes.len();
                 self.loops.push((cond.clone(), end.clone(), depth));
                 Self::line(out, format!("{cond}: ;"));
-                let c = self.expr(p, condition, out)?;
-                Self::line(out, format!("if (!hl_truthy({c})) goto {end};"));
                 Self::line(out, format!("HlEnv *{iter_prev} = env;"));
                 Self::line(out, "env = hl_env_new(env);"); self.scopes.push(iter_prev.clone());
+                let c = self.expr(p, condition, out)?;
+                Self::line(out, format!("if (!hl_truthy({c})) {{ hl_env_free(env); env = {iter_prev}; goto {end}; }}"));
                 for child in body { self.stmt(p, child, out)?; }
                 self.scopes.pop();
                 Self::line(out, "hl_env_free(env);"); Self::line(out, format!("env = {iter_prev};"));

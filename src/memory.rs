@@ -16,7 +16,6 @@ pub enum StorageClass {
     OwnedRegion,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
 /// Stable index of a compiler-planned data stack within one activation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct DataStackId(pub u32);
@@ -94,7 +93,7 @@ fn plan_scope_stacks(program: &Program, bindings: &HashMap<BindingId, StorageCla
         StorageClass::ScopeRegion(scope) => Some(*scope),
         StorageClass::Inline | StorageClass::OwnedRegion => None,
     }).collect();
-    scopes.sort_unstable();
+    scopes.sort_unstable_by_key(|scope| scope.0);
     scopes.dedup();
 
     let mut result = HashMap::new();

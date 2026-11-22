@@ -193,6 +193,12 @@ Incluye pruebas unitarias para escalares inline, strings locales, concatenación
 
 **Estado del planificador:** `MemoryPlan` ya clasifica bindings y calcula `scope_stacks`: asigna una lane determinista por profundidad léxica a los ámbitos que contienen valores `ScopeRegion`. Los ámbitos hermanos reutilizan lane y los ámbitos anidados reciben lanes distintas. Este es un primer plan conservador de reutilización, no un análisis de intervalos de vida ni una asignación física optimizada. El backend y el runtime todavía no consumen `scope_stacks`. El runtime C sí ha avanzado: cada `HlEnv` mantiene una lista de las asignaciones dinámicas que posee y las libera al cerrar el ámbito. Las strings se copian al entorno propietario en `hl_define` y `hl_assign`; así, una asignación desde un bloque interior a una variable exterior sobrevive al cierre del bloque. Los bucles crean una región por iteración, también para temporales de la condición. Esta implementación es un **registro de asignaciones por región**, no una arena contigua ni una asignación real en stack. La copia conservadora puede duplicar strings y acumular reasignaciones hasta cerrar la región propietaria. No hay todavía análisis de escape operativo, promoción transitiva ni soporte nativo para arrays/maps/closures.
 
+### 7.2 Intervalos de uso conservadores (implementación inicial)
+
+Cada binding HIR registra ahora posiciones de declaración, primer uso, último uso y última escritura. El recorrido asigna índices de evento monotónicos; los accesos dentro de bucles prolongan conservadoramente la vida hasta el límite de salida del bucle y se marcan como `loop_carried`. Los recorridos de ramas se serializan en el orden del HIR, lo que puede alargar intervalos, pero no acortarlos deliberadamente.
+
+Esto **no es todavía liveness de CFG ni prueba de no-aliasing**. No modela con precisión caminos de ejecución, cortocircuitos, retornos, destrucción de recursos, ni escapes transitivos. Los intervalos son metadata de análisis y no se usan para reutilizar memoria ni para alterar la clase de almacenamiento. El siguiente paso será validar el modelo contra un CFG explícito o un análisis estructurado equivalente antes de permitir decisiones físicas de asignación.
+
 ## 8. Diferencias entre runtime actual y arquitectura objetivo
 
 | Área | Estado actual | Objetivo |

@@ -34,14 +34,14 @@ impl Generator {
             ExprKind::Number(n) if n.is_finite() => format!("hl_number({n:.17})"),
             ExprKind::Number(_) => return Err("NaN e infinito no backend nativo aún no están soportados".into()),
             ExprKind::Bool(b) => format!("hl_bool({})", if *b { 1 } else { 0 }),
-            ExprKind::String(s) => format!("hl_string({})", Self::c_string(s)),
+            ExprKind::String(s) => format!("hl_string(env, {})", Self::c_string(s)),
             ExprKind::Read(id) => format!("hl_get(env, {})", Self::binding(p, *id)?),
             ExprKind::Binary { op, left, right } => {
                 let a = self.expr(p, left, out)?; let b = self.expr(p, right, out)?;
                 let f = match op { BinaryOp::Add=>"hl_add", BinaryOp::Sub=>"hl_sub", BinaryOp::Mul=>"hl_mul",
                     BinaryOp::Div=>"hl_div", BinaryOp::Less=>"hl_less", BinaryOp::Greater=>"hl_greater",
                     BinaryOp::Equal=>"hl_equal", BinaryOp::NotEqual=>"hl_not_equal" };
-                format!("{f}({a}, {b})")
+                format!("{f}(env, {a}, {b})")
             }
             ExprKind::Ternary { condition, when_true, when_false } => {
                 let c = self.expr(p, condition, out)?;
@@ -60,10 +60,10 @@ impl Generator {
         Self::line(out, "{"); Self::line(out, format!("HlEnv *{prev} = env;"));
         Self::line(out, "env = hl_env_new(env);"); self.scopes.push(prev.clone());
         for s in statements { self.stmt(p, s, out)?; }
-        self.scopes.pop(); Self::line(out, format!("env = {prev};")); Self::line(out, "}"); Ok(())
+        self.scopes.pop(); Self::line(out, "hl_env_free(env);"); Self::line(out, format!("env = {prev};")); Self::line(out, "}"); Ok(())
     }
     fn restore(&self, out: &mut String, depth: usize) {
-        for prev in self.scopes[depth..].iter().rev() { Self::line(out, format!("env = {prev};")); }
+        for prev in self.scopes[depth..].iter().rev() { Self::line(out, "hl_env_free(env);"); Self::line(out, format!("env = {prev};")); }
     }
     fn stmt(&mut self, p: &Program, s: &Statement, out: &mut String) -> Result<(), String> {
         match &s.kind {
@@ -84,16 +84,23 @@ impl Generator {
             }
             StmtKind::While { condition, body, .. } => {
                 let id = self.loop_id; self.loop_id += 1;
-                let prev = format!("loop_prev_{id}"); let cond = format!("loop_cond_{id}"); let end = format!("loop_end_{id}");
+                let prev = format!("loop_prev_{id}"); let loop_env = format!("loop_env_{id}");
+                let iter_prev = format!("iter_prev_{id}"); let cond = format!("loop_cond_{id}"); let end = format!("loop_end_{id}");
                 Self::line(out, format!("HlEnv *{prev} = env;")); Self::line(out, "env = hl_env_new(env);");
+                Self::line(out, format!("HlEnv *{loop_env} = env;"));
                 self.scopes.push(prev.clone()); let depth = self.scopes.len();
                 self.loops.push((cond.clone(), end.clone(), depth));
                 Self::line(out, format!("{cond}: ;"));
                 let c = self.expr(p, condition, out)?;
                 Self::line(out, format!("if (!hl_truthy({c})) goto {end};"));
+                Self::line(out, format!("HlEnv *{iter_prev} = env;"));
+                Self::line(out, "env = hl_env_new(env);"); self.scopes.push(iter_prev.clone());
                 for child in body { self.stmt(p, child, out)?; }
+                self.scopes.pop();
+                Self::line(out, "hl_env_free(env);"); Self::line(out, format!("env = {iter_prev};"));
                 Self::line(out, format!("goto {cond};")); Self::line(out, format!("{end}: ;"));
-                self.loops.pop(); self.scopes.pop(); Self::line(out, format!("env = {prev};"));
+                self.loops.pop(); self.scopes.pop(); Self::line(out, format!("hl_env_free({loop_env});"));
+                Self::line(out, format!("env = {prev};"));
             }
             StmtKind::Break => {
                 let (_, end, depth) = self.loops.last().cloned().ok_or("break fuera de bucle en HIR")?;
@@ -113,7 +120,7 @@ pub fn generate_c(program: &Program) -> Result<String, String> {
     for stmt in &program.statements { generator.stmt(program, stmt, &mut body)?; }
     let mut source = include_str!("native_runtime.c").to_string();
     source.push_str("\nint main(void) {\n    HlEnv *env = hl_env_new(NULL);\n");
-    source.push_str(&body); source.push_str("    return 0;\n}\n"); Ok(source)
+    source.push_str(&body); source.push_str("    hl_env_free(env);\n    return 0;\n}\n"); Ok(source)
 }
 
 #[cfg(test)]

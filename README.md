@@ -13,7 +13,8 @@ flowchart LR
     E --> H["Type checker<br/><i>check()</i> (análisis no bloqueante)"]
     H --> F["Evaluador Rust<br/><i>evaluate()</i>"]
     F --> G["Output"]
-    E --> I["Generador C<br/><i>native.rs</i>"]
+    E --> M["HIR<br/><i>hir.rs</i>"]
+    M --> I["Generador C<br/><i>hir_native.rs</i>"]
     I --> J["Runtime C<br/><i>native_runtime.c</i>"]
     J --> K["GCC / Clang"]
     K --> L["Ejecutable nativo"]
@@ -214,9 +215,9 @@ En esta primera versión se compactan las declaraciones (`:=`), los bloques (`{}
 
 ## Compilación nativa: primer subconjunto operativo
 
-La CLI dispone de `hl run`, `hl build` y `hl check`; `hl archivo.hl` sigue siendo el alias de interpretación. `build` reutiliza el mismo lexer, parser y AST y genera C desde el AST, enlazándolo con `src/native_runtime.c` mediante GCC o Clang.
+La CLI dispone de `hl run`, `hl build` y `hl check`; `hl archivo.hl` sigue siendo el alias de interpretación. `build` reutiliza el mismo lexer, parser y AST, lo reduce a HIR con bindings y ámbitos resueltos, y genera C desde HIR mediante GCC o Clang.
 
-El backend inicial admite literales numéricos, booleanos y cadenas; variables y asignación; operadores aritméticos/comparativos, truthiness y ternario; bloques, if, while, break, continue y print. Rechaza con diagnóstico las construcciones que todavía no implementa: arrays, mapas, indexación, llamadas/builtins y funciones/closures.
+El backend inicial admite literales numéricos, booleanos y cadenas; variables y asignación; operadores aritméticos/comparativos, truthiness y ternario; bloques, if, while, break, continue y print. Rechaza con diagnóstico las construcciones que todavía no implementa: arrays, mapas, indexación, llamadas/builtins y funciones/closures. El lowering AST→HIR resuelve identificadores a `BindingId`; HIR es la entrada del generador C.
 
 El runtime C usa valores dinámicos etiquetados. En esta primera iteración, los objetos asignados permanecen vivos hasta terminar el proceso; la gestión de memoria y la paridad completa siguen pendientes. No se crea un parser ni un AST alternativo, y el checker estático no es requisito para compilar. Diseño y límites: [docs/NATIVE_COMPILER_DESIGN.md](docs/NATIVE_COMPILER_DESIGN.md).
 
@@ -228,7 +229,7 @@ HackLang mantiene un único front-end compartido. El intérprete recorre el AST 
 
 ```
 Source (.hl) ─▶ Lexer ─▶ Parser ─▶ AST ─┬─▶ Evaluator Rust ─▶ Output
-                                        └─▶ C Generator ─▶ Runtime C ─▶ GCC/Clang ─▶ Executable
+                                        └─▶ HIR ─▶ C Generator ─▶ Runtime C ─▶ GCC/Clang ─▶ Executable
 ```
 
 Cada fase es un módulo independiente de Rust (`lexer.rs`, `parser.rs`, `evaluador.rs`) que se comunica con el siguiente solo a través de su tipo de salida (`Vec<Token>` → `Program` → `Result<(), String>`). El análisis estático es una pasada independiente y no bloqueante entre el parser y el evaluador. No hay IR ni optimizaciones todavía; el backend genera C directamente desde el AST para un subconjunto documentado.
@@ -420,4 +421,4 @@ Se ha especificado un modelo **stack-first, sin GC y sin gestión manual del usu
 
 ## Arquitectura del compilador
 
-El frontend (lexer, parser y AST) es único para intérprete y compilador nativo. La siguiente evolución prevista es una HIR compartida, con migración incremental y pruebas de equivalencia; todavía no está implementada. Consulta [docs/HIR_DESIGN.md](docs/HIR_DESIGN.md) para el contrato, las fases y los criterios de aceptación. El backend C actual recorre directamente el AST.
+El frontend (lexer, parser y AST) es único para intérprete y compilador nativo. La HIR inicial ya está implementada en `src/hir.rs`, con IDs de expresión/sentencia, ámbitos y bindings resueltos; el backend C la consume desde `src/hir_native.rs`. La cobertura HIR/nativa sigue siendo parcial. Consulta [docs/HIR_DESIGN.md](docs/HIR_DESIGN.md) y [docs/AI_AUTHORING.md](docs/AI_AUTHORING.md).

@@ -228,7 +228,9 @@ La matriz contiene requisitos de conformidad. Se ha añadido una primera baterí
 | MEM-019 | Referencia mutable aliasada | Rechazo o serialización segura de la mutación |
 | MEM-020 | Overflow de tamaño/capacidad | Error controlado |
 | MEM-021 | Recursividad profunda | Límite controlado y limpieza de todos los frames |
-| MEM-022 | Mismo programa interpretado y compilado | Salida, valores y errores equivalentes |\n| MEM-023 | Copia de Array y mutación posterior | La mutación de la copia no altera el original |\n| MEM-024 | Copia de Map con colección anidada | La mutación de la copia no altera el original ni sus valores anidados |
+| MEM-022 | Mismo programa interpretado y compilado | Salida, valores y errores equivalentes |
+| MEM-023 | Copia de Array y mutación posterior | La mutación de la copia no altera el original |
+| MEM-024 | Copia de Map con colección anidada | La mutación de la copia no altera el original ni sus valores anidados |
 
 ## 11. Cobertura automatizada actual
 

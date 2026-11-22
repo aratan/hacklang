@@ -342,9 +342,9 @@ mod tests {
             S::Let(LetStatement { name: "value".into(), value: A::NumberLiteral(1.0) }),
             S::Block(vec![
                 S::Print(PrintStatement { value: A::Identifier("value".into()) }),
-                S::Print(A::Identifier("value".into())),
+                S::Print(PrintStatement { value: A::Identifier("value".into()) }),
             ]),
-            S::Print(A::Identifier("value".into())),
+            S::Print(PrintStatement { value: A::Identifier("value".into()) }),
         ]);
         let memory = plan(&p);
         let facts = &memory.usage[&BindingId(0)];

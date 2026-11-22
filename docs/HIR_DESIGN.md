@@ -1,6 +1,6 @@
 # HIR: representación intermedia de alto nivel
 
-Estado: **HIR inicial implementada para el subconjunto del backend nativo; migración del generador C todavía parcial**.
+Estado: **HIR inicial implementada y consumida por el backend C para el subconjunto nativo; expansión de cobertura pendiente**.
 
 Este documento fija la frontera entre el frontend de HackLang y sus consumidores (intérprete, análisis y backend nativo). Su objetivo es permitir que el lenguaje crezca sin duplicar semántica ni atar el compilador al AST concreto del parser.
 
@@ -171,7 +171,7 @@ El hito H1/H2 no es «tener una estructura HIR bonita». Es convertir el subconj
 
 ## 10. Estado de implementación (2026-11-22)
 
-<small>Actualizado tras la migración HIR→C del 22-11-2026.</small>
+Actualizado tras la migración HIR→C del 22-11-2026.
 
 Implementado en `src/hir.rs`:
 
@@ -182,7 +182,7 @@ Implementado en `src/hir.rs`:
 - Rechazo explícito de expresiones/sentencias fuera del subconjunto inicial y de nombres no resueltos.
 - Pruebas unitarias para IDs de bindings, shadowing, asignación, nombres no resueltos, control de bucles y scope compartido del while.
 
-La compilación nativa ejecuta el lowering AST→HIR y `src/hir_native.rs` genera C directamente desde HIR. `src/native.rs` conserva temporalmente el generador AST anterior como referencia histórica/pruebas, pero la ruta `hl build` utiliza HIR. La CI compara el resultado del intérprete y el binario nativo para el corpus de smoke test; se está ampliando la cobertura diferencial.
+La compilación nativa ejecuta el lowering AST→HIR y `src/hir_native.rs` genera C directamente desde HIR. El generador AST duplicado se ha retirado de `src/native.rs`; este módulo se limita a orquestar lowering, toolchain y salida. La CI compara el resultado del intérprete y el binario nativo para el corpus de smoke test, que incluye shadowing y saltos de bucle desde ramas.
 
 Limitaciones deliberadas de esta primera entrega:
 

@@ -71,7 +71,8 @@ pub struct MemoryPlan {
     /// Stack assignments for scopes that own at least one scope-region value.
     /// This is planning metadata only; the current C runtime does not consume it.
     pub scope_stacks: HashMap<ScopeId, ScopeStackPlan>,
-
+    /// Read/write facts for diagnostics and future escape analysis.
+    pub usage: HashMap<BindingId, BindingUsage>,
     /// Structured control-flow graph and solved live-in/live-out sets.
     pub cfg: ControlFlowGraph,
 }

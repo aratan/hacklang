@@ -219,7 +219,7 @@ La CLI dispone de `hl run`, `hl build` y `hl check`; `hl archivo.hl` sigue siend
 
 El backend inicial admite literales numéricos, booleanos y cadenas; variables y asignación; operadores aritméticos/comparativos, truthiness y ternario; bloques, if, while, break, continue y print. Rechaza con diagnóstico las construcciones que todavía no implementa: arrays, mapas, indexación, llamadas/builtins y funciones/closures. El lowering AST→HIR resuelve identificadores a `BindingId`; HIR es la entrada del generador C.
 
-El runtime C usa valores dinámicos etiquetados. En esta primera iteración, los objetos asignados permanecen vivos hasta terminar el proceso; la gestión de memoria y la paridad completa siguen pendientes. No se crea un parser ni un AST alternativo, y el checker estático no es requisito para compilar. Diseño y límites: [docs/NATIVE_COMPILER_DESIGN.md](docs/NATIVE_COMPILER_DESIGN.md).
+El runtime C usa valores dinámicos etiquetados y regiones de ámbito implementadas como listas de asignaciones `malloc` propiedad de cada `HlEnv`. Al cerrar bloques, ramas, iteraciones y el ámbito raíz, libera las asignaciones de esa región. Las cadenas se copian al entorno propietario de cada binding en `hl_define` y `hl_assign`, evitando referencias colgantes cuando un valor se asigna desde un ámbito interior a uno exterior. Las iteraciones tienen regiones temporales propias, incluida la evaluación de la condición. Esto no es todavía una arena contigua ni asignación stack-first: `MemoryPlan` se calcula pero aún no dirige la ubicación física; tampoco existe análisis de escape operativo ni soporte nativo para arrays, mapas o closures. Los errores fatales terminan el proceso mediante `exit(1)`, por lo que la limpieza de regiones en rutas de error sigue pendiente como garantía interna. No se crea un parser ni un AST alternativo, y el checker estático no es requisito para compilar. Diseño y límites: [docs/NATIVE_COMPILER_DESIGN.md](docs/NATIVE_COMPILER_DESIGN.md).
 
 ## Metodología
 
@@ -377,7 +377,7 @@ El CLI se construye como el ejecutable `hl`. En desarrollo se invoca con `cargo 
 | **Evaluador** | ✅ Evaluación de expresiones, booleanos, sentencias, ámbitos léxicos y colecciones |
 | **Funciones** | ✅ Lambdas, closures léxicas, recursividad, llamadas de primera clase y aridad |
 | **Control de flujo** | ✅ `return`, `break` y `continue` |
-| **Memoria actual** | Arena mark-and-sweep de frames en el evaluador; runtime C con asignaciones que viven hasta el final del proceso |
+| **Memoria actual** | Evaluador Rust: arena mark-and-sweep de frames. Runtime C: regiones por ámbito con asignaciones `malloc` registradas y liberadas al cerrar el entorno; strings copiadas al propietario del binding. Sin arena contigua ni limpieza garantizada en errores fatales |
 | **Análisis de tipos** | ✅ Primera pasada no bloqueante: tipos primitivos, retornos explícitos, arrays/mapas con tipos de elemento/clave/valor, indexación, asignaciones, operadores y aridad de llamadas |
 | **Compilador nativo** | Primer backend C operativo para un subconjunto; sin paridad completa ni soporte de colecciones/funciones |
 | **Tests** | Tests Rust, ejecución de todos los ejemplos y smoke diferencial intérprete/nativo, incluida división por cero; falta ampliar la matriz de conformidad |
@@ -413,7 +413,7 @@ El lexer expone `tokenize() -> Result<Vec<Token>, String>` y el parser `parse_pr
 
 ## Modelo de memoria objetivo
 
-Se ha especificado un modelo **stack-first, sin GC y sin gestión manual del usuario**, inspirado en regiones por ámbito (Goose), propiedad determinista (Rust) y análisis de escape automático (Go). Es una especificación de arquitectura, no una característica implementada: el evaluador y el runtime nativo conservan por ahora sus mecanismos actuales. Incluye reglas para escapes, arrays, mapas, closures, recursividad y una matriz de 27 casos de diseño, con cobertura automatizada parcial. Consulta [docs/MEMORY_MODEL.md](docs/MEMORY_MODEL.md).
+Se ha especificado un modelo **stack-first, sin GC y sin gestión manual del usuario**. La implementación actual es parcial: el evaluador Rust conserva su arena mark-and-sweep de frames; el runtime C ya libera asignaciones registradas por ámbito y por iteración, y copia strings al entorno propietario del binding para preservar escapes entre ámbitos. El planificador HIR clasifica bindings de forma conservadora, pero todavía no controla la ubicación física. No hay aún arenas contiguas, análisis de escape completo, arrays/maps/closures nativos ni limpieza instrumentada de todos los errores. La matriz de diseño y su cobertura están en [docs/MEMORY_MODEL.md](docs/MEMORY_MODEL.md).
 
 ## Biblioteca estándar inicial
 

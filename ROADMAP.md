@@ -108,14 +108,14 @@ Estado: pendiente. No asumir que `read_file()`, `write_file()` o `exec()` existe
 
 ### P9 — Compilador nativo y conformidad (prioridad actual)
 
-Estado real: primer camino de compilación C operativo para un subconjunto, todavía sin paridad completa.
+Estado real: el primer backend C compila y ejecuta un subconjunto del lenguaje. La CI valida el frontend compartido, HIR, generación C, ejecución de ejemplos y paridad diferencial en los casos soportados. No hay paridad completa.
 
-1. **N0 — Contrato semántico (parcial):** se ha corregido el fallback numérico silencioso y se han fijado algunos casos de parser con regresiones. Falta completar pruebas de operadores/coerciones, scopes, impresión, Unicode, errores y límites.
+1. **N0 — Contrato semántico (parcial):** hay pruebas de operadores, ámbitos, errores y equivalencia legacy/compacto; falta ampliar Unicode, impresión y límites.
 2. **N1 — CLI/toolchain (implementado inicialmente):** `run`, `build`, `check`, alias legacy y códigos de salida. `build` detecta `cc`, GCC o Clang y no sobrescribe destinos existentes.
-3. **N2 — Runtime C (mínimo):** valores dinámicos Number/Bool/String, entornos, variables, truthiness, operadores y salida. La memoria asignada vive hasta finalizar el proceso; falta una política completa de gestión y pruebas de estrés.
-4. **N3 — Backend por subconjuntos (primer corte):** genera C desde el AST existente para literales, variables, asignación, operadores, ternario, bloques, if, while, break/continue y print. Arrays, mapas, indexación, llamadas y closures se rechazan explícitamente.
-5. **N4 — Build y diferencial (build operativo, diferencial pendiente):** `hl build` invoca el compilador C y produce un ejecutable. Falta comparar automáticamente stdout, stderr y códigos de salida contra el intérprete para todo el subconjunto y añadir pruebas de errores.
-6. **N5 — Cobertura:** incorporar colecciones, strings Unicode/indexación, funciones y closures, memoria con ciclos y el resto del AST; solo entonces declarar paridad completa y abordar ARM64/Windows.
+3. **N2 — Runtime C (subconjunto operativo):** valores Number/Bool/String, entornos, variables, truthiness, operadores y salida. Cada `HlEnv` registra sus asignaciones `malloc` y las libera al cerrar el ámbito; las strings se copian al propietario del binding para preservar valores asignados desde ámbitos interiores. Los bucles liberan temporales de condición y cuerpo por iteración. No es todavía una arena contigua ni stack-first; los errores fatales usan `exit(1)` y no ejecutan limpieza interna instrumentada.
+4. **N3 — Backend por HIR (primer corte):** frontend único AST→HIR→C; admite literales, variables, asignación, operadores, ternario, bloques, if, while, break/continue y print. Arrays, mapas, indexación, llamadas y closures se rechazan explícitamente. El generador AST duplicado fue retirado.
+5. **N4 — Build y diferencial (operativo para el subconjunto):** CI ejecuta type-check, build, tests, todos los ejemplos soportados y compara stdout/códigos de salida del intérprete y el ejecutable nativo, incluidos modo compacto y división por cero.
+6. **N5 — Memoria y conformidad (en curso):** `src/memory.rs` calcula un `MemoryPlan` conservador con `Inline`, `ScopeRegion` y `OwnedRegion`; se ejecuta durante `hl build`, pero aún no dirige la asignación física. La siguiente prioridad es instrumentar liberaciones y probar `break`, `continue`, ámbitos anidados, reasignaciones y rutas de error; después evaluar arenas contiguas y análisis de escape real. Solo entonces incorporar arrays/mapas/indexación y, más adelante, closures con propiedad demostrable.
 
 No reutilizar `prototypes/output.c` como backend funcional. No hacer obligatorio el checker estático para compilar. No declarar una característica implementada hasta tener tests y CI que la demuestren.
 

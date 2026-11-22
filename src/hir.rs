@@ -103,6 +103,7 @@ struct Lowerer {
     scopes: Vec<Scope>,
     bindings: Vec<Binding>,
     symbols: Vec<HashMap<String, BindingId>>,
+    scope_stack: Vec<ScopeId>,
     next_expr: u32,
     next_stmt: u32,
     loop_depth: usize,
@@ -114,6 +115,7 @@ impl Lowerer {
             scopes: vec![Scope { id: ScopeId(0), parent: None, kind: ScopeKind::Module }],
             bindings: Vec::new(),
             symbols: vec![HashMap::new()],
+            scope_stack: vec![ScopeId(0)],
             next_expr: 0,
             next_stmt: 0,
             loop_depth: 0,
@@ -125,15 +127,19 @@ impl Lowerer {
         let parent = self.current_scope();
         self.scopes.push(Scope { id, parent: Some(parent), kind });
         self.symbols.push(HashMap::new());
+        self.scope_stack.push(id);
         id
     }
 
     fn leave_scope(&mut self) {
-        if self.symbols.len() > 1 { self.symbols.pop(); }
+        if self.symbols.len() > 1 {
+            self.symbols.pop();
+            self.scope_stack.pop();
+        }
     }
 
     fn current_scope(&self) -> ScopeId {
-        self.scopes[self.symbols.len() - 1].id
+        *self.scope_stack.last().expect("module scope exists")
     }
 
     fn declare(&mut self, name: &str) -> BindingId {
@@ -266,6 +272,20 @@ mod tests {
     use crate::ast::{AssignStatement, LetStatement, PrintStatement};
 
     fn ast(statements: Vec<AstStmt>) -> AstProgram { AstProgram { statements } }
+
+    #[test]
+    fn nested_scope_parent_is_correct_after_closing_a_sibling() {
+        let program = ast(vec![
+            AstStmt::Block(vec![]),
+            AstStmt::Block(vec![
+                AstStmt::Block(vec![]),
+            ]),
+        ]);
+        let hir = lower(&program).unwrap();
+        assert_eq!(hir.scopes[1].parent, Some(ScopeId(0)));
+        assert_eq!(hir.scopes[2].parent, Some(ScopeId(0)));
+        assert_eq!(hir.scopes[3].parent, Some(ScopeId(2)));
+    }
 
     #[test]
     fn lowers_literals_and_variable_reads_to_binding_ids() {

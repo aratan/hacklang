@@ -205,6 +205,73 @@ mod tests {
         let _ = fs::remove_dir_all(directory);
     }
 
+
+    #[test]
+    fn nested_continue_and_break_release_regions_and_preserve_outer_string() {
+        let program = Program {
+            statements: vec![
+                Statement::Let(LetStatement { name: "i".into(), value: Expression::NumberLiteral(0.0) }),
+                Statement::Let(LetStatement { name: "result".into(), value: Expression::StringLiteral("initial".into()) }),
+                Statement::While(WhileStatement {
+                    condition: Expression::Infix {
+                        left: Box::new(Expression::Identifier("i".into())),
+                        operator: crate::lexer::Token::Less,
+                        right: Box::new(Expression::NumberLiteral(5.0)),
+                    },
+                    body: vec![
+                        Statement::Assign(AssignStatement {
+                            name: "i".into(),
+                            value: Expression::Infix {
+                                left: Box::new(Expression::Identifier("i".into())),
+                                operator: crate::lexer::Token::Plus,
+                                right: Box::new(Expression::NumberLiteral(1.0)),
+                            },
+                        }),
+                        Statement::Block(vec![
+                            Statement::Let(LetStatement {
+                                name: "temporary".into(),
+                                value: Expression::StringLiteral("iteration".into()),
+                            }),
+                            Statement::If(IfStatement {
+                                condition: Expression::Infix {
+                                    left: Box::new(Expression::Identifier("i".into())),
+                                    operator: crate::lexer::Token::Tilde,
+                                    right: Box::new(Expression::NumberLiteral(2.0)),
+                                },
+                                true_body: vec![Statement::Continue],
+                                false_body: None,
+                            }),
+                            Statement::If(IfStatement {
+                                condition: Expression::Infix {
+                                    left: Box::new(Expression::Identifier("i".into())),
+                                    operator: crate::lexer::Token::Tilde,
+                                    right: Box::new(Expression::NumberLiteral(4.0)),
+                                },
+                                true_body: vec![Statement::Break],
+                                false_body: None,
+                            }),
+                            Statement::Assign(AssignStatement {
+                                name: "result".into(),
+                                value: Expression::Identifier("temporary".into()),
+                            }),
+                        ]),
+                    ],
+                }),
+                Statement::Print(PrintStatement { value: Expression::Identifier("result".into()) }),
+                Statement::Print(PrintStatement { value: Expression::Identifier("i".into()) }),
+            ],
+        };
+        let directory = temporary_directory().expect("temporary directory");
+        let source = directory.join("nested_control.hl");
+        let executable = directory.join("nested_control");
+        fs::write(&source, "nested region control-flow test").unwrap();
+        compile_to_executable(&program, &source, Some(&executable)).expect("native compilation");
+        let run = Command::new(&executable).output().expect("run native executable");
+        assert!(run.status.success(), "native program failed: {}", String::from_utf8_lossy(&run.stderr));
+        assert_eq!(String::from_utf8_lossy(&run.stdout), "iteration\\n4\\n");
+        let _ = fs::remove_dir_all(directory);
+    }
+
     #[test]
     fn rejects_unsupported_closures_during_ast_to_hir_lowering() {
         let program = Program {

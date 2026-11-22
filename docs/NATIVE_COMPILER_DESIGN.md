@@ -1,6 +1,6 @@
 # Diseño del intérprete y compilador nativo
 
-Estado: especificación de diseño. No describe funcionalidades ya implementadas.
+Estado: diseño y contrato de conformidad. El backend C inicial ya está implementado en `src/native.rs` y `src/native_runtime.c`; este documento separa lo operativo de lo pendiente.
 
 ## Objetivo
 
@@ -24,7 +24,7 @@ hl check programa.hl
 ## Estado verificado en el código actual
 
 - Cargo define un único paquete y binario Rust `hl`; no hay dependencias externas.
-- `main.rs` reutiliza lexer (`tokenize_spanned`), parser (`Parser::new_spanned` / `new_compact_spanned`), formatter, checker (`TypeChecker::check`) y evaluador (`Evaluator`). La rama de trabajo ya incorpora `run` y `check`, mantiene la invocación legacy y preserva `--compact`, `--format` y `--diagnostics-json`. `build` reconoce la sintaxis pero informa explícitamente que el backend aún no existe.
+- `main.rs` reutiliza lexer (`tokenize_spanned`), parser (`Parser::new_spanned` / `new_compact_spanned`), formatter, checker (`TypeChecker::check`) y evaluador (`Evaluator`). `run` y `check` están implementados, se mantiene la invocación legacy y las opciones existentes. `build` llama a `native::compile_to_executable`, genera C desde el AST, incorpora `native_runtime.c` y ejecuta `cc`, GCC o Clang.
 - El lexer ya produce `SpannedToken` y el parser acepta tokens con spans para enriquecer errores sintácticos. El AST (`Program`, `Statement`, `Expression`) todavía no conserva spans: no se debe volver a implementar tokenización ni localización desde cero. La mejora pendiente es propagar los spans existentes hasta nodos/diagnósticos del AST.
 - El checker admite `Unknown` y es deliberadamente no bloqueante. No puede usarse como garantía de que todos los tipos están resueltos.
 - `prototypes/output.c` es un prototipo histórico incompleto, no un backend reutilizable ni un runtime funcional.
@@ -131,7 +131,7 @@ Source → Lexer → Parser → AST          ├→ comportamiento HackLang
 | Análisis estático | `TypeChecker::check`, `Unknown`, diagnósticos JSON | Reutilizarlo como análisis opcional, no como type lowering obligatorio |
 | Ejecución de referencia | `Evaluator::evaluate` | Mantenerlo como motor de `run` y oráculo diferencial |
 | Pruebas semánticas | Tests dentro de `evaluador.rs` y CI de ejemplos | Ampliar la suite existente y sumar harness diferencial, sin replicar tests manualmente |
-| Backend C | Solo `prototypes/output.c`, incompleto | Crear backend/runtime nuevo y aislado; no presentar el prototipo como reutilizable |
+| Backend C | `src/native.rs` y `src/native_runtime.c` implementan el primer subconjunto; `prototypes/output.c` sigue siendo histórico | Extender el backend existente y sus pruebas; no crear un segundo backend ni reutilizar el prototipo histórico |
 
 ## Decisiones iniciales
 
@@ -142,7 +142,7 @@ Source → Lexer → Parser → AST          ├→ comportamiento HackLang
 5. El runtime nativo debe gestionar entornos, closures, strings, arrays, mapas, errores y memoria. No usar refcount simple sin resolver ciclos de closures recursivas.
 6. El compilador C se invocará como proceso externo. Primera plataforma: Linux x86-64 con GCC o Clang disponible. Detectar el compilador, comprobar su versión/ejecución y devolver errores legibles. No afirmar que el binario generado es independiente de libc o de la plataforma.
 7. La salida por defecto será el nombre del fuente sin extensión; `-o` permite elegir destino. No sobrescribir entradas ni archivos existentes sin una política explícita.
-8. Los errores actuales del CLI no establecen códigos de salida no-cero de forma consistente; corregir esto en la refactorización del CLI antes de usarlo en automatización.
+8. Los códigos de salida del CLI ya distinguen errores de argumentos (2) y errores de lectura, análisis, runtime o compilación (1); ampliar pruebas de integración para fijar el contrato.
 9. No duplicar funciones de parseo, lectura de fuente, chequeo, formato o ejecución para cada subcomando: extraer un pipeline compartido y enrutar las acciones después del parseo.
 10. Los temporales se crearán en un directorio controlado y se limpiarán tanto en éxito como en error. Los errores de compilación deben conservar diagnósticos útiles.
 
@@ -186,31 +186,32 @@ Aceptación: contrato escrito y tests Rust que lo fijan.
 
 Aceptación: pruebas CLI de uso, argumentos inválidos, archivo inexistente y ausencia de toolchain.
 
-### N2 — Runtime C mínimo
+### N2 — Runtime C mínimo (implementado inicialmente)
 
-- Implementar Value, errores, print, entornos y operaciones primitivas.
-- Compilar y ejecutar un programa C de smoke test desde CI Linux.
+- `HlValue` etiquetado para Number, Bool y String; entornos léxicos, variables, truthiness, operadores y salida.
+- El runtime está embebido con `include_str!` y enlazado en cada build.
+- La memoria asignada vive hasta finalizar el proceso; no hay todavía GC ni liberación por ámbito.
 
-Aceptación: tests nativos del runtime sin depender todavía de todo el lenguaje.
+Pendiente: gestión de memoria acotada, pruebas de estrés y conformidad completa de formato numérico/strings.
 
-### N3 — Backend por subconjuntos
+### N3 — Backend por subconjuntos (primer corte implementado)
 
-Orden sugerido:
-1. literales, variables, print y aritmética;
-2. comparaciones, truthiness, if y ternario;
-3. while, break y continue;
-4. arrays, mapas e indexación;
-5. funciones, closures, recursividad y return;
-6. builtins y errores restantes.
+Ya genera C para literales Number/Bool/String, variables y asignación, operadores soportados, ternario, bloques, if, while, break, continue y print.
 
-Cada ampliación debe añadir pruebas diferenciales contra el intérprete.
+Pendiente, en este orden:
+1. pruebas diferenciales y cerrar divergencias semánticas del subconjunto actual;
+2. arrays, mapas e indexación;
+3. funciones, closures, recursividad y return;
+4. builtins y errores restantes.
 
-### N4 — Build y pruebas diferenciales
+Cada ampliación debe reutilizar el AST actual y añadir pruebas diferenciales contra el intérprete.
 
-- `hl build` genera C temporal, compila y enlaza runtime y produce un ejecutable nativo.
-- CI ejecuta cada programa compatible con ambos motores y compara stdout, stderr y código de salida.
-- Los errores se comparan por categoría/código estable, no necesariamente por texto idéntico mientras los mensajes no estén normalizados.
-- Añadir pruebas de memoria y ejecución repetida para detectar fugas/corrupción.
+### N4 — Build y pruebas diferenciales (build operativo; conformidad pendiente)
+
+- `hl build` ya genera C temporal, compila y enlaza el runtime y produce un ejecutable nativo.
+- La CI actual valida el build y ejecuta tests Rust; todavía no compara de forma sistemática la salida del intérprete y la del ejecutable nativo.
+- Añadir corpus compartido, comparación de stdout/stderr/código de salida y casos de error.
+- Añadir pruebas de memoria y ejecución repetida para detectar crecimiento no acotado o corrupción.
 
 Aceptación: ningún programa dentro del subconjunto declarado produce divergencias sin documentar.
 

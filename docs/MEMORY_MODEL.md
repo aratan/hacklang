@@ -199,6 +199,21 @@ Cada binding HIR registra ahora posiciones de declaración, primer uso, último 
 
 Esto **no es todavía liveness de CFG ni prueba de no-aliasing**. No modela con precisión caminos de ejecución, cortocircuitos, retornos, destrucción de recursos, ni escapes transitivos. Los intervalos son metadata de análisis y no se usan para reutilizar memoria ni para alterar la clase de almacenamiento. El siguiente paso será validar el modelo contra un CFG explícito o un análisis estructurado equivalente antes de permitir decisiones físicas de asignación.
 
+### 7.3 CFG y análisis de variables vivas (primera implementación)
+
+El planificador construye ahora un grafo de flujo de control a partir del HIR estructurado. Los bloques representan declaraciones, asignaciones, lecturas/impresiones, condiciones, uniones de ramas y cabeceras/salidas de bucles. Se registran sucesores explícitos, incluidos los retrocesos de `while` y las salidas de `break` y `continue`.
+
+Sobre ese grafo se resuelve el análisis clásico de variables vivas hasta punto fijo:
+
+```text
+live_out[B] = unión(live_in[S]) para cada sucesor S
+live_in[B]  = use[B] ∪ (live_out[B] - def[B])
+```
+
+El resultado se expone en `MemoryPlan.cfg`. Se han añadido pruebas de propagación por ramas/uniones y de aristas de retroceso de bucles.
+
+**Límite actual:** el CFG es una representación inicial para liveness de bindings; no modela aún `return` (no está admitido por este HIR), excepciones, efectos de llamadas, destrucción de temporales ni escapes transitivos. La construcción de `if` y bucles se mantiene deliberadamente conservadora. No se usa todavía para asignar físicamente lanes ni para liberar memoria.
+
 ## 8. Diferencias entre runtime actual y arquitectura objetivo
 
 | Área | Estado actual | Objetivo |

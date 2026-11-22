@@ -14,3 +14,13 @@ print "sum=" + total;
 print total > 0 ? "ok" : "bad";
 print 100000000000000000000;
 print 0.0000000001;
+
+// Shadowing: la rama debe aislar su binding sin alterar el exterior.
+let shadow = 10;
+if (true) (
+    let shadow = 20;
+    print shadow;
+    shadow = 21;
+    print shadow;
+);
+print shadow;

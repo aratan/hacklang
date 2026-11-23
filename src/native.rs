@@ -334,6 +334,7 @@ int main(void) {
     if (!hl_ownership_acquire(child, 43, &transferred_token, ownership_cleanup, &transferred)) return 26;
     transferred.token = transferred_token;
     if (!hl_ownership_transfer(child, root, transferred_token)) return 27;
+    transferred.environment = root;
     if (hl_ownership_transfer(child, root, transferred_token)) return 28;
     if (hl_ownership_drop(child, transferred_token)) return 29;
 

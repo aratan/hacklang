@@ -32,6 +32,7 @@ struct HlEnv {
     HlEnv *parent;
     HlBinding *bindings;
     HlAllocation *allocations;
+    int closing;
 };
 
 static void hl_fail(const char *message) {
@@ -46,7 +47,7 @@ static void hl_cleanup_free(void *context) {
 /* Register one cleanup action. The returned handle remains stable until
  * cancellation, transfer, or execution by hl_env_free. */
 HlAllocation *hl_env_defer(HlEnv *environment, HlCleanupFn cleanup, void *context) {
-    if (!environment || !cleanup) return NULL;
+    if (!environment || environment->closing || !cleanup) return NULL;
     HlAllocation *entry = (HlAllocation *)malloc(sizeof(HlAllocation));
     if (!entry) return NULL;
     entry->cleanup = cleanup;
@@ -68,7 +69,7 @@ static int hl_cleanup_detach(HlEnv *environment, HlAllocation *entry) {
 
 /* Transfer an existing registration; never clone the cleanup action. */
 int hl_env_transfer(HlEnv *from, HlEnv *to, HlAllocation *entry) {
-    if (!from || !to || from == to || !hl_cleanup_detach(from, entry)) return 0;
+    if (!from || !to || from == to || to->closing || !hl_cleanup_detach(from, entry)) return 0;
     entry->next = to->allocations;
     to->allocations = entry;
     return 1;
@@ -93,7 +94,8 @@ static void *hl_alloc(HlEnv *environment, size_t size) {
 }
 
 static void hl_env_free(HlEnv *environment) {
-    if (!environment) return;
+    if (!environment || environment->closing) return;
+    environment->closing = 1;
     HlAllocation *allocation = environment->allocations;
     environment->allocations = NULL;
     while (allocation) {
@@ -126,6 +128,7 @@ static HlEnv *hl_env_new(HlEnv *parent) {
     environment->parent = parent;
     environment->bindings = NULL;
     environment->allocations = NULL;
+    environment->closing = 0;
     return environment;
 }
 

@@ -122,10 +122,20 @@ impl Generator {
                     Self::line(out, format!("hl_assign_planned(env, {}, {v}, {storage});", Self::binding(p, *binding)?));
                 }
             }
-            StmtKind::IndexAssign { binding, index, value } => {
-                let index = self.expr(p, index, out)?;
+            StmtKind::IndexAssign { binding, indices, value } => {
+                let indices = indices.iter()
+                    .map(|index| self.expr(p, index, out))
+                    .collect::<Result<Vec<_>, _>>()?;
+                if indices.is_empty() {
+                    return Err("la asignación por índice requiere al menos un índice".into());
+                }
                 let value = self.expr(p, value, out)?;
-                Self::line(out, format!("hl_index_assign(env, {}, {index}, {value});", Self::binding(p, *binding)?));
+                Self::line(out, format!(
+                    "hl_index_assign_path(env, {}, (HlValue[]){{ {} }}, {}, {value});",
+                    Self::binding(p, *binding)?,
+                    indices.join(", "),
+                    indices.len()
+                ));
             },
             StmtKind::Print(e) => { let v = self.expr(p, e, out)?; Self::line(out, format!("hl_print({v});")); }
             StmtKind::Block { scope, statements } => self.block(p, *scope, statements, out)?,

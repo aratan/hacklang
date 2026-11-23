@@ -1114,7 +1114,19 @@ int main(void) {
     if (!root_binding || root_binding->value.as.array->items[0].as.array->items[0].as.number != 7)
         return 18;
     hl_assign(child, "items", child_read);
+
+    /* A local aggregate in a child scope owns a distinct arena and its token
+     * must be invalidated when that scope closes. */
+    HlValue local_items[1] = { hl_number(55) };
+    hl_define_planned_site(child, "local_array", hl_array(child, local_items, 1),
+        HL_STORAGE_OWNED, 88);
+    HlBinding *local_binding = hl_find_local(child, "local_array");
+    if (!local_binding || !local_binding->ownership_token
+        || !hl_ownership_is_active(environment, local_binding->ownership_token)) return 27;
+    uint64_t local_token = local_binding->ownership_token;
+
     hl_env_free(child);
+    if (hl_ownership_is_active(environment, local_token)) return 28;
     root_binding = hl_find(environment, "items");
     HlArray *stored_inner = root_binding->value.as.array->items[0].as.array;
     if (stored_inner->items[0].as.number != 123) return 19;

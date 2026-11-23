@@ -97,6 +97,7 @@ typedef struct HlBinding {
     size_t string_capacity;
     uint64_t ownership_site;
     uint64_t ownership_token;
+    HlArenaLane aggregate_lane;
     struct HlBinding *next;
 } HlBinding;
 struct HlEnv {
@@ -115,12 +116,24 @@ struct HlEnv {
 /* Binding-owned dynamic storage participates in the same exactly-once
  * cleanup registry as other runtime resources. The binding descriptor stays
  * alive until callbacks have run and its arena is rewound. */
+static void hl_lane_init(HlArenaLane *lane);
+static void hl_lane_destroy(HlArenaLane *lane);
+
 static void hl_cleanup_binding_string(void *context) {
     HlBinding *binding = (HlBinding *)context;
     if (!binding) return;
     free(binding->string_storage);
     binding->string_storage = NULL;
     binding->string_capacity = 0;
+    binding->ownership_token = 0;
+}
+
+static void hl_cleanup_binding_aggregate(void *context) {
+    HlBinding *binding = (HlBinding *)context;
+    if (!binding) return;
+    hl_lane_destroy(&binding->aggregate_lane);
+    binding->value.tag = HL_NUMBER;
+    binding->value.as.number = 0.0;
     binding->ownership_token = 0;
 }
 
@@ -378,6 +391,13 @@ static HlValue hl_clone_value(HlEnv *environment, HlValue value) {
     hl_fail(environment, "tipo de valor desconocido al copiar");
     return hl_number(0);
 }
+static HlValue hl_clone_value_in_lane(HlEnv *environment, HlArenaLane *lane, HlValue value) {
+    HlArenaLane *previous_lane = environment->lane;
+    environment->lane = lane;
+    HlValue copy = hl_clone_value(environment, value);
+    environment->lane = previous_lane;
+    return copy;
+}
 static HlEnv *hl_env_new_in_lane(HlEnv *parent, HlArenaLane *lane) {
     if (!lane) hl_fail(parent, "lane de memoria nula");
     HlEnv *environment = (HlEnv *)malloc(sizeof(HlEnv));
@@ -420,58 +440,94 @@ static HlBinding *hl_find(HlEnv *environment, const char *name) {
  * temporary first because the input may alias this binding's current buffer. */
 static HlValue hl_store_value(HlBinding *binding, HlValue value, HlStorageClass storage) {
     if (value.tag == HL_ARRAY) {
-        /* Aggregate graphs live in the binding owner's lane. A value read in
-         * a child scope is therefore copied before that scope can rewind. */
-        HlValue stored = hl_clone_value(binding->owner, value);
+        if (binding->value.tag == HL_STRING && binding->ownership_token) {
+            if (!hl_ownership_drop(binding->owner, binding->ownership_token))
+                hl_fail(binding->owner, "no se pudo liberar la propiedad anterior de cadena");
+        }
+
+        HlValue stored;
+        if (storage == HL_STORAGE_OWNED) {
+            if (binding->value.tag == HL_ARRAY && binding->ownership_token) {
+                binding->value.tag = HL_NUMBER;
+                binding->value.as.number = 0.0;
+                hl_lane_destroy(&binding->aggregate_lane);
+                hl_lane_init(&binding->aggregate_lane);
+            } else {
+                if (binding->ownership_token
+                    && !hl_ownership_drop(binding->owner, binding->ownership_token))
+                    hl_fail(binding->owner, "no se pudo liberar la propiedad anterior del binding");
+                hl_lane_init(&binding->aggregate_lane);
+                if (!hl_ownership_acquire(binding->owner, binding->ownership_site,
+                        &binding->ownership_token, hl_cleanup_binding_aggregate, binding))
+                    hl_fail(binding->owner, "no se pudo adquirir la propiedad de un array");
+            }
+            stored = hl_clone_value_in_lane(binding->owner, &binding->aggregate_lane, value);
+        } else {
+            if (binding->ownership_token
+                && !hl_ownership_drop(binding->owner, binding->ownership_token))
+                hl_fail(binding->owner, "no se pudo liberar la propiedad anterior del binding");
+            stored = hl_clone_value(binding->owner, value);
+        }
         free(binding->string_storage);
         binding->string_storage = NULL;
         binding->string_capacity = 0;
         return stored;
     }
-    if (value.tag != HL_STRING) {
-        free(binding->string_storage);
-        binding->string_storage = NULL;
-        binding->string_capacity = 0;
-        return value;
-    }
 
-    /* ScopeRegion uses the lexical owner's arena. OwnedRegion uses a
-     * binding-owned reusable buffer, so repeated writes do not accumulate. */
-    if (storage == HL_STORAGE_SCOPE) {
-        char *scoped = hl_copy_string(binding->owner, value.as.string);
-        free(binding->string_storage);
-        binding->string_storage = NULL;
-        binding->string_capacity = 0;
-        value.as.string = scoped;
-        return value;
-    }
-
-    if (!binding->ownership_token) {
-        if (!hl_ownership_acquire(binding->owner, binding->ownership_site,
-                &binding->ownership_token, hl_cleanup_binding_string, binding))
-            hl_fail(binding->owner, "no se pudo adquirir la propiedad de una cadena");
-        HlOwnershipRecord *record = hl_ownership_find(binding->owner, binding->ownership_token);
-        if (!record || !record->allocation)
-            hl_fail(binding->owner, "registro de propiedad de cadena inconsistente");
-    }
-
-    const size_t size = strlen(value.as.string) + 1;
-    char *incoming = (char *)malloc(size);
-    if (!incoming) hl_fail(binding->owner, "memoria agotada al copiar una cadena");
-    memcpy(incoming, value.as.string, size);
-
-    if (size > binding->string_capacity) {
-        char *grown = (char *)realloc(binding->string_storage, size);
-        if (!grown) {
-            free(incoming);
-            hl_fail(binding->owner, "memoria agotada al ampliar una cadena");
+    if (value.tag == HL_STRING) {
+        if (binding->value.tag == HL_ARRAY && binding->ownership_token) {
+            if (!hl_ownership_drop(binding->owner, binding->ownership_token))
+                hl_fail(binding->owner, "no se pudo liberar la propiedad anterior de array");
         }
-        binding->string_storage = grown;
-        binding->string_capacity = size;
+
+        /* ScopeRegion strings are copied into the lexical owner's arena. */
+        if (storage == HL_STORAGE_SCOPE) {
+            if (binding->ownership_token
+                && !hl_ownership_drop(binding->owner, binding->ownership_token))
+                hl_fail(binding->owner, "no se pudo liberar la propiedad anterior de cadena");
+            char *scoped = hl_copy_string(binding->owner, value.as.string);
+            free(binding->string_storage);
+            binding->string_storage = NULL;
+            binding->string_capacity = 0;
+            value.as.string = scoped;
+            return value;
+        }
+
+        if (!binding->ownership_token) {
+            if (!hl_ownership_acquire(binding->owner, binding->ownership_site,
+                    &binding->ownership_token, hl_cleanup_binding_string, binding))
+                hl_fail(binding->owner, "no se pudo adquirir la propiedad de una cadena");
+            HlOwnershipRecord *record = hl_ownership_find(binding->owner, binding->ownership_token);
+            if (!record || !record->allocation)
+                hl_fail(binding->owner, "registro de propiedad de cadena inconsistente");
+        }
+
+        const size_t size = strlen(value.as.string) + 1;
+        char *incoming = (char *)malloc(size);
+        if (!incoming) hl_fail(binding->owner, "memoria agotada al copiar una cadena");
+        memcpy(incoming, value.as.string, size);
+
+        if (size > binding->string_capacity) {
+            char *grown = (char *)realloc(binding->string_storage, size);
+            if (!grown) {
+                free(incoming);
+                hl_fail(binding->owner, "memoria agotada al ampliar una cadena");
+            }
+            binding->string_storage = grown;
+            binding->string_capacity = size;
+        }
+        memcpy(binding->string_storage, incoming, size);
+        free(incoming);
+        value.as.string = binding->string_storage;
+        return value;
     }
-    memcpy(binding->string_storage, incoming, size);
-    free(incoming);
-    value.as.string = binding->string_storage;
+
+    if (binding->ownership_token
+        && !hl_ownership_drop(binding->owner, binding->ownership_token))
+        hl_fail(binding->owner, "no se pudo liberar la propiedad anterior del binding");
+    free(binding->string_storage);
+    binding->string_storage = NULL;
+    binding->string_capacity = 0;
     return value;
 }
 static void hl_define_planned_site(HlEnv *environment, const char *name, HlValue value,
@@ -488,6 +544,9 @@ static void hl_define_planned_site(HlEnv *environment, const char *name, HlValue
     item->string_capacity = 0;
     item->ownership_site = ownership_site;
     item->ownership_token = 0;
+    item->aggregate_lane = (HlArenaLane){0};
+    item->value.tag = HL_NUMBER;
+    item->value.as.number = 0.0;
     item->value = hl_store_value(item, value, storage);
     item->next = environment->bindings;
     environment->bindings = item;
@@ -569,8 +628,10 @@ static void hl_index_assign_path(HlEnv *environment, const char *name,
         slot = &slot->as.array->items[position];
     }
 
-    /* Deep-clone the replacement into the root binding's owner lane. */
-    *slot = hl_clone_value(binding->owner, value);
+    /* Keep replacement aggregates in the binding's token-owned arena. */
+    *slot = binding->ownership_token
+        ? hl_clone_value_in_lane(binding->owner, &binding->aggregate_lane, value)
+        : hl_clone_value(binding->owner, value);
 }
 
 static void hl_index_assign(HlEnv *environment, const char *name, HlValue index, HlValue value) {

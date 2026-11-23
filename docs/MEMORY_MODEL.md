@@ -409,6 +409,21 @@ El análisis evita emitir promoción cuando el valor leído ya pertenece a un á
 
 **Límite:** estas operaciones son metadata explicable de `MemoryPlan`; ni el backend C ni el evaluador Rust las consumen todavía. El subconjunto HIR actual solo representa escalares, strings, lecturas, operaciones binarias y ternarios. No es aún un análisis de escape transitivo para arrays, mapas, closures, retornos o llamadas. Las asignaciones dinámicas siguen clasificándose conservadoramente en `OwnedRegion`; la promoción no cambia todavía el runtime ni implica transferencia física sin copia.
 
+
+### 2.6.2 Modelo verificable del ciclo de vida del propietario
+
+Se añade en `memory.rs` un modelo neutral de estado para una asignación dinámica:
+
+- `OwnershipTokenId` identifica una asignación lógica; no es un puntero ni un handle del runtime.
+- `Acquire` crea un único token con propietario inicial.
+- `Move` cambia el propietario lógico del mismo token; no duplica el recurso.
+- `Promote` cambia el propietario a uno de vida mayor, conservando la identidad del token.
+- `Drop` marca el token como destruido y conserva una lápida para rechazar un segundo `Drop`.
+
+El `OwnershipLedger` comprueba propietario esperado, rechaza propietarios desconocidos/inline para recursos dinámicos, detecta tokens inexistentes y evita una segunda destrucción. Los errores no mutan el registro. Las pruebas cubren movimiento, promoción, propietario incorrecto, token desconocido y doble destrucción.
+
+**Alcance exacto:** esto es un modelo ejecutable de contrato y una base de pruebas, no un registro de destructores conectado a las asignaciones reales. No demuestra todavía orden LIFO, limpieza ante errores/retornos, ni liberación física exactamente una vez. Tampoco convierte automáticamente una lectura HIR en `Move`: el análisis actual no prueba exclusividad ni ausencia de alias. La integración con runtime C y evaluador Rust queda bloqueada hasta que ambos puedan asociar cada recurso real a un token y consumir las mismas acciones.
+
 ### 2.6 Hechos de uso disponibles en HIR (implementación inicial)
 
 El planificador recoge ahora, por cada binding:

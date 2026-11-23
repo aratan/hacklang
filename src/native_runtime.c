@@ -485,8 +485,7 @@ static HlValue hl_store_value(HlBinding *binding, HlValue value, HlStorageClass 
 
     if (value.tag == HL_STRING) {
         if (binding->value.tag == HL_ARRAY && binding->ownership_token) {
-            if (!hl_ownership_drop(binding->owner, binding->ownership_token))
-                hl_fail(binding->owner, "no se pudo liberar la propiedad anterior de array");
+            hl_release_binding_resource(binding, "no se pudo liberar la propiedad anterior de array");
         }
 
         /* ScopeRegion strings are copied into the lexical owner's arena. */

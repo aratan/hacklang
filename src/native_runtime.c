@@ -851,12 +851,12 @@ static void hl_debug_string(const char *value) {
     for (const unsigned char *cursor = (const unsigned char *)value; cursor && *cursor; ++cursor) {
         switch (*cursor) {
             case '"': fputs("\\\"", stdout); break;
-            case '\\\\': fputs("\\\\\\\\", stdout); break;
-            case '\\n': fputs("\\\\n", stdout); break;
-            case '\\r': fputs("\\\\r", stdout); break;
-            case '\\t': fputs("\\\\t", stdout); break;
+            case '\\': fputs("\\\\", stdout); break;
+            case '\n': fputs("\\n", stdout); break;
+            case '\r': fputs("\\r", stdout); break;
+            case '\t': fputs("\\t", stdout); break;
             default:
-                if (*cursor < 0x20) printf("\\\\u{%x}", (unsigned)*cursor);
+                if (*cursor < 0x20) printf("\\u{%x}", (unsigned)*cursor);
                 else putchar(*cursor);
         }
     }

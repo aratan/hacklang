@@ -915,6 +915,39 @@ mod tests {
     }
 
     #[test]
+    fn scope_stack_plan_reuses_sibling_lanes_but_separates_nested_scopes() {
+        let p = lower(vec![
+            S::Block(vec![S::Let(LetStatement {
+                name: "left".into(), value: A::StringLiteral("left".into()),
+            })]),
+            S::Block(vec![
+                S::Let(LetStatement {
+                    name: "parent".into(), value: A::StringLiteral("parent".into()),
+                }),
+                S::Block(vec![S::Let(LetStatement {
+                    name: "child".into(), value: A::StringLiteral("child".into()),
+                })]),
+            ]),
+        ]);
+        let memory = plan(&p);
+        let scope_for = |name: &str| {
+            let binding = p.bindings.iter().find(|binding| binding.name == name).unwrap();
+            match memory.bindings[&binding.id] {
+                StorageClass::ScopeRegion(scope) => scope,
+                ref other => panic!("expected scope storage for {name}, got {other:?}"),
+            }
+        };
+        let left = memory.scope_stacks[&scope_for("left")];
+        let parent = memory.scope_stacks[&scope_for("parent")];
+        let child = memory.scope_stacks[&scope_for("child")];
+
+        assert_eq!(left.depth, parent.depth);
+        assert_eq!(left.stack, parent.stack, "sibling scopes should reuse a lane");
+        assert_eq!(child.depth, parent.depth + 1);
+        assert_ne!(child.stack, parent.stack, "nested scope must not alias its parent lane");
+    }
+
+    #[test]
     fn frame_layout_materializes_dense_stack_slots() {
         let p = lower(vec![S::Block(vec![S::Let(LetStatement {
             name: "payload".into(), value: A::StringLiteral("value".into()),

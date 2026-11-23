@@ -826,6 +826,21 @@ mod tests {
     fn lower(statements: Vec<S>) -> Program { hir::lower(&AP { statements }).unwrap() }
 
     #[test]
+    fn frame_layout_materializes_dense_stack_slots() {
+        let p = lower(vec![S::Block(vec![S::Let(LetStatement {
+            name: "payload".into(), value: A::StringLiteral("value".into()),
+        })])]);
+        let memory = plan(&p);
+        let layout = frame_layout(&p, &memory).unwrap();
+        for (binding, assignment) in &memory.binding_slots {
+            assert_eq!(layout.stacks[&assignment.stack][assignment.slot as usize], Some(*binding));
+        }
+        for (stack, slots) in &layout.stacks {
+            assert_eq!(slots.len(), memory.stack_slot_counts[stack] as usize);
+        }
+    }
+
+    #[test]
     fn slot_plan_validator_accepts_planner_output_and_rejects_bad_counts() {
         let p = lower(vec![S::Block(vec![S::Let(LetStatement {
             name: "payload".into(), value: A::StringLiteral("value".into()),

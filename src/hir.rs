@@ -52,7 +52,7 @@ pub struct Statement {
 pub enum StmtKind {
     Let { binding: BindingId, value: Expression },
     Assign { binding: BindingId, value: Expression },
-    IndexAssign { binding: BindingId, index: Expression, value: Expression },
+    IndexAssign { binding: BindingId, indices: Vec<Expression>, value: Expression },
     Print(Expression),
     Block { scope: ScopeId, statements: Vec<Statement> },
     If {
@@ -212,7 +212,10 @@ impl Lowerer {
             }
             AstStmt::IndexAssign(assignment) => {
                 let binding = self.resolve(&assignment.name)?;
-                StmtKind::IndexAssign { binding, index: self.expr(&assignment.index)?, value: self.expr(&assignment.value)? }
+                let indices = assignment.indices.iter()
+                    .map(|index| self.expr(index))
+                    .collect::<Result<Vec<_>, _>>()?;
+                StmtKind::IndexAssign { binding, indices, value: self.expr(&assignment.value)? }
             }
             AstStmt::Print(print) => StmtKind::Print(self.expr(&print.value)?),
             AstStmt::Block(statements) => {

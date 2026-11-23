@@ -308,10 +308,11 @@ static void ownership_cleanup(void *context) {
 }
 int main(void) {
     int calls = 0;
-    uint64_t token = 0, repeated_token = 0, cleanup_token = 0;
+    uint64_t token = 0, transferred_token = 0, repeated_token = 0, cleanup_token = 0;
     HlEnv *root = hl_env_new(NULL);
     HlEnv *child = hl_env_new(root);
     OwnershipProbe probe = { child, 0, &calls, 0 };
+    OwnershipProbe transferred = { child, 0, &calls, 0 };
     if (!hl_ownership_acquire(child, 41, &token, ownership_cleanup, &probe)) return 10;
     probe.token = token;
     if (!hl_ownership_is_active(child, token)) return 11;
@@ -322,6 +323,14 @@ int main(void) {
     if (!hl_ownership_drop(root, token)) return 16;
     if (hl_ownership_drop(root, token)) return 17;
     if (calls != 0 || hl_ownership_is_active(root, token)) return 18;
+
+    /* A transferred registration must survive destruction of its old owner
+       and execute exactly once when the new owner is destroyed. */
+    if (!hl_ownership_acquire(child, 43, &transferred_token, ownership_cleanup, &transferred)) return 26;
+    transferred.token = transferred_token;
+    if (!hl_ownership_transfer(child, root, transferred_token)) return 27;
+    if (hl_ownership_transfer(child, root, transferred_token)) return 28;
+    if (hl_ownership_drop(child, transferred_token)) return 29;
 
     /* The same static compiler site can execute repeatedly (loop iterations
        or recursion), while each dynamic resource receives a fresh handle. */
@@ -337,8 +346,9 @@ int main(void) {
     hl_env_free(child);
     if (calls != 2 || !cleanup_probe.saw_inactive || !repeated.saw_inactive) return 23;
     if (hl_ownership_is_active(root, cleanup_token)) return 24;
+    if (!hl_ownership_is_active(root, transferred_token) || transferred.saw_inactive) return 30;
     hl_env_free(root);
-    if (calls != 2) return 25;
+    if (calls != 3 || !transferred.saw_inactive) return 25;
     return 0;
 }
 "#

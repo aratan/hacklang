@@ -846,6 +846,56 @@ static const char *hl_to_text(HlEnv *environment, HlValue value) {
     hl_number_text(value.as.number, buffer, sizeof(buffer));
     return hl_copy_string(environment, buffer);
 }
+static void hl_debug_string(const char *value) {
+    putchar('"');
+    for (const unsigned char *cursor = (const unsigned char *)value; cursor && *cursor; ++cursor) {
+        switch (*cursor) {
+            case '"': fputs("\\\"", stdout); break;
+            case '\\\\': fputs("\\\\\\\\", stdout); break;
+            case '\\n': fputs("\\\\n", stdout); break;
+            case '\\r': fputs("\\\\r", stdout); break;
+            case '\\t': fputs("\\\\t", stdout); break;
+            default:
+                if (*cursor < 0x20) printf("\\\\u{%x}", (unsigned)*cursor);
+                else putchar(*cursor);
+        }
+    }
+    putchar('"');
+}
+static void hl_debug_value(HlValue value) {
+    switch (value.tag) {
+        case HL_NUMBER: {
+            char buffer[512];
+            snprintf(buffer, sizeof(buffer), "%.17g", value.as.number);
+            if (isfinite(value.as.number) && !strchr(buffer, '.') && !strchr(buffer, 'e') && !strchr(buffer, 'E'))
+                strncat(buffer, ".0", sizeof(buffer) - strlen(buffer) - 1);
+            printf("Number(%s)", buffer);
+            break;
+        }
+        case HL_BOOL: printf("Bool(%s)", value.as.boolean ? "true" : "false"); break;
+        case HL_STRING: fputs("String(", stdout); hl_debug_string(value.as.string ? value.as.string : ""); putchar(')'); break;
+        case HL_ARRAY:
+            fputs("Array([", stdout);
+            if (value.as.array) for (size_t i = 0; i < value.as.array->length; ++i) {
+                if (i) fputs(", ", stdout);
+                hl_debug_value(value.as.array->items[i]);
+            }
+            fputs("])", stdout);
+            break;
+        case HL_MAP:
+            fputs("Map([", stdout);
+            if (value.as.map) for (size_t i = 0; i < value.as.map->length; ++i) {
+                if (i) fputs(", ", stdout);
+                putchar('(');
+                hl_debug_value(value.as.map->entries[i].key);
+                fputs(", ", stdout);
+                hl_debug_value(value.as.map->entries[i].value);
+                putchar(')');
+            }
+            fputs("])", stdout);
+            break;
+    }
+}
 static void hl_print(HlValue value) {
     switch (value.tag) {
         case HL_NUMBER: {
@@ -856,8 +906,8 @@ static void hl_print(HlValue value) {
         }
         case HL_BOOL: puts(value.as.boolean ? "true" : "false"); break;
         case HL_STRING: puts(value.as.string); break;
-        case HL_ARRAY: puts("<array>"); break;
-        case HL_MAP: puts("<map>"); break;
+        case HL_ARRAY:
+        case HL_MAP: hl_debug_value(value); putchar('\\n'); break;
     }
 }
 static int hl_is_string_number_pair(HlValue left, HlValue right) {

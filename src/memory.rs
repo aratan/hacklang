@@ -261,7 +261,7 @@ impl OwnershipLedger {
 
 /// Backend-neutral lifetime extension discovered for one HIR assignment.
 /// The native backend consumes this for string promotion-by-copy; it is not
-/// a general graph move or ownership implementation.
+/// aggregate/string ownership registration or a general graph move.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryOperationKind { Promote }
 
@@ -285,8 +285,8 @@ pub struct MemoryOperation {
 pub struct MemoryPlan {
     pub bindings: HashMap<BindingId, StorageClass>,
     /// Stable compiler-site identities for bindings that own dynamic resources.
-    /// Stack assignments for scopes that own at least one scope-region value.
-    /// This is planning metadata only; the current C runtime does not consume it.
+    /// The native runtime pairs these sites with dynamic handles and cleanup
+    /// registrations for owned strings and aggregate graphs.
     pub scope_stacks: HashMap<ScopeId, ScopeStackPlan>,
     /// Read/write facts for diagnostics and future escape analysis.
     pub usage: HashMap<BindingId, BindingUsage>,

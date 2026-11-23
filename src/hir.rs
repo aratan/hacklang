@@ -5,7 +5,7 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ScopeId(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BindingId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -315,7 +315,6 @@ impl Lowerer {
                 }
                 StmtKind::Continue
             }
-            other => return Err(LowerError { message: format!("Sentencia todavía no admitida en HIR inicial: {:?}", other) }),
         };
         let id = StmtId(self.next_stmt);
         self.next_stmt += 1;

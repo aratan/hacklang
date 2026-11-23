@@ -269,10 +269,12 @@ pub enum MemoryOperationKind { Promote }
 pub struct MemoryOperation {
     pub statement: StmtId,
     pub kind: MemoryOperationKind,
+    /// The destination binding's planned ownership site; dynamic handles are allocated at runtime.
     pub origin: ValueOrigin,
     pub source_owner: StorageOwner,
     pub destination_owner: StorageOwner,
     pub destination: BindingId,
+    pub ownership_token: OwnershipTokenId,
     pub source: Option<BindingId>,
     pub produced_in: ScopeId,
     pub destination_scope: ScopeId,
@@ -676,6 +678,7 @@ fn collect_operations(
     scope: ScopeId,
     program: &Program,
     bindings: &HashMap<BindingId, StorageClass>,
+    ownership_tokens: &HashMap<BindingId, OwnershipTokenId>,
     operations: &mut Vec<MemoryOperation>,
 ) {
     for statement in statements {
@@ -716,6 +719,8 @@ fn collect_operations(
                         source_owner,
                         destination_owner: StorageOwner::Binding(*binding),
                         destination: *binding,
+                        ownership_token: *ownership_tokens.get(binding)
+                            .expect("owned promotion destination must have a planned ownership token"),
                         source,
                         produced_in: scope,
                         destination_scope,
@@ -727,12 +732,12 @@ fn collect_operations(
                     });
                 }
             }
-            StmtKind::Block { scope: child, statements } => collect_operations(statements, *child, program, bindings, operations),
+            StmtKind::Block { scope: child, statements } => collect_operations(statements, *child, program, bindings, ownership_tokens, operations),
             StmtKind::If { then_scope, then_body, else_scope, else_body, .. } => {
-                collect_operations(then_body, *then_scope, program, bindings, operations);
-                if let Some(child) = else_scope { collect_operations(else_body, *child, program, bindings, operations); }
+                collect_operations(then_body, *then_scope, program, bindings, ownership_tokens, operations);
+                if let Some(child) = else_scope { collect_operations(else_body, *child, program, bindings, ownership_tokens, operations); }
             }
-            StmtKind::While { scope: child, body, .. } => collect_operations(body, *child, program, bindings, operations),
+            StmtKind::While { scope: child, body, .. } => collect_operations(body, *child, program, bindings, ownership_tokens, operations),
             StmtKind::Let { .. } | StmtKind::Print(_) | StmtKind::Break | StmtKind::Continue => {}
         }
     }
@@ -762,6 +767,11 @@ pub fn validate_memory_operations(program: &Program, plan: &MemoryPlan) -> Resul
     collect(&program.statements, ScopeId(0), &mut assignments);
     let mut seen = std::collections::HashSet::new();
     for operation in &plan.operations {
+        let expected_token = plan.ownership_tokens.get(&operation.destination)
+            .ok_or_else(|| format!("token de propiedad ausente para BindingId {}", operation.destination.0))?;
+        if operation.ownership_token != *expected_token {
+            return Err(format!("token de propiedad incoherente en promoción StmtId {}", operation.statement.0));
+        }
         if !seen.insert(operation.statement) {
             return Err(format!("promoción duplicada para StmtId {}", operation.statement.0));
         }
@@ -950,13 +960,13 @@ pub fn plan(program: &Program) -> MemoryPlan {
     let interference = build_interference(&cfg, &bindings, program, &scope_stacks);
     let (binding_slots, stack_slot_counts) =
         assign_binding_slots(&interference, &bindings, program, &scope_stacks);
-    let mut operations = Vec::new();
-    collect_operations(&program.statements, ScopeId(0), program, &bindings, &mut operations);
-    // Binding IDs are stable within this HIR program; zero is reserved for legacy fixtures.
-    let ownership_tokens = bindings.iter()
+    // One deterministic compiler-site identity per owned binding. Runtime handles remain dynamic.
+    let ownership_tokens: HashMap<_, _> = bindings.iter()
         .filter_map(|(binding, class)| matches!(class, StorageClass::OwnedRegion)
             .then_some((*binding, OwnershipTokenId(u64::from(binding.0) + 1))))
         .collect();
+    let mut operations = Vec::new();
+    collect_operations(&program.statements, ScopeId(0), program, &bindings, &ownership_tokens, &mut operations);
     MemoryPlan { bindings, scope_stacks, usage, cfg, interference, binding_slots, stack_slot_counts, operations, ownership_tokens }
 }
 

@@ -14,6 +14,9 @@ pub struct ExprId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StmtId(pub u32);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct FunctionId(pub u32);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryOp { Add, Sub, Mul, Div, Less, Greater, Equal, NotEqual }
 
@@ -22,6 +25,32 @@ pub struct Program {
     pub statements: Vec<Statement>,
     pub scopes: Vec<Scope>,
     pub bindings: Vec<Binding>,
+    pub functions: Vec<Function>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Function {
+    pub id: FunctionId,
+    pub parent: Option<FunctionId>,
+    pub scope: ScopeId,
+    pub params: Vec<BindingId>,
+    pub body: FunctionBody,
+    pub captures: Vec<Capture>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct FunctionBody {
+    /// Expression-bodied lambdas return this value implicitly.
+    pub expression: Option<Expression>,
+    /// Block-bodied lambdas execute statements and return explicitly.
+    pub statements: Vec<Statement>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Capture {
+    pub binding: BindingId,
+    pub reads: bool,
+    pub writes: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -32,7 +61,7 @@ pub struct Scope {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScopeKind { Module, Block, Branch, Loop }
+pub enum ScopeKind { Module, Block, Branch, Loop, Function }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Binding {
@@ -40,6 +69,7 @@ pub struct Binding {
     pub scope: ScopeId,
     pub name: String,
     pub mutable: bool,
+    pub function_owner: Option<FunctionId>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -65,6 +95,7 @@ pub enum StmtKind {
     While { scope: ScopeId, condition: Expression, body: Vec<Statement> },
     Break,
     Continue,
+    Return(Expression),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -89,6 +120,8 @@ pub enum ExprKind {
     Map(Vec<(Expression, Expression)>),
     Length(Box<Expression>),
     Index { target: Box<Expression>, index: Box<Expression> },
+    Closure(FunctionId),
+    Call { callee: Box<Expression>, args: Vec<Expression> },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -112,6 +145,8 @@ struct Lowerer {
     next_expr: u32,
     next_stmt: u32,
     loop_depth: usize,
+    functions: Vec<Function>,
+    function_stack: Vec<FunctionId>,
 }
 
 impl Lowerer {
@@ -124,6 +159,8 @@ impl Lowerer {
             next_expr: 0,
             next_stmt: 0,
             loop_depth: 0,
+            functions: Vec::new(),
+            function_stack: Vec::new(),
         }
     }
 
@@ -150,7 +187,10 @@ impl Lowerer {
     fn declare(&mut self, name: &str) -> BindingId {
         let id = BindingId(self.bindings.len() as u32);
         let scope = self.current_scope();
-        self.bindings.push(Binding { id, scope, name: name.to_string(), mutable: true });
+        self.bindings.push(Binding {
+            id, scope, name: name.to_string(), mutable: true,
+            function_owner: self.function_stack.last().copied(),
+        });
         self.symbols.last_mut().expect("module scope exists").insert(name.to_string(), id);
         id
     }
@@ -187,11 +227,17 @@ impl Lowerer {
                 when_true: Box::new(self.expr(true_branch)?),
                 when_false: Box::new(self.expr(false_branch)?),
             },
-            AstExpr::Lambda { .. } => return Err(LowerError { message: "Las funciones y closures todavía no están soportadas por HIR nativa".into() }),
+            AstExpr::Lambda { params, body } => {
+                let function = self.lower_function(params, body)?;
+                ExprKind::Closure(function)
+            }
             AstExpr::FunctionCall { func, args }
                 if matches!(func.as_ref(), AstExpr::Identifier(name) if name == "len") && args.len() == 1 =>
                     ExprKind::Length(Box::new(self.expr(&args[0])?)),
-            AstExpr::FunctionCall { .. } => return Err(LowerError { message: "Las llamadas a funciones todavía no están soportadas por HIR nativa".into() }),
+            AstExpr::FunctionCall { func, args } => ExprKind::Call {
+                callee: Box::new(self.expr(func)?),
+                args: args.iter().map(|arg| self.expr(arg)).collect::<Result<_, _>>()?,
+            },
             AstExpr::Array(items) => ExprKind::Array(items.iter().map(|item| self.expr(item)).collect::<Result<_, _>>()?),
             AstExpr::Map(items) => ExprKind::Map(items.iter().map(|(key, value)| Ok((self.expr(key)?, self.expr(value)?))).collect::<Result<_, LowerError>>()?),
             AstExpr::Index { target, index } => ExprKind::Index { target: Box::new(self.expr(target)?), index: Box::new(self.expr(index)?) },
@@ -222,6 +268,12 @@ impl Lowerer {
                 StmtKind::IndexAssign { binding, indices, value: self.expr(&assignment.value)? }
             }
             AstStmt::Print(print) => StmtKind::Print(self.expr(&print.value)?),
+            AstStmt::Return(value) => {
+                if self.function_stack.is_empty() {
+                    return Err(LowerError { message: "return fuera de una función durante AST→HIR".into() });
+                }
+                StmtKind::Return(self.expr(value)?)
+            },
             AstStmt::Block(statements) => {
                 let scope = self.enter_scope(ScopeKind::Block);
                 let result = self.statements(statements);
@@ -273,12 +325,56 @@ impl Lowerer {
     fn statements(&mut self, ast: &[AstStmt]) -> Result<Vec<Statement>, LowerError> {
         ast.iter().map(|statement| self.stmt(statement)).collect()
     }
+
+    fn lower_function(&mut self, params: &[String], body: &AstExpr) -> Result<FunctionId, LowerError> {
+        let id = FunctionId(self.functions.len() as u32);
+        let parent = self.function_stack.last().copied();
+        let scope = self.enter_scope(ScopeKind::Function);
+        self.functions.push(Function {
+            id, parent, scope, params: Vec::with_capacity(params.len()),
+            body: FunctionBody::default(), captures: Vec::new(),
+        });
+        self.function_stack.push(id);
+        let previous_loop_depth = self.loop_depth;
+        self.loop_depth = 0;
+
+        let result = (|| {
+            for name in params {
+                let binding = self.declare(name);
+                self.functions[id.0 as usize].params.push(binding);
+            }
+            match body {
+                AstExpr::Block(statements) => Ok(FunctionBody {
+                    expression: None,
+                    statements: self.statements(statements)?,
+                }),
+                expression => Ok(FunctionBody {
+                    expression: Some(self.expr(expression)?),
+                    statements: Vec::new(),
+                }),
+            }
+        })();
+
+        self.loop_depth = previous_loop_depth;
+        self.function_stack.pop();
+        self.leave_scope();
+        self.functions[id.0 as usize].body = result?;
+        Ok(id)
+    }
 }
 
 pub fn lower(program: &AstProgram) -> Result<Program, LowerError> {
     let mut lowerer = Lowerer::new();
     let statements = lowerer.statements(&program.statements)?;
-    Ok(Program { statements, scopes: lowerer.scopes, bindings: lowerer.bindings })
+    let mut program = Program {
+        statements,
+        scopes: lowerer.scopes,
+        bindings: lowerer.bindings,
+        functions: lowerer.functions,
+    };
+    program.functions = crate::capture::analyze(&program)
+        .map_err(|error| LowerError { message: error.message })?;
+    Ok(program)
 }
 
 #[cfg(test)]

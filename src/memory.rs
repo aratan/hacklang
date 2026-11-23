@@ -328,26 +328,6 @@ fn is_dynamic_string(expr: &Expression, bindings: &HashMap<BindingId, StorageCla
     }
 }
 
-fn mark_assignments(statements: &[Statement], classes: &mut HashMap<BindingId, StorageClass>) {
-    for statement in statements {
-        match &statement.kind {
-            StmtKind::Assign { binding, value } => {
-                match is_dynamic_string(value, classes) {
-                    Some(true) | None => { classes.insert(*binding, StorageClass::OwnedRegion); }
-                    Some(false) => {}
-                }
-            }
-            StmtKind::Block { statements, .. } => mark_assignments(statements, classes),
-            StmtKind::If { then_body, else_body, .. } => {
-                mark_assignments(then_body, classes);
-                mark_assignments(else_body, classes);
-            }
-            StmtKind::While { body, .. } => mark_assignments(body, classes),
-            StmtKind::Let { .. } | StmtKind::Print(_) | StmtKind::Break | StmtKind::Continue => {}
-        }
-    }
-}
-
 fn scope_depth(program: &Program, scope: ScopeId) -> u32 {
     let mut depth = 0;
     let mut current = program.scopes[scope.0 as usize].parent;
@@ -562,12 +542,16 @@ pub fn plan(program: &Program) -> MemoryPlan {
                     visit(else_body, program, result);
                 }
                 StmtKind::While { body, .. } => visit(body, program, result),
-                StmtKind::Assign { .. } | StmtKind::Print(_) | StmtKind::Break | StmtKind::Continue => {}
+                StmtKind::Assign { binding, value } => {
+                    if is_dynamic_string(value, result) != Some(false) {
+                        result.insert(*binding, StorageClass::OwnedRegion);
+                    }
+                }
+                StmtKind::Print(_) | StmtKind::Break | StmtKind::Continue => {}
             }
         }
     }
     visit(&program.statements, program, &mut bindings);
-    mark_assignments(&program.statements, &mut bindings);
     let scope_stacks = plan_scope_stacks(program, &bindings);
     let mut usage = HashMap::new();
     let mut position = 0;
@@ -978,6 +962,22 @@ mod tests {
         ]);
         let memory = plan(&p);
         assert_eq!(memory.bindings[&BindingId(1)], StorageClass::Inline);
+    }
+
+    #[test]
+    fn assignment_facts_are_available_to_later_binding_initializers() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "source".into(), value: A::NumberLiteral(1.0) }),
+            S::Assign(crate::ast::AssignStatement { name: "source".into(), value: A::StringLiteral("now dynamic".into()) }),
+            S::Let(LetStatement { name: "copy".into(), value: A::Infix {
+                left: Box::new(A::Identifier("source".into())),
+                operator: crate::lexer::Token::Plus,
+                right: Box::new(A::StringLiteral("!".into())),
+            }}),
+        ]);
+        let memory = plan(&p);
+        assert_eq!(memory.bindings[&BindingId(0)], StorageClass::OwnedRegion);
+        assert_eq!(memory.bindings[&BindingId(1)], StorageClass::ScopeRegion(ScopeId(0)));
     }
 
 }

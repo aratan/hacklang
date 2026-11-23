@@ -112,7 +112,7 @@ fn arrays_promoted_from_child_scopes_match_interpreter() {
         "array_scope_promotion",
         r#"
 let result = [[0, 0]];
-{
+if (true) {
     let temporary = [[7, 8], [9, 10]];
     result = temporary;
 }

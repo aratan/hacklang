@@ -9,6 +9,7 @@ use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_FINALIZER_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_REGION_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RegionFinalizerId(pub u64);
@@ -21,6 +22,8 @@ struct TrackedFinalizer {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RegionMark {
+    region_id: u64,
+    mark_id: u64,
     cursor: usize,
     finalizers: u64,
 }
@@ -33,12 +36,28 @@ pub enum RegionError {
     InvalidMark,
 }
 
-#[derive(Default)]
 pub struct Region {
+    id: u64,
     bytes: Vec<u8>,
     cursor: usize,
     tracked: Vec<TrackedFinalizer>,
     next_finalizer: u64,
+    next_mark_id: u64,
+    active_marks: Vec<u64>,
+}
+
+impl Default for Region {
+    fn default() -> Self {
+        Self {
+            id: NEXT_REGION_ID.fetch_add(1, Ordering::Relaxed),
+            bytes: Vec::new(),
+            cursor: 0,
+            tracked: Vec::new(),
+            next_finalizer: 0,
+            next_mark_id: 0,
+            active_marks: Vec::new(),
+        }
+    }
 }
 
 impl Region {
@@ -56,8 +75,13 @@ impl Region {
         self.bytes.len()
     }
 
-    pub fn mark(&self) -> RegionMark {
+    pub fn mark(&mut self) -> RegionMark {
+        let mark_id = self.next_mark_id;
+        self.next_mark_id = self.next_mark_id.saturating_add(1);
+        self.active_marks.push(mark_id);
         RegionMark {
+            region_id: self.id,
+            mark_id,
             cursor: self.cursor,
             finalizers: self.next_finalizer,
         }
@@ -109,13 +133,20 @@ impl Region {
 
     /// Rewind to a mark. Registrations created after it are destroyed LIFO.
     pub fn restore(&mut self, mark: RegionMark) -> Result<(), RegionError> {
-        if mark.cursor > self.cursor || mark.finalizers > self.next_finalizer {
+        if mark.region_id != self.id
+            || !self.active_marks.contains(&mark.mark_id)
+            || mark.cursor > self.cursor
+            || mark.finalizers > self.next_finalizer
+        {
             return Err(RegionError::InvalidMark);
         }
         while self.tracked.last().is_some_and(|entry| entry.sequence >= mark.finalizers) {
             drop(self.tracked.pop());
         }
         self.cursor = mark.cursor;
+        // A rewind invalidates checkpoints created later on this allocation
+        // timeline, while retaining this mark and all earlier checkpoints.
+        self.active_marks.retain(|id| *id <= mark.mark_id);
         Ok(())
     }
 
@@ -409,6 +440,31 @@ mod tests {
         assert_eq!(region.used(), 0);
         assert!(region.alloc_bytes(16, 8).is_ok());
         assert!(region.restore(mark).is_ok());
+    }
+
+    #[test]
+    fn marks_cannot_be_restored_into_another_region() {
+        let mut source = Region::new();
+        let foreign_mark = source.mark();
+        let mut target = Region::new();
+        target.alloc_bytes(16, 8).unwrap();
+
+        assert_eq!(target.restore(foreign_mark), Err(RegionError::InvalidMark));
+        assert_eq!(target.used(), 16);
+    }
+
+    #[test]
+    fn restoring_an_older_mark_invalidates_later_checkpoints() {
+        let mut region = Region::new();
+        let outer = region.mark();
+        region.alloc_bytes(8, 8).unwrap();
+        let stale = region.mark();
+
+        region.restore(outer).unwrap();
+        let replacement = region.alloc_bytes(8, 8).unwrap();
+        assert_eq!(region.restore(stale), Err(RegionError::InvalidMark));
+        assert_eq!(region.read(replacement.clone()), Some(&[0; 8][..]));
+        assert_eq!(region.used(), replacement.end);
     }
 
     #[test]

@@ -451,20 +451,20 @@ static void hl_define_planned_site(HlEnv *environment, const char *name, HlValue
 static void hl_define_planned(HlEnv *environment, const char *name, HlValue value, HlStorageClass storage) {
     hl_define_planned_site(environment, name, value, storage, 0);
 }
-static void hl_assign_planned(HlEnv *environment, const char *name, HlValue value, HlStorageClass storage) {
+static void hl_assign_planned_site(HlEnv *environment, const char *name, HlValue value,
+        HlStorageClass storage, uint64_t ownership_site) {
     HlBinding *item = hl_find(environment, name);
     if (!item) {
         char message[512];
         snprintf(message, sizeof(message), "Variable '%s' no definida para asignación", name);
         hl_fail(environment, message);
     }
+    if (ownership_site && item->ownership_site != ownership_site)
+        hl_fail(environment, "site de propiedad incoherente en asignación planificada");
     item->value = hl_store_value(item, value, storage);
 }
-
-/* A planned lifetime extension is copy-based for strings: the destination
- * owns independent storage before the source region can be rewound. */
-static void hl_assign_promoted_copy(HlEnv *environment, const char *name, HlValue value) {
-    hl_assign_planned(environment, name, value, HL_STORAGE_OWNED);
+static void hl_assign_planned(HlEnv *environment, const char *name, HlValue value, HlStorageClass storage) {
+    hl_assign_planned_site(environment, name, value, storage, 0);
 }
 /* Compatibility defaults for runtime-only fixtures that do not carry HIR. */
 static void hl_define(HlEnv *environment, const char *name, HlValue value) {

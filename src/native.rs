@@ -1201,4 +1201,83 @@ int main(void) {
         let _ = fs::remove_dir_all(directory);
     }
 
+    #[test]
+    fn c_runtime_maps_deep_clone_compare_keys_and_insert_under_owned_lifetime() {
+        let directory = temporary_directory().expect("temporary directory");
+        let c_file = directory.join("map_runtime.c");
+        let executable = directory.join("map_runtime");
+        let source = format!(
+            "{}\\n{}",
+            include_str!("native_runtime.c"),
+            r#"
+int main(void) {
+    HlEnv *environment = hl_env_new(NULL);
+    HlValue nested_items[2] = { hl_number(1), hl_string(environment, "nested") };
+    HlValue array_key_items[2] = { hl_number(3), hl_number(4) };
+    HlMapEntry entries[2] = {
+        { hl_string(environment, "items"), hl_array(environment, nested_items, 2) },
+        { hl_array(environment, array_key_items, 2), hl_string(environment, "array-key") }
+    };
+    HlValue original = hl_map(environment, entries, 2);
+    hl_define_planned_site(environment, "data", original, HL_STORAGE_OWNED, 91);
+    HlBinding *binding = hl_find(environment, "data");
+    if (!binding || binding->value.tag != HL_MAP || binding->value.as.map->length != 2
+        || !binding->ownership_token || !hl_ownership_is_active(environment, binding->ownership_token)) return 10;
+
+    HlValue copied = hl_get(environment, "data");
+    copied.as.map->entries[0].value.as.array->items[0] = hl_number(99);
+    if (binding->value.as.map->entries[0].value.as.array->items[0].as.number != 1) return 11;
+
+    HlValue lookup_key_items[2] = { hl_number(3), hl_number(4) };
+    HlValue lookup_key = hl_array(environment, lookup_key_items, 2);
+    HlValue found = hl_index(environment, binding->value, lookup_key);
+    if (found.tag != HL_STRING || strcmp(found.as.string, "array-key") != 0) return 12;
+
+    HlValue replacement_items[2] = { hl_number(8), hl_number(9) };
+    hl_index_assign(environment, "data", hl_string(environment, "items"),
+        hl_array(environment, replacement_items, 2));
+    binding = hl_find(environment, "data");
+    if (binding->value.as.map->length != 2
+        || binding->value.as.map->entries[0].value.as.array->items[0].as.number != 8) return 13;
+
+    hl_index_assign(environment, "data", hl_string(environment, "new"), hl_bool(1));
+    binding = hl_find(environment, "data");
+    if (binding->value.as.map->length != 3) return 14;
+    HlValue inserted = hl_index(environment, binding->value, hl_string(environment, "new"));
+    if (inserted.tag != HL_BOOL || !inserted.as.boolean) return 15;
+
+    hl_env_free(environment);
+    return 0;
+}
+"#
+        );
+        fs::write(&c_file, source).expect("write C map runtime test");
+        let compiler = select_c_compiler().expect("C compiler");
+        let build = Command::new(&compiler)
+            .arg("-std=c11")
+            .arg("-O1")
+            .arg("-g")
+            .arg("-fsanitize=address,undefined")
+            .arg("-fno-omit-frame-pointer")
+            .arg(&c_file)
+            .arg("-o")
+            .arg(&executable)
+            .arg("-lm")
+            .output()
+            .expect("compile map runtime test with sanitizers");
+        assert!(
+            build.status.success(),
+            "sanitized map runtime compilation failed: {}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let run = Command::new(&executable).output().expect("run sanitized map runtime test");
+        assert!(
+            run.status.success(),
+            "map runtime test failed with code {:?}: {}",
+            run.status.code(),
+            String::from_utf8_lossy(&run.stderr)
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
+
 }

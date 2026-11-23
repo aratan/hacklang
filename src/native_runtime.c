@@ -11,6 +11,7 @@
 #include <string.h>
 
 typedef enum { HL_NUMBER, HL_BOOL, HL_STRING } HlTag;
+typedef enum { HL_STORAGE_SCOPE, HL_STORAGE_OWNED } HlStorageClass;
 typedef struct {
     HlTag tag;
     union { double number; int boolean; const char *string; } as;
@@ -254,11 +255,22 @@ static HlBinding *hl_find(HlEnv *environment, const char *name) {
 /* Store a value in its binding. Strings use one growable owner buffer,
  * avoiding one permanent arena allocation per reassignment. Copy through a
  * temporary first because the input may alias this binding's current buffer. */
-static HlValue hl_store_value(HlBinding *binding, HlValue value) {
+static HlValue hl_store_value(HlBinding *binding, HlValue value, HlStorageClass storage) {
     if (value.tag != HL_STRING) {
         free(binding->string_storage);
         binding->string_storage = NULL;
         binding->string_capacity = 0;
+        return value;
+    }
+
+    /* ScopeRegion uses the lexical owner's arena. OwnedRegion uses a
+     * binding-owned reusable buffer, so repeated writes do not accumulate. */
+    if (storage == HL_STORAGE_SCOPE) {
+        char *scoped = hl_copy_string(binding->owner, value.as.string);
+        free(binding->string_storage);
+        binding->string_storage = NULL;
+        binding->string_capacity = 0;
+        value.as.string = scoped;
         return value;
     }
 
@@ -281,10 +293,10 @@ static HlValue hl_store_value(HlBinding *binding, HlValue value) {
     value.as.string = binding->string_storage;
     return value;
 }
-static void hl_define(HlEnv *environment, const char *name, HlValue value) {
+static void hl_define_planned(HlEnv *environment, const char *name, HlValue value, HlStorageClass storage) {
     HlBinding *item = hl_find_local(environment, name);
     if (item) {
-        item->value = hl_store_value(item, value);
+        item->value = hl_store_value(item, value, storage);
         return;
     }
     item = (HlBinding *)hl_alloc(environment, sizeof(HlBinding));
@@ -292,18 +304,25 @@ static void hl_define(HlEnv *environment, const char *name, HlValue value) {
     item->owner = environment;
     item->string_storage = NULL;
     item->string_capacity = 0;
-    item->value = hl_store_value(item, value);
+    item->value = hl_store_value(item, value, storage);
     item->next = environment->bindings;
     environment->bindings = item;
 }
-static void hl_assign(HlEnv *environment, const char *name, HlValue value) {
+static void hl_assign_planned(HlEnv *environment, const char *name, HlValue value, HlStorageClass storage) {
     HlBinding *item = hl_find(environment, name);
     if (!item) {
         char message[512];
         snprintf(message, sizeof(message), "Variable '%s' no definida para asignación", name);
         hl_fail(environment, message);
     }
-    item->value = hl_store_value(item, value);
+    item->value = hl_store_value(item, value, storage);
+}
+/* Compatibility defaults for runtime-only fixtures that do not carry HIR. */
+static void hl_define(HlEnv *environment, const char *name, HlValue value) {
+    hl_define_planned(environment, name, value, HL_STORAGE_OWNED);
+}
+static void hl_assign(HlEnv *environment, const char *name, HlValue value) {
+    hl_assign_planned(environment, name, value, HL_STORAGE_OWNED);
 }
 static HlValue hl_get(HlEnv *environment, const char *name) {
     HlBinding *item = hl_find(environment, name);

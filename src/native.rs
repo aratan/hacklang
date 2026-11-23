@@ -95,6 +95,68 @@ mod tests {
     };
 
     #[test]
+    fn c_runtime_cleanup_callbacks_run_lifo_and_transfer_without_duplication() {
+        let directory = temporary_directory().expect("temporary directory");
+        let c_file = directory.join("cleanup_runtime.c");
+        let executable = directory.join("cleanup_runtime");
+        let source = format!(
+            "{}\n{}",
+            include_str!("native_runtime.c"),
+            r#"
+typedef struct { int *order; int digit; } CleanupProbe;
+static void record_cleanup(void *context) {
+    CleanupProbe *probe = (CleanupProbe *)context;
+    *probe->order = *probe->order * 10 + probe->digit;
+}
+int main(void) {
+    int order = 0;
+    CleanupProbe one = { &order, 1 };
+    CleanupProbe two = { &order, 2 };
+    CleanupProbe three = { &order, 3 };
+    CleanupProbe four = { &order, 4 };
+    HlEnv *outer = hl_env_new(NULL);
+    HlEnv *inner = hl_env_new(outer);
+    HlAllocation *first = hl_env_defer(inner, record_cleanup, &one);
+    HlAllocation *moved = hl_env_defer(inner, record_cleanup, &two);
+    HlAllocation *cancelled = hl_env_defer(inner, record_cleanup, &three);
+    if (!first || !moved || !cancelled) return 10;
+    if (!hl_env_transfer(inner, outer, moved)) return 11;
+    if (!hl_env_cancel(inner, cancelled)) return 12;
+    if (!hl_env_defer(inner, record_cleanup, &four)) return 13;
+    hl_env_free(inner);
+    if (order != 41) return 14;
+    hl_env_free(outer);
+    if (order != 412) return 15;
+    return 0;
+}
+"#
+        );
+        fs::write(&c_file, source).expect("write C runtime test");
+        let compiler = select_c_compiler().expect("C compiler");
+        let build = Command::new(&compiler)
+            .arg("-std=c11")
+            .arg("-O2")
+            .arg(&c_file)
+            .arg("-o")
+            .arg(&executable)
+            .arg("-lm")
+            .output()
+            .expect("compile C runtime test");
+        assert!(
+            build.status.success(),
+            "C runtime test compilation failed: {}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let run = Command::new(&executable).output().expect("run C runtime test");
+        assert!(
+            run.status.success(),
+            "C cleanup test failed with code {:?}",
+            run.status.code()
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn compiles_and_runs_a_native_program_with_variables_conditions_and_loops() {
         let program = Program {
             statements: vec![

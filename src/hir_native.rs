@@ -320,7 +320,10 @@ mod tests {
         let c = generate_c(&lowered, &memory).unwrap();
         let generated_main = c.split("int main(void) {").last().unwrap();
         assert!(generated_main.contains("hl_assign_planned_site(env,"));
+        assert!(generated_main.contains("UINT64_C(1)"));
         assert!(generated_main.contains("HL_STORAGE_OWNED"));
+        assert!(!c.contains("hl_assign_promoted_copy"));
+        assert!(c.contains("site de propiedad incoherente en asignación planificada"));
     }
 
     #[test]
@@ -373,6 +376,7 @@ mod tests {
         assert_eq!(memory.operations.len(), 1);
         let c = generate_c(&lowered, &memory).unwrap();
         assert!(c.contains("hl_assign_planned_site(env, \"outer\","));
+        assert!(c.contains("UINT64_C(1)"));
     }
 
     #[test]

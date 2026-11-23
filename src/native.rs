@@ -838,4 +838,62 @@ int main(void) {
         let error = crate::hir::lower(&program).unwrap_err();
         assert!(error.message.contains("closures"));
     }
+
+    #[test]
+    fn owned_binding_strings_register_one_environment_cleanup() {
+        let directory = temporary_directory().expect("temporary directory");
+        let c_file = directory.join("owned_binding_cleanup.c");
+        let executable = directory.join("owned_binding_cleanup");
+        let source = format!(
+            "{}\\n{}",
+            include_str!("native_runtime.c"),
+            r#"
+int main(void) {
+    HlEnv *env = hl_env_new(NULL);
+    hl_define_planned(env, "value", hl_string(env, "first"), HL_STORAGE_OWNED);
+    HlBinding *binding = hl_find(env, "value");
+    if (!binding || !binding->string_storage || !binding->string_cleanup) return 1;
+    HlAllocation *registration = binding->string_cleanup;
+
+    for (int i = 0; i < 1000; ++i) {
+        char value[32];
+        snprintf(value, sizeof(value), "value-%d", i);
+        hl_assign_planned(env, "value", hl_string(env, value), HL_STORAGE_OWNED);
+        if (binding->string_cleanup != registration) return 2;
+    }
+
+    size_t registrations = 0;
+    for (HlAllocation *entry = env->allocations; entry; entry = entry->next)
+        ++registrations;
+    if (registrations != 1) return 3;
+
+    hl_assign_planned(env, "value", hl_number(7.0), HL_STORAGE_OWNED);
+    if (binding->string_storage || binding->string_capacity != 0) return 4;
+    hl_assign_planned(env, "value", hl_string(env, "again"), HL_STORAGE_OWNED);
+    if (!binding->string_storage || binding->string_cleanup != registration) return 5;
+
+    hl_env_free(env);
+    return 0;
+}
+"#
+        );
+        fs::write(&c_file, source).expect("write C runtime test");
+        let compiler = select_c_compiler().expect("C compiler");
+        let build = Command::new(&compiler)
+            .arg("-std=c11")
+            .arg("-O2")
+            .arg(&c_file)
+            .arg("-o")
+            .arg(&executable)
+            .arg("-lm")
+            .output()
+            .expect("compile C runtime test");
+        assert!(build.status.success(), "C runtime test compilation failed: {}",
+            String::from_utf8_lossy(&build.stderr));
+        let run = Command::new(&executable).output().expect("run C runtime test");
+        assert!(run.status.success(), "C runtime test failed: {}",
+            String::from_utf8_lossy(&run.stderr));
+        let _ = fs::remove_dir_all(directory);
+    }
+
 }

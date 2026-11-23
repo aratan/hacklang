@@ -5,6 +5,7 @@
 #include <float.h>
 #include <math.h>
 #include <stdio.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -16,6 +17,14 @@ typedef struct {
 
 typedef struct HlEnv HlEnv;
 typedef void (*HlCleanupFn)(void *);
+
+typedef struct HlArenaBlock {
+    struct HlArenaBlock *next;
+    size_t capacity;
+    size_t used;
+    max_align_t alignment;
+    unsigned char data[];
+} HlArenaBlock;
 
 typedef struct HlAllocation {
     HlCleanupFn cleanup;
@@ -32,6 +41,7 @@ struct HlEnv {
     HlEnv *parent;
     HlBinding *bindings;
     HlAllocation *allocations;
+    HlArenaBlock *arena;
     int closing;
 };
 
@@ -99,13 +109,31 @@ int hl_env_cancel(HlEnv *environment, HlAllocation *entry) {
     return 1;
 }
 
+/* Bump allocation from the current lexical region. Every returned address
+ * is max_align_t-aligned; the whole block is reclaimed with its HlEnv. */
 static void *hl_alloc(HlEnv *environment, size_t size) {
-    void *memory = malloc(size ? size : 1);
-    if (!memory) hl_fail(environment, "memoria agotada");
-    if (!hl_env_defer(environment, hl_cleanup_free, memory)) {
-        free(memory);
-        hl_fail(environment, "memoria agotada");
+    const size_t alignment = _Alignof(max_align_t);
+    if (size == 0) size = 1;
+    if (size > SIZE_MAX - (alignment - 1))
+        hl_fail(environment, "tamaño de asignación fuera de rango");
+    size_t required = (size + alignment - 1) & ~(alignment - 1);
+
+    HlArenaBlock *block = environment ? environment->arena : NULL;
+    if (!block || required > block->capacity - block->used) {
+        const size_t default_capacity = 4096;
+        size_t capacity = required > default_capacity ? required : default_capacity;
+        if (capacity > SIZE_MAX - sizeof(HlArenaBlock))
+            hl_fail(environment, "tamaño de región fuera de rango");
+        block = (HlArenaBlock *)malloc(sizeof(HlArenaBlock) + capacity);
+        if (!block) hl_fail(environment, "memoria agotada");
+        block->next = environment->arena;
+        block->capacity = capacity;
+        block->used = 0;
+        environment->arena = block;
     }
+
+    void *memory = block->data + block->used;
+    block->used += required;
     return memory;
 }
 
@@ -119,6 +147,12 @@ static void hl_env_free(HlEnv *environment) {
         allocation->cleanup(allocation->context);
         free(allocation);
         allocation = next;
+    }
+    HlArenaBlock *block = environment->arena;
+    while (block) {
+        HlArenaBlock *next = block->next;
+        free(block);
+        block = next;
     }
     free(environment);
 }
@@ -144,6 +178,7 @@ static HlEnv *hl_env_new(HlEnv *parent) {
     environment->parent = parent;
     environment->bindings = NULL;
     environment->allocations = NULL;
+    environment->arena = NULL;
     environment->closing = 0;
     return environment;
 }

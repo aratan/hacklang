@@ -312,6 +312,35 @@ mod tests {
     }
 
     #[test]
+    fn generated_c_routes_nested_array_ownership_sites_into_runtime() {
+        use crate::ast::{Expression as A, IndexAssignStatement, LetStatement, Program as AstProgram, Statement as AstStmt};
+        let ast = AstProgram { statements: vec![
+            AstStmt::Let(LetStatement {
+                name: "matrix".into(),
+                value: A::Array(vec![
+                    A::Array(vec![A::NumberLiteral(1.0), A::NumberLiteral(2.0)]),
+                    A::Array(vec![A::NumberLiteral(3.0), A::NumberLiteral(4.0)]),
+                ]),
+            }),
+            AstStmt::IndexAssign(IndexAssignStatement {
+                name: "matrix".into(),
+                indices: vec![A::NumberLiteral(1.0), A::NumberLiteral(0.0)],
+                value: A::NumberLiteral(9.0),
+            }),
+        ]};
+        let lowered = hir::lower(&ast).unwrap();
+        let memory = crate::memory::plan(&lowered);
+        let binding = crate::hir::BindingId(0);
+        assert_eq!(memory.bindings[&binding], StorageClass::OwnedRegion);
+        assert_eq!(memory.ownership_tokens.get(&binding), Some(&crate::memory::OwnershipTokenId(1)));
+        let c = generate_c(&lowered, &memory).unwrap();
+        let generated_main = c.split("int main(void) {").last().unwrap();
+        assert!(generated_main.contains("hl_define_planned_site(env,"));
+        assert!(generated_main.contains("hl_index_assign_path(env,"));
+        assert!(generated_main.contains("UINT64_C(1)"), "aggregate ownership site must reach generated C");
+    }
+
+    #[test]
     fn generated_c_promotes_reassigned_dynamic_binding_to_owned_storage() {
         let ast = AstProgram { statements: vec![
             AstStmt::Let(LetStatement {

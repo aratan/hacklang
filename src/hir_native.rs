@@ -66,6 +66,10 @@ impl Generator {
                     format!("hl_array(env, (HlValue[]){{ {} }}, {})", values.join(", "), values.len())
                 }
             }
+            ExprKind::Length(value) => {
+                let value = self.expr(p, value, out)?;
+                format!("hl_length(env, {value})")
+            }
             ExprKind::Map(items) => {
                 let mut entries = Vec::with_capacity(items.len());
                 for (key, value) in items {

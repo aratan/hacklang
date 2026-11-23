@@ -209,6 +209,9 @@ impl Generator {
 }
 
 pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, String> {
+    if !program.functions.is_empty() {
+        return Err("El HIR contiene funciones; el backend C todavía no implementa sus activaciones ni entornos capturados".into());
+    }
     // Reject stale/incomplete plans instead of silently compiling without the
     // frontend's storage decisions. ScopeStackPlan is materialized below as
     // physical HlArenaLane instances; BindingSlotPlan remains frame-layout

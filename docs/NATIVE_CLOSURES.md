@@ -31,7 +31,7 @@ A native implementation must preserve all of the following:
 
 1. **Completed in HIR:** explicit function bodies, parameters, call sites, return statements, deterministic function IDs, function scopes, and binding ownership by function activation.
 2. **Completed as HIR metadata:** direct capture analysis over resolved `BindingId` values, including read/write access and same-scope self/mutual recursion. This is not yet a storage-lifetime proof.
-3. Introduce stable environment/cell storage for captured bindings. Non-captured locals may continue to use activation frames and planned lanes.
+3. **Logical activation planning completed:** `MemoryPlan` records per-function parameter/local storage, captured activation cells, and ownership-site identities. Next: materialize stable environment/cell storage in the runtime. Non-captured locals may continue to use activation frames and planned lanes.
 4. Add a root-owned environment registry and tracing collection. Roots include active environments, module bindings, call temporaries, return values, and aggregate values. Trace function captures through arrays and maps; sweep unreachable environment cycles.
 5. Lower calls to generated C functions with explicit activation frames. Route every return through a single cleanup/unwind path that preserves a returned closure or aggregate before destroying non-escaping locals.
 6. Enable syntax incrementally only after differential tests cover each interpreter contract above. Run the full CI and sanitizer-backed runtime tests after each ownership change.

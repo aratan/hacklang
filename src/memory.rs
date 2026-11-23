@@ -711,6 +711,41 @@ fn collect_operations(
     }
 }
 
+/// Validate physical slot metadata before a backend consumes it.
+/// This proves planner consistency only; it does not allocate runtime memory.
+pub fn validate_slot_plan(program: &Program, plan: &MemoryPlan) -> Result<(), String> {
+    for (binding, neighbors) in &plan.interference {
+        let slot = plan.binding_slots.get(binding)
+            .ok_or_else(|| format!("MemoryPlan sin slot para BindingId {}", binding.0))?;
+        let class = plan.bindings.get(binding)
+            .ok_or_else(|| format!("MemoryPlan sin clase para BindingId {}", binding.0))?;
+        let expected_stack = stack_for_binding(*binding, *class, program, &plan.scope_stacks)
+            .ok_or_else(|| format!("MemoryPlan sin pila para BindingId {}", binding.0))?;
+        if slot.stack != expected_stack {
+            return Err(format!("Pila incorrecta para BindingId {}", binding.0));
+        }
+        for neighbor in neighbors {
+            if let Some(other) = plan.binding_slots.get(neighbor) {
+                if slot.stack == other.stack && slot.slot == other.slot {
+                    return Err(format!("Slots solapados para bindings {} y {}", binding.0, neighbor.0));
+                }
+            }
+        }
+    }
+    let mut observed: HashMap<DataStackId, u32> = HashMap::new();
+    for (binding, slot) in &plan.binding_slots {
+        if !program.bindings.iter().any(|item| item.id == *binding) {
+            return Err(format!("Slot para BindingId inexistente {}", binding.0));
+        }
+        let count = observed.entry(slot.stack).or_insert(0);
+        *count = (*count).max(slot.slot.saturating_add(1));
+    }
+    if observed != plan.stack_slot_counts {
+        return Err("Conteos de slots inconsistentes con las asignaciones".into());
+    }
+    Ok(())
+}
+
 pub fn plan(program: &Program) -> MemoryPlan {
     let mut bindings = HashMap::new();
     fn visit(statements: &[Statement], program: &Program, result: &mut HashMap<BindingId, StorageClass>) {

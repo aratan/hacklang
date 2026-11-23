@@ -341,8 +341,14 @@ fn build_cfg_sequence(
                 let then_exits = build_cfg_sequence(then_body, vec![branch], cfg, breaks, continues);
                 let else_exits = if else_body.is_empty() { vec![branch] } else { build_cfg_sequence(else_body, vec![branch], cfg, breaks, continues) };
                 let join = new_cfg_block(cfg);
-                for exit in then_exits.into_iter().chain(else_exits) { add_edge(cfg, exit, join); }
-                current.push(join);
+                let mut has_fallthrough = false;
+                for exit in then_exits.into_iter().chain(else_exits) {
+                    add_edge(cfg, exit, join);
+                    has_fallthrough = true;
+                }
+                if has_fallthrough {
+                    current.push(join);
+                }
             }
             StmtKind::While { condition, body, .. } => {
                 let header = new_cfg_block(cfg);
@@ -1317,6 +1323,34 @@ mod tests {
         let cfg = &plan(&p).cfg;
         assert!(cfg.blocks.iter().any(|block| block.successors.iter().any(|next| (*next as usize) <= block.id as usize)));
         assert!(cfg.blocks.iter().any(|block| block.live_in.contains(&BindingId(0))));
+    }
+
+    #[test]
+    fn cfg_does_not_create_join_after_both_if_branches_terminate() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "x".into(), value: A::NumberLiteral(1.0) }),
+            S::While(crate::ast::WhileStatement {
+                condition: A::BoolLiteral(true),
+                body: vec![
+                    S::If(crate::ast::IfStatement {
+                        condition: A::BoolLiteral(true),
+                        true_body: vec![S::Break],
+                        false_body: Some(vec![S::Continue]),
+                    }),
+                    S::Assign(crate::ast::AssignStatement {
+                        name: "x".into(),
+                        value: A::NumberLiteral(2.0),
+                    }),
+                ],
+            }),
+            S::Print(PrintStatement { value: A::Identifier("x".into()) }),
+        ]);
+        let cfg = &plan(&p).cfg;
+        assert_eq!(
+            cfg.blocks.iter().filter(|block| block.defs.contains(&BindingId(0))).count(),
+            1,
+            "an if whose branches both terminate must not create a fallthrough join"
+        );
     }
 
     #[test]

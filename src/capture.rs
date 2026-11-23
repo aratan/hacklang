@@ -247,6 +247,19 @@ mod tests {
     }
 
 
+
+    #[test]
+    fn self_recursive_lambda_captures_its_predeclared_binding() {
+        let p = lower("let recurse = |n| recurse(n);");
+        let recurse = p.bindings.iter().find(|binding| binding.name == "recurse").unwrap().id;
+        assert_eq!(p.functions[0].captures, vec![Capture {
+            binding: recurse, reads: true, writes: false,
+        }]);
+        assert_eq!(p.capture_storage.bindings.iter()
+            .find(|entry| entry.binding == recurse).unwrap().storage,
+            CaptureStorageKind::ModuleCell);
+    }
+
     #[test]
     fn capture_storage_plan_separates_module_cells_from_activation_cells() {
         let p = lower("let global = 1; let factory = |x| |y| x + global + y;");

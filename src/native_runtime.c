@@ -875,15 +875,15 @@ static void hl_debug_value(HlValue value) {
         case HL_BOOL: printf("Bool(%s)", value.as.boolean ? "true" : "false"); break;
         case HL_STRING: fputs("String(", stdout); hl_debug_string(value.as.string ? value.as.string : ""); putchar(')'); break;
         case HL_ARRAY:
-            fputs("Array([", stdout);
+            putchar('[');
             if (value.as.array) for (size_t i = 0; i < value.as.array->length; ++i) {
                 if (i) fputs(", ", stdout);
                 hl_debug_value(value.as.array->items[i]);
             }
-            fputs("])", stdout);
+            putchar(']');
             break;
         case HL_MAP:
-            fputs("Map([", stdout);
+            putchar('[');
             if (value.as.map) for (size_t i = 0; i < value.as.map->length; ++i) {
                 if (i) fputs(", ", stdout);
                 putchar('(');

@@ -166,6 +166,7 @@ impl TypeChecker {
                                 self.check_compatible(&format!("clave de '{}'", stmt.name), &key, &index);
                                 let value = self.infer(&stmt.value);
                                 self.check_compatible(&format!("valor de '{}'", stmt.name), &map_value, &value);
+                                target = *map_value;
                             }
                             Type::Map(_, _) => {
                                 self.report(format!("la asignación anidada a través de mapas no está soportada para '{}'", stmt.name));

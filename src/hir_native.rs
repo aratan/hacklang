@@ -117,6 +117,8 @@ impl Generator {
 }
 
 pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, String> {
+    // Validate stack counts, stack ownership, and interference constraints before codegen.
+    crate::memory::validate_slot_plan(program, memory)?;
     // Reject stale/incomplete plans instead of silently compiling without the
     // frontend's storage decisions. This is metadata consumption, not yet an
     // instruction to the runtime to allocate from physical regions.
@@ -139,13 +141,6 @@ pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, Stri
         if let Some(slot) = memory.binding_slots.get(&binding.id) {
             source.push_str(&format!("/* binding {} => data-stack {} slot {} */\n",
                 binding.id.0, slot.stack.0, slot.slot));
-        }
-    }
-    // Reject orphan slot assignments: stale planner output must not silently
-    // introduce storage metadata for a binding absent from this HIR program.
-    for binding_id in memory.binding_slots.keys() {
-        if !program.bindings.iter().any(|binding| binding.id == *binding_id) {
-            return Err(format!("MemoryPlan contiene slot para BindingId inexistente {}", binding_id.0));
         }
     }
     source.push_str("\nint main(void) {\n    HlEnv *env = hl_env_new(NULL);\n");

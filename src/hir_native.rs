@@ -1,4 +1,5 @@
 use crate::hir::{BinaryOp, ExprKind, Expression, Program, StmtKind, Statement};
+use crate::memory::{MemoryPlan, StorageClass};
 
 #[derive(Default)]
 struct Generator {
@@ -115,10 +116,27 @@ impl Generator {
     }
 }
 
-pub fn generate_c(program: &Program) -> Result<String, String> {
+pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, String> {
+    // Reject stale/incomplete plans instead of silently compiling without the
+    // frontend's storage decisions. This is metadata consumption, not yet an
+    // instruction to the runtime to allocate from physical regions.
+    for binding in &program.bindings {
+        if !memory.bindings.contains_key(&binding.id) {
+            return Err(format!("MemoryPlan incompleto: falta BindingId {}", binding.id.0));
+        }
+    }
     let mut body = String::new(); let mut generator = Generator::default();
     for stmt in &program.statements { generator.stmt(program, stmt, &mut body)?; }
     let mut source = include_str!("native_runtime.c").to_string();
+    source.push_str("\n/* Compiler MemoryPlan (diagnostic metadata; runtime selection pending). */\n");
+    for binding in &program.bindings {
+        let class = match memory.bindings.get(&binding.id).expect("validated above") {
+            StorageClass::Inline => "inline",
+            StorageClass::ScopeRegion(_) => "scope-region",
+            StorageClass::OwnedRegion => "owned-region",
+        };
+        source.push_str(&format!("/* binding {} ({}) => {} */\n", binding.id.0, binding.name, class));
+    }
     source.push_str("\nint main(void) {\n    HlEnv *env = hl_env_new(NULL);\n");
     source.push_str(&body); source.push_str("    hl_env_free(env);\n    return 0;\n}\n"); Ok(source)
 }
@@ -132,12 +150,37 @@ mod tests {
     fn generated_runtime_exposes_single_lifo_cleanup_registry() {
         let ast = AstProgram { statements: vec![] };
         let lowered = hir::lower(&ast).unwrap();
-        let c = generate_c(&lowered).unwrap();
+        let memory = crate::memory::plan(&lowered);
+        let c = generate_c(&lowered, &memory).unwrap();
         assert!(c.contains("HlAllocation *hl_env_defer("));
         assert!(c.contains("int hl_env_transfer("));
         assert!(c.contains("int hl_env_cancel("));
         assert!(c.contains("allocation->cleanup(allocation->context);"));
         assert!(c.contains("entry->next = environment->allocations;"));
+    }
+
+    #[test]
+    fn generated_c_consumes_memory_plan_binding_classes() {
+        let ast = AstProgram { statements: vec![
+            AstStmt::Let(LetStatement { name: "n".into(), value: crate::ast::Expression::NumberLiteral(2.0) }),
+            AstStmt::Let(LetStatement { name: "s".into(), value: crate::ast::Expression::StringLiteral("x".into()) }),
+        ]};
+        let lowered = hir::lower(&ast).unwrap();
+        let memory = crate::memory::plan(&lowered);
+        let c = generate_c(&lowered, &memory).unwrap();
+        assert!(c.contains("binding 0 (n) => inline"));
+        assert!(c.contains("binding 1 (s) => scope-region"));
+    }
+
+    #[test]
+    fn generated_c_rejects_incomplete_memory_plan() {
+        let ast = AstProgram { statements: vec![
+            AstStmt::Let(LetStatement { name: "s".into(), value: crate::ast::Expression::StringLiteral("x".into()) }),
+        ]};
+        let lowered = hir::lower(&ast).unwrap();
+        let mut memory = crate::memory::plan(&lowered);
+        memory.bindings.clear();
+        assert!(generate_c(&lowered, &memory).unwrap_err().contains("MemoryPlan incompleto"));
     }
 
     #[test]

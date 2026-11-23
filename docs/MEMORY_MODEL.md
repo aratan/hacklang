@@ -522,7 +522,8 @@ El planificador deberá poder explicar, para cada binding y temporal, su clase d
 
 La inspección del código existente identifica dos mecanismos parciales que deben converger conceptualmente, sin crear un tercer subsistema:
 
-- `Region::track<T>` registra valores Rust en un vector; `Region::restore` extrae y destruye los registros posteriores a la marca en orden LIFO. Este prototipo todavía no ofrece handles estables, cancelación ni transferencia de registros.
+- `Region::track<T>` devuelve ahora un `RegionFinalizerId` estable. `RegionTable::transfer_finalizer` mueve el registro (sin duplicarlo) a un ancestro, rechazando destinos de vida más corta; al cerrar el origen no se destruye y el destino ejecuta el destructor al cerrarse. La identidad es lógica y local al prototipo Rust, no un handle compartido con C.
+- Las marcas de región registran una secuencia local de finalizadores, por lo que retirar o transferir una entrada anterior no invalida el límite de restauración.
 - `HlEnv` mantiene una lista enlazada de registros C con callback y contexto. `hl_env_free` ejecuta los callbacks en orden LIFO; las asignaciones ordinarias usan el mismo mecanismo mediante un callback que llama a `free`.
 - El generador C crea y libera entornos en bloques, y emite limpieza explícita antes de los saltos `break` y `continue`. La salida normal del bloque también libera el entorno. `hl_fail` limpia la cadena de entornos activos antes de terminar con `exit(1)`; sigue siendo un error fatal, no una excepción recuperable.
 

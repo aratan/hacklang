@@ -250,6 +250,31 @@ mod tests {
     }
 
     #[test]
+    fn generated_c_promotes_outer_binding_written_from_nested_scope() {
+        let ast = AstProgram { statements: vec![
+            AstStmt::Let(LetStatement {
+                name: "outer".into(),
+                value: crate::ast::Expression::StringLiteral("before".into()),
+            }),
+            AstStmt::Block(vec![
+                AstStmt::Assign(crate::ast::AssignStatement {
+                    name: "outer".into(),
+                    value: crate::ast::Expression::StringLiteral("from-inner".into()),
+                }),
+            ]),
+            AstStmt::Print(PrintStatement {
+                value: crate::ast::Expression::Identifier("outer".into()),
+            }),
+        ]};
+        let lowered = hir::lower(&ast).unwrap();
+        let memory = crate::memory::plan(&lowered);
+        assert_eq!(memory.bindings[&crate::hir::BindingId(0)], StorageClass::OwnedRegion);
+        let c = generate_c(&lowered, &memory).unwrap();
+        assert!(c.contains("hl_assign_planned(env, \\"outer\\","));
+        assert!(c.contains("HL_STORAGE_OWNED"));
+    }
+
+    #[test]
     fn generated_c_uses_memory_plan_slots_for_inline_bindings() {
         let ast = AstProgram { statements: vec![
             AstStmt::Let(LetStatement { name: "x".into(), value: crate::ast::Expression::NumberLiteral(7.0) }),

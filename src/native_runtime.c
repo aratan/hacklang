@@ -6,6 +6,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -55,10 +56,6 @@ static void hl_fail(HlEnv *environment, const char *message) {
         environment = parent;
     }
     exit(1);
-}
-
-static void hl_cleanup_free(void *context) {
-    free(context);
 }
 
 /* Register one cleanup action. The returned handle remains stable until
@@ -112,6 +109,8 @@ int hl_env_cancel(HlEnv *environment, HlAllocation *entry) {
 /* Bump allocation from the current lexical region. Every returned address
  * is max_align_t-aligned; the whole block is reclaimed with its HlEnv. */
 static void *hl_alloc(HlEnv *environment, size_t size) {
+    if (!environment || environment->closing)
+        hl_fail(environment, "región de memoria no disponible");
     const size_t alignment = _Alignof(max_align_t);
     if (size == 0) size = 1;
     if (size > SIZE_MAX - (alignment - 1))

@@ -303,3 +303,35 @@ print value[0][1];
 "#,
     );
 }
+
+#[test]
+fn map_literals_reads_updates_and_insertions_match_interpreter() {
+    assert_interpreter_native_parity(
+        "map_literals_reads_updates",
+        r#"
+let values = @("alpha": 10, "beta": 20);
+print values["alpha"];
+print values["beta"];
+values["alpha"] = 99;
+values["gamma"] = 30;
+print values["alpha"];
+print values["gamma"];
+"#,
+    );
+}
+
+#[test]
+fn map_copies_are_independent_and_keys_use_value_equality() {
+    assert_interpreter_native_parity(
+        "map_copy_key_equality",
+        r#"
+let original = @("key": [1, 2], 7: "number", true: "boolean");
+let copied = original;
+copied["key"] = [8, 9];
+print original["key"][0];
+print copied["key"][0];
+print original[7];
+print original[true];
+"#,
+    );
+}

@@ -1258,6 +1258,41 @@ mod tests {
     }
 
     #[test]
+    fn ownership_move_rejects_wrong_source_without_mutating_cleanup_order() {
+        let local = StorageOwner::Scope(ScopeId(10));
+        let outer = StorageOwner::Binding(BindingId(10));
+        let unrelated = StorageOwner::Scope(ScopeId(11));
+        let mut ledger = OwnershipLedger::default();
+        let first = ledger.acquire(local).unwrap();
+        let second = ledger.acquire(local).unwrap();
+
+        assert_eq!(
+            ledger.move_to(first, unrelated, outer),
+            Err(OwnershipError::OwnerMismatch)
+        );
+        assert_eq!(ledger.owner(first), Ok(local));
+        assert_eq!(
+            ledger.drain_owner(local).unwrap(),
+            vec![
+                OwnershipAction::Drop { token: second, owner: local },
+                OwnershipAction::Drop { token: first, owner: local },
+            ]
+        );
+        assert_eq!(ledger.drain_owner(outer), Ok(vec![]));
+    }
+
+    #[test]
+    fn ownership_promote_rejects_unknown_or_inline_destination_without_mutation() {
+        let local = StorageOwner::Scope(ScopeId(12));
+        let mut ledger = OwnershipLedger::default();
+        let token = ledger.acquire(local).unwrap();
+        assert_eq!(ledger.promote_to(token, local, StorageOwner::Inline), Err(OwnershipError::InvalidOwner));
+        assert_eq!(ledger.promote_to(token, local, StorageOwner::Unknown), Err(OwnershipError::InvalidOwner));
+        assert_eq!(ledger.owner(token), Ok(local));
+        assert_eq!(ledger.drain_owner(local).unwrap(), vec![OwnershipAction::Drop { token, owner: local }]);
+    }
+
+    #[test]
     fn ownership_cleanup_moves_registration_with_token() {
         let local = StorageOwner::Scope(ScopeId(8));
         let outer = StorageOwner::Binding(BindingId(4));

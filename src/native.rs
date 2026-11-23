@@ -323,19 +323,22 @@ int main(void) {
         let compiler = select_c_compiler().expect("C compiler");
         let build = Command::new(&compiler)
             .arg("-std=c11")
-            .arg("-O2")
+            .arg("-O1")
+            .arg("-g")
+            .arg("-fsanitize=address,undefined")
+            .arg("-fno-omit-frame-pointer")
             .arg(&c_file)
             .arg("-o")
             .arg(&executable)
             .arg("-lm")
             .output()
-            .expect("compile C runtime test");
+            .expect("compile reentrant cleanup test with sanitizers");
         assert!(
             build.status.success(),
-            "C runtime test compilation failed: {}",
+            "sanitized reentrant cleanup test compilation failed: {}",
             String::from_utf8_lossy(&build.stderr)
         );
-        let run = Command::new(&executable).output().expect("run C runtime test");
+        let run = Command::new(&executable).output().expect("run sanitized reentrant cleanup test");
         assert!(
             run.status.success(),
             "cleanup reentrancy test failed with code {:?}",

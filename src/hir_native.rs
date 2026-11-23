@@ -130,12 +130,20 @@ impl Generator {
                     return Err("la asignación por índice requiere al menos un índice".into());
                 }
                 let value = self.expr(p, value, out)?;
-                Self::line(out, format!(
-                    "hl_index_assign_path(env, {}, (HlValue[]){{ {} }}, {}, {value});",
-                    Self::binding(p, *binding)?,
-                    indices.join(", "),
-                    indices.len()
-                ));
+                if indices.len() == 1 {
+                    Self::line(out, format!(
+                        "hl_index_assign(env, {}, {}, {value});",
+                        Self::binding(p, *binding)?,
+                        indices[0]
+                    ));
+                } else {
+                    Self::line(out, format!(
+                        "hl_index_assign_path(env, {}, (HlValue[]){{ {} }}, {}, {value});",
+                        Self::binding(p, *binding)?,
+                        indices.join(", "),
+                        indices.len()
+                    ));
+                }
             },
             StmtKind::Print(e) => { let v = self.expr(p, e, out)?; Self::line(out, format!("hl_print({v});")); }
             StmtKind::Block { scope, statements } => self.block(p, *scope, statements, out)?,

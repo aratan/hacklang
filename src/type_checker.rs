@@ -168,10 +168,9 @@ impl TypeChecker {
                                 self.check_compatible(&format!("valor de '{}'", stmt.name), &map_value, &value);
                                 target = *map_value;
                             }
-                            Type::Map(_, _) => {
-                                self.report(format!("la asignación anidada a través de mapas no está soportada para '{}'", stmt.name));
-                                if is_last { self.infer(&stmt.value); }
-                                target = Type::Unknown;
+                            Type::Map(key, map_value) => {
+                                self.check_compatible(&format!("clave de '{}' en nivel {}", stmt.name, position), &key, &index);
+                                target = *map_value;
                             }
                             Type::Unknown => {
                                 if is_last { self.infer(&stmt.value); }

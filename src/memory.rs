@@ -831,6 +831,24 @@ mod tests {
     }
 
     #[test]
+    fn ownership_ledger_drains_moved_tokens_in_backend_lifo_order() {
+        let child = StorageOwner::Scope(ScopeId(2));
+        let parent = StorageOwner::Scope(ScopeId(1));
+        let mut ledger = OwnershipLedger::default();
+        let first = ledger.acquire(child).unwrap();
+        let second = ledger.acquire(child).unwrap();
+        assert_eq!(ledger.move_to(first, child, parent), Ok(OwnershipAction::Move {
+            token: first, from: child, to: parent,
+        }));
+        let child_drops = ledger.drain_owner(child).unwrap();
+        assert_eq!(child_drops, vec![OwnershipAction::Drop { token: second, owner: child }]);
+        let parent_drops = ledger.drain_owner(parent).unwrap();
+        assert_eq!(parent_drops, vec![OwnershipAction::Drop { token: first, owner: parent }]);
+        assert_eq!(ledger.drain_owner(parent).unwrap(), Vec::new());
+        assert_eq!(ledger.drop_token(first, parent), Err(OwnershipError::AlreadyDropped));
+    }
+
+    #[test]
     fn ownership_ledger_rejects_invalid_owners_and_unknown_tokens() {
         let mut ledger = OwnershipLedger::default();
         assert_eq!(ledger.acquire(StorageOwner::Inline), Err(OwnershipError::InvalidOwner));

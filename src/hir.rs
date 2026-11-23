@@ -383,6 +383,25 @@ mod tests {
 
     fn ast(statements: Vec<AstStmt>) -> AstProgram { AstProgram { statements } }
 
+
+    #[test]
+    fn lowers_function_calls_to_hir_nodes_with_resolved_callee_and_arguments() {
+        let mut lexer = crate::lexer::Lexer::new(
+            "let add = |x| x + 1; let result = add(41);".to_string()
+        );
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = crate::parser::Parser::new(tokens);
+        let ast = parser.parse_program().unwrap();
+        let hir = lower(&ast).unwrap();
+
+        assert_eq!(hir.functions.len(), 1);
+        let StmtKind::Let { value, .. } = &hir.statements[1].kind else { panic!("expected let"); };
+        assert!(matches!(&value.kind, ExprKind::Call { callee, args }
+            if matches!(callee.kind, ExprKind::Read(BindingId(0)))
+                && args.len() == 1
+                && matches!(args[0].kind, ExprKind::Number(41.0))));
+    }
+
     #[test]
     fn nested_scope_parent_is_correct_after_closing_a_sibling() {
         let program = ast(vec![

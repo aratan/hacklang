@@ -1,4 +1,4 @@
-use crate::hir::{BinaryOp, ExprKind, Expression, Program, StmtKind, Statement};
+use crate::hir::{BinaryOp, ExprKind, Expression, Program, ScopeId, StmtKind, Statement};
 use crate::memory::{MemoryPlan, StorageClass};
 use std::collections::HashMap;
 
@@ -11,6 +11,7 @@ struct Generator {
     loops: Vec<(String, String, usize)>,
     inline_slots: HashMap<crate::hir::BindingId, u32>,
     owned_bindings: std::collections::HashSet<crate::hir::BindingId>,
+    scope_lanes: HashMap<ScopeId, u32>,
 }
 
 impl Generator {
@@ -62,10 +63,17 @@ impl Generator {
         };
         Self::line(out, format!("HlValue {v} = {rhs};")); Ok(v)
     }
-    fn block(&mut self, p: &Program, statements: &[Statement], out: &mut String) -> Result<(), String> {
+    fn enter_scope_env(&self, scope: ScopeId, out: &mut String) {
+        if let Some(lane) = self.scope_lanes.get(&scope) {
+            Self::line(out, format!("env = hl_env_new_in_lane(env, &region_lanes[{lane}]);"));
+        } else {
+            Self::line(out, "env = hl_env_new(env);");
+        }
+    }
+    fn block(&mut self, p: &Program, scope: ScopeId, statements: &[Statement], out: &mut String) -> Result<(), String> {
         let id = self.scope; self.scope += 1; let prev = format!("prev_{id}");
         Self::line(out, "{"); Self::line(out, format!("HlEnv *{prev} = env;"));
-        Self::line(out, "env = hl_env_new(env);"); self.scopes.push(prev.clone());
+        self.enter_scope_env(scope, out); self.scopes.push(prev.clone());
         for s in statements { self.stmt(p, s, out)?; }
         self.scopes.pop(); Self::line(out, "hl_env_free(env);"); Self::line(out, format!("env = {prev};")); Self::line(out, "}"); Ok(())
     }
@@ -93,13 +101,17 @@ impl Generator {
                 }
             }
             StmtKind::Print(e) => { let v = self.expr(p, e, out)?; Self::line(out, format!("hl_print({v});")); }
-            StmtKind::Block { statements, .. } => self.block(p, statements, out)?,
-            StmtKind::If { condition, then_body, else_body, .. } => {
+            StmtKind::Block { scope, statements } => self.block(p, *scope, statements, out)?,
+            StmtKind::If { condition, then_scope, then_body, else_scope, else_body } => {
                 let c = self.expr(p, condition, out)?;
-                Self::line(out, format!("if (hl_truthy({c}))")); self.block(p, then_body, out)?;
-                if !else_body.is_empty() { Self::line(out, "else"); self.block(p, else_body, out)?; }
+                Self::line(out, format!("if (hl_truthy({c}))")); self.block(p, *then_scope, then_body, out)?;
+                if !else_body.is_empty() {
+                    Self::line(out, "else");
+                    let scope = (*else_scope).ok_or("else_body sin ScopeId en HIR")?;
+                    self.block(p, scope, else_body, out)?;
+                }
             }
-            StmtKind::While { condition, body, .. } => {
+            StmtKind::While { scope, condition, body } => {
                 let id = self.loop_id; self.loop_id += 1;
                 let prev = format!("loop_prev_{id}"); let loop_env = format!("loop_env_{id}");
                 let iter_prev = format!("iter_prev_{id}"); let cond = format!("loop_cond_{id}"); let end = format!("loop_end_{id}");
@@ -109,7 +121,7 @@ impl Generator {
                 self.loops.push((cond.clone(), end.clone(), depth));
                 Self::line(out, format!("{cond}: ;"));
                 Self::line(out, format!("HlEnv *{iter_prev} = env;"));
-                Self::line(out, "env = hl_env_new(env);"); self.scopes.push(iter_prev.clone());
+                self.enter_scope_env(*scope, out); self.scopes.push(iter_prev.clone());
                 let c = self.expr(p, condition, out)?;
                 Self::line(out, format!("if (!hl_truthy({c})) {{ hl_env_free(env); env = {iter_prev}; goto {end}; }}"));
                 for child in body { self.stmt(p, child, out)?; }
@@ -153,11 +165,15 @@ pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, Stri
     let owned_bindings = memory.bindings.iter()
         .filter_map(|(binding, class)| matches!(class, StorageClass::OwnedRegion).then_some(*binding))
         .collect();
+    let scope_lanes: HashMap<_, _> = memory.scope_stacks.iter()
+        .map(|(scope, plan)| (*scope, plan.stack.0))
+        .collect();
+    let lane_count = scope_lanes.values().copied().max().map_or(0, |max| max + 1);
     let mut body = String::new();
-    let mut generator = Generator { inline_slots, owned_bindings, ..Generator::default() };
+    let mut generator = Generator { inline_slots, owned_bindings, scope_lanes: scope_lanes.clone(), ..Generator::default() };
     for stmt in &program.statements { generator.stmt(program, stmt, &mut body)?; }
     let mut source = include_str!("native_runtime.c").to_string();
-    source.push_str("\n/* Compiler MemoryPlan (diagnostic metadata; runtime selection pending). */\n");
+    source.push_str("\n/* Compiler MemoryPlan: physical scope lanes. */\n");
     for binding in &program.bindings {
         let class = match memory.bindings.get(&binding.id).expect("validated above") {
             StorageClass::Inline => "inline",
@@ -170,13 +186,27 @@ pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, Stri
                 binding.id.0, slot.stack.0, slot.slot));
         }
     }
-    source.push_str("\nint main(void) {\n    HlEnv *env = hl_env_new(NULL);\n");
+    source.push_str("\nint main(void) {\n");
+    if lane_count > 0 {
+        source.push_str(&format!("    HlArenaLane region_lanes[{lane_count}] = {{0}};\n"));
+    }
+    if let Some(root_lane) = scope_lanes.get(&ScopeId(0)) {
+        source.push_str(&format!("    HlEnv *env = hl_env_new_in_lane(NULL, &region_lanes[{root_lane}]);\n"));
+    } else {
+        source.push_str("    HlEnv *env = hl_env_new(NULL);\n");
+    }
     if inline_count > 0 {
         source.push_str(&format!("    HlFrameSlot frame_slots[{inline_count}];\n    HlFrame frame;\n    hl_frame_init(&frame, frame_slots, {inline_count});\n"));
     } else {
         source.push_str("    HlFrame frame = { NULL, 0 };\n");
     }
-    source.push_str(&body); source.push_str("    hl_env_free(env);\n    return 0;\n}\n"); Ok(source)
+    source.push_str(&body); source.push_str("    hl_env_free(env);\n");
+    if lane_count > 0 {
+        for lane in 0..lane_count {
+            source.push_str(&format!("    hl_lane_destroy(&region_lanes[{lane}]);\n"));
+        }
+    }
+    source.push_str("    return 0;\n}\n"); Ok(source)
 }
 
 #[cfg(test)]
@@ -303,6 +333,24 @@ mod tests {
         for (binding, slot) in &memory.binding_slots {
             assert!(c.contains(&format!("binding {} => data-stack {} slot {}", binding.0, slot.stack.0, slot.slot)));
         }
+    }
+
+    #[test]
+    fn generated_c_routes_scope_bindings_through_planned_physical_lanes() {
+        let ast = AstProgram { statements: vec![
+            AstStmt::Block(vec![AstStmt::Let(LetStatement {
+                name: "first".into(), value: crate::ast::Expression::StringLiteral("one".into()),
+            })]),
+            AstStmt::Block(vec![AstStmt::Let(LetStatement {
+                name: "second".into(), value: crate::ast::Expression::StringLiteral("two".into()),
+            })]),
+        ]};
+        let lowered = hir::lower(&ast).unwrap();
+        let memory = crate::memory::plan(&lowered);
+        let c = generate_c(&lowered, &memory).unwrap();
+        assert!(c.contains("HlArenaLane region_lanes[2] = {0};"));
+        assert_eq!(c.matches("hl_env_new_in_lane(env, &region_lanes[1])").count(), 2);
+        assert!(c.contains("hl_lane_destroy(&region_lanes[1]);"));
     }
 
     #[test]

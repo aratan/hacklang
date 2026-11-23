@@ -136,6 +136,17 @@ pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, Stri
             StorageClass::OwnedRegion => "owned-region",
         };
         source.push_str(&format!("/* binding {} ({}) => {} */\n", binding.id.0, binding.name, class));
+        if let Some(slot) = memory.binding_slots.get(&binding.id) {
+            source.push_str(&format!("/* binding {} => data-stack {} slot {} */\n",
+                binding.id.0, slot.stack.0, slot.slot));
+        }
+    }
+    // Reject orphan slot assignments: stale planner output must not silently
+    // introduce storage metadata for a binding absent from this HIR program.
+    for binding_id in memory.binding_slots.keys() {
+        if !program.bindings.iter().any(|binding| binding.id == *binding_id) {
+            return Err(format!("MemoryPlan contiene slot para BindingId inexistente {}", binding_id.0));
+        }
     }
     source.push_str("\nint main(void) {\n    HlEnv *env = hl_env_new(NULL);\n");
     source.push_str(&body); source.push_str("    hl_env_free(env);\n    return 0;\n}\n"); Ok(source)
@@ -170,6 +181,33 @@ mod tests {
         let c = generate_c(&lowered, &memory).unwrap();
         assert!(c.contains("binding 0 (n) => inline"));
         assert!(c.contains("binding 1 (s) => scope-region"));
+    }
+
+    #[test]
+    fn generated_c_emits_physical_slot_assignments() {
+        let ast = AstProgram { statements: vec![
+            AstStmt::Let(LetStatement { name: "n".into(), value: crate::ast::Expression::NumberLiteral(2.0) }),
+            AstStmt::Let(LetStatement { name: "s".into(), value: crate::ast::Expression::StringLiteral("x".into()) }),
+        ]};
+        let lowered = hir::lower(&ast).unwrap();
+        let memory = crate::memory::plan(&lowered);
+        let c = generate_c(&lowered, &memory).unwrap();
+        for (binding, slot) in &memory.binding_slots {
+            assert!(c.contains(&format!("binding {} => data-stack {} slot {}", binding.0, slot.stack.0, slot.slot)));
+        }
+    }
+
+    #[test]
+    fn generated_c_rejects_orphan_slot_assignments() {
+        let ast = AstProgram { statements: vec![
+            AstStmt::Let(LetStatement { name: "n".into(), value: crate::ast::Expression::NumberLiteral(2.0) }),
+        ]};
+        let lowered = hir::lower(&ast).unwrap();
+        let mut memory = crate::memory::plan(&lowered);
+        memory.binding_slots.insert(crate::hir::BindingId(9999), crate::memory::BindingSlotPlan {
+            stack: crate::memory::DataStackId(0), slot: 0,
+        });
+        assert!(generate_c(&lowered, &memory).unwrap_err().contains("slot para BindingId inexistente"));
     }
 
     #[test]

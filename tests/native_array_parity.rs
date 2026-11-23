@@ -367,3 +367,20 @@ fn missing_map_keys_and_nested_paths_match_interpreter_errors() {
         "clave no encontrada",
     );
 }
+
+#[test]
+fn maps_promoted_from_child_scopes_and_reacquired_after_scalar_match_interpreter() {
+    assert_interpreter_native_parity(
+        "map_scope_promotion_and_reacquire",
+        r#"
+let result = @("initial": 0);
+if (true) (
+    let temporary = @("promoted": 7);
+    result = temporary;
+)
+result = 3;
+result = @("reacquired": 9);
+print result["reacquired"];
+"#,
+    );
+}

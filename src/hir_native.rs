@@ -69,7 +69,9 @@ impl Generator {
             ExprKind::Length(value) => {
                 let value = self.expr(p, value, out)?;
                 format!("hl_length(env, {value})")
-            }
+            },
+            ExprKind::Closure(_) => return Err("Las closures ya están representadas en HIR, pero el runtime nativo aún no implementa entornos capturados".into()),
+            ExprKind::Call { .. } => return Err("Las llamadas ya están representadas en HIR, pero el runtime nativo aún no implementa invocación de funciones".into())
             ExprKind::Map(items) => {
                 let mut entries = Vec::with_capacity(items.len());
                 for (key, value) in items {
@@ -199,7 +201,8 @@ impl Generator {
             StmtKind::Continue => {
                 let (cond, _, depth) = self.loops.last().cloned().ok_or("continue fuera de bucle en HIR")?;
                 self.restore(out, depth); Self::line(out, format!("goto {cond};"));
-            }
+            },
+            StmtKind::Return(_) => return Err("return está representado en HIR, pero el codegen de funciones nativas aún no está habilitado".into())
         }
         Ok(())
     }

@@ -287,6 +287,7 @@ mod tests {
         let c = generate_c(&lowered, &memory).unwrap();
         let generated_main = c.split("int main(void) {").last().unwrap();
         assert!(generated_main.contains("hl_define_planned_site(env,"));
+        assert!(generated_main.contains("UINT64_C(1)"), "planner ownership site must reach generated C");
         assert!(generated_main.contains("hl_assign_planned(env,"));
         assert!(generated_main.contains("HL_STORAGE_OWNED"));
     }

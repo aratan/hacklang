@@ -80,6 +80,7 @@ typedef struct HlBinding {
     HlEnv *owner;
     char *string_storage;
     size_t string_capacity;
+    HlAllocation *string_cleanup;
     struct HlBinding *next;
 } HlBinding;
 struct HlEnv {
@@ -92,6 +93,18 @@ struct HlEnv {
     int owns_lane;
     int closing;
 };
+
+/* Binding-owned dynamic storage participates in the same exactly-once
+ * cleanup registry as other runtime resources. The binding descriptor stays
+ * alive until callbacks have run and its arena is rewound. */
+static void hl_cleanup_binding_string(void *context) {
+    HlBinding *binding = (HlBinding *)context;
+    if (!binding) return;
+    free(binding->string_storage);
+    binding->string_storage = NULL;
+    binding->string_capacity = 0;
+    binding->string_cleanup = NULL;
+}
 
 static void hl_env_free(HlEnv *environment);
 
@@ -220,13 +233,7 @@ static void hl_env_free(HlEnv *environment) {
         free(allocation);
         allocation = next;
     }
-    /* Binding-owned string buffers are individually reusable and are
-     * released before the arena that contains the binding descriptors. */
-    for (HlBinding *binding = environment->bindings; binding; binding = binding->next) {
-        free(binding->string_storage);
-        binding->string_storage = NULL;
-        binding->string_capacity = 0;
-    }
+    /* Binding-owned buffers are released by registered callbacks above. */
     if (environment->owns_lane) {
         hl_lane_destroy(environment->lane);
         free(environment->lane);
@@ -308,6 +315,13 @@ static HlValue hl_store_value(HlBinding *binding, HlValue value, HlStorageClass 
         return value;
     }
 
+    if (!binding->string_cleanup) {
+        binding->string_cleanup = hl_env_defer(
+            binding->owner, hl_cleanup_binding_string, binding);
+        if (!binding->string_cleanup)
+            hl_fail(binding->owner, "no se pudo registrar la limpieza de una cadena");
+    }
+
     const size_t size = strlen(value.as.string) + 1;
     char *incoming = (char *)malloc(size);
     if (!incoming) hl_fail(binding->owner, "memoria agotada al copiar una cadena");
@@ -338,6 +352,7 @@ static void hl_define_planned(HlEnv *environment, const char *name, HlValue valu
     item->owner = environment;
     item->string_storage = NULL;
     item->string_capacity = 0;
+    item->string_cleanup = NULL;
     item->value = hl_store_value(item, value, storage);
     item->next = environment->bindings;
     environment->bindings = item;

@@ -73,6 +73,26 @@ pub struct BindingSlotPlan {
     pub slot: u32,
 }
 
+/// Why a dynamic value must outlive the scope where it is produced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromotionReason {
+    /// A value produced in a nested scope is assigned to an outer binding.
+    AssignedToLongerLivedBinding,
+    /// A value read from a nested-scope binding is assigned to an outer binding.
+    ReadFromShorterLivedBinding,
+}
+
+/// Statically justified ownership extension. This is analysis metadata; the
+/// backend must not execute it until it consumes the complete memory plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PromotionDecision {
+    pub destination: BindingId,
+    pub source: Option<BindingId>,
+    pub produced_in: ScopeId,
+    pub destination_scope: ScopeId,
+    pub reason: PromotionReason,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryPlan {
     pub bindings: HashMap<BindingId, StorageClass>,
@@ -89,6 +109,8 @@ pub struct MemoryPlan {
     pub binding_slots: HashMap<BindingId, BindingSlotPlan>,
     /// Number of slots reserved in each data stack.
     pub stack_slot_counts: HashMap<DataStackId, u32>,
+    /// Proven lifetime extensions discovered in assignments. Not yet consumed by C.
+    pub promotions: Vec<PromotionDecision>,
 }
 
 
@@ -446,6 +468,63 @@ fn normalize_usage(usage: &mut HashMap<BindingId, BindingUsage>) {
     }
 }
 
+fn is_scope_ancestor(program: &Program, ancestor: ScopeId, mut child: ScopeId) -> bool {
+    loop {
+        if ancestor == child { return true; }
+        match program.scopes[child.0 as usize].parent {
+            Some(parent) => child = parent,
+            None => return false,
+        }
+    }
+}
+
+fn collect_promotions(
+    statements: &[Statement],
+    scope: ScopeId,
+    program: &Program,
+    bindings: &HashMap<BindingId, StorageClass>,
+    promotions: &mut Vec<PromotionDecision>,
+) {
+    for statement in statements {
+        match &statement.kind {
+            StmtKind::Assign { binding, value } => {
+                let destination_scope = program.bindings[binding.0 as usize].scope;
+                let source = match value.kind { ExprKind::Read(source) => Some(source), _ => None };
+                let dynamic = match source {
+                    Some(source) => !matches!(bindings.get(&source), Some(StorageClass::Inline)),
+                    None => is_dynamic_string(value) == Some(true),
+                };
+                if dynamic && is_scope_ancestor(program, destination_scope, scope)
+                    && destination_scope != scope
+                {
+                    let source_is_shorter = source.is_some_and(|id| {
+                        let source_scope = program.bindings[id.0 as usize].scope;
+                        !is_scope_ancestor(program, source_scope, destination_scope)
+                    });
+                    promotions.push(PromotionDecision {
+                        destination: *binding,
+                        source,
+                        produced_in: scope,
+                        destination_scope,
+                        reason: if source_is_shorter {
+                            PromotionReason::ReadFromShorterLivedBinding
+                        } else {
+                            PromotionReason::AssignedToLongerLivedBinding
+                        },
+                    });
+                }
+            }
+            StmtKind::Block { scope: child, statements } => collect_promotions(statements, *child, program, bindings, promotions),
+            StmtKind::If { then_scope, then_body, else_scope, else_body, .. } => {
+                collect_promotions(then_body, *then_scope, program, bindings, promotions);
+                if let Some(child) = else_scope { collect_promotions(else_body, *child, program, bindings, promotions); }
+            }
+            StmtKind::While { scope: child, body, .. } => collect_promotions(body, *child, program, bindings, promotions),
+            StmtKind::Let { .. } | StmtKind::Print(_) | StmtKind::Break | StmtKind::Continue => {}
+        }
+    }
+}
+
 pub fn plan(program: &Program) -> MemoryPlan {
     let mut bindings = HashMap::new();
     fn visit(statements: &[Statement], program: &Program, result: &mut HashMap<BindingId, StorageClass>) {
@@ -483,7 +562,9 @@ pub fn plan(program: &Program) -> MemoryPlan {
     let interference = build_interference(&cfg, &bindings, program, &scope_stacks);
     let (binding_slots, stack_slot_counts) =
         assign_binding_slots(&interference, &bindings, program, &scope_stacks);
-    MemoryPlan { bindings, scope_stacks, usage, cfg, interference, binding_slots, stack_slot_counts }
+    let mut promotions = Vec::new();
+    collect_promotions(&program.statements, ScopeId(0), program, &bindings, &mut promotions);
+    MemoryPlan { bindings, scope_stacks, usage, cfg, interference, binding_slots, stack_slot_counts, promotions }
 }
 
 #[cfg(test)]
@@ -610,6 +691,53 @@ mod tests {
         let plan = plan(&p);
         assert_eq!(plan.bindings[&BindingId(0)], StorageClass::ScopeRegion(ScopeId(0)));
         assert_eq!(plan.bindings[&BindingId(1)], StorageClass::OwnedRegion);
+    }
+
+
+    #[test]
+    fn records_promotion_when_inner_dynamic_value_is_assigned_to_outer_binding() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "outer".into(), value: A::StringLiteral("initial".into()) }),
+            S::Block(vec![S::Assign(crate::ast::AssignStatement {
+                name: "outer".into(), value: A::StringLiteral("inner".into()),
+            })]),
+        ]);
+        let memory = plan(&p);
+        assert_eq!(memory.promotions.len(), 1);
+        let decision = memory.promotions[0];
+        assert_eq!(decision.destination, BindingId(0));
+        assert_eq!(decision.source, None);
+        assert_eq!(decision.destination_scope, ScopeId(0));
+        assert_eq!(decision.reason, PromotionReason::AssignedToLongerLivedBinding);
+        assert_eq!(memory.bindings[&BindingId(0)], StorageClass::OwnedRegion);
+    }
+
+    #[test]
+    fn records_source_binding_when_shorter_lived_value_flows_to_outer_owner() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "outer".into(), value: A::StringLiteral("initial".into()) }),
+            S::Block(vec![
+                S::Let(LetStatement { name: "inner".into(), value: A::StringLiteral("temporary".into()) }),
+                S::Assign(crate::ast::AssignStatement {
+                    name: "outer".into(), value: A::Identifier("inner".into()),
+                }),
+            ]),
+        ]);
+        let memory = plan(&p);
+        assert_eq!(memory.promotions.len(), 1);
+        let decision = memory.promotions[0];
+        assert_eq!(decision.destination, BindingId(0));
+        assert_eq!(decision.source, Some(BindingId(1)));
+        assert_eq!(decision.reason, PromotionReason::ReadFromShorterLivedBinding);
+    }
+
+    #[test]
+    fn does_not_emit_promotion_for_same_scope_assignment() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "value".into(), value: A::StringLiteral("initial".into()) }),
+            S::Assign(crate::ast::AssignStatement { name: "value".into(), value: A::StringLiteral("next".into()) }),
+        ]);
+        assert!(plan(&p).promotions.is_empty());
     }
 
     #[test]

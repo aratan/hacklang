@@ -366,11 +366,13 @@ static HlValue hl_clone_value(HlEnv *environment, HlValue value) {
             if (!value.as.array) hl_fail(environment, "array nulo");
             if (value.as.array->length > SIZE_MAX / sizeof(HlValue))
                 hl_fail(environment, "array demasiado grande al copiar");
-            HlValue *items = value.as.array->length
-                ? (HlValue *)hl_alloc(environment, value.as.array->length * sizeof(HlValue)) : NULL;
-            for (size_t i = 0; i < value.as.array->length; ++i)
-                items[i] = hl_clone_value(environment, value.as.array->items[i]);
-            return hl_array(environment, items, value.as.array->length);
+            HlArray *copy = (HlArray *)hl_alloc(environment, sizeof(HlArray));
+            copy->length = value.as.array->length;
+            copy->items = copy->length
+                ? (HlValue *)hl_alloc(environment, copy->length * sizeof(HlValue)) : NULL;
+            for (size_t i = 0; i < copy->length; ++i)
+                copy->items[i] = hl_clone_value(environment, value.as.array->items[i]);
+            HlValue result; result.tag = HL_ARRAY; result.as.array = copy; return result;
         }
     }
     hl_fail(environment, "tipo de valor desconocido al copiar");

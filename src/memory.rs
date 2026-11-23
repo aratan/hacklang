@@ -738,31 +738,38 @@ fn collect_operations(
 
 /// Validate that each planned promotion still points to the assignment it describes.
 pub fn validate_memory_operations(program: &Program, plan: &MemoryPlan) -> Result<(), String> {
-    fn collect(statements: &[Statement], found: &mut HashMap<StmtId, BindingId>) {
+    fn collect(
+        statements: &[Statement],
+        scope: ScopeId,
+        found: &mut HashMap<StmtId, (BindingId, ScopeId)>,
+    ) {
         for statement in statements {
             match &statement.kind {
-                StmtKind::Assign { binding, .. } => { found.insert(statement.id, *binding); }
-                StmtKind::Block { statements, .. } => collect(statements, found),
-                StmtKind::If { then_body, else_body, .. } => {
-                    collect(then_body, found);
-                    collect(else_body, found);
+                StmtKind::Assign { binding, .. } => { found.insert(statement.id, (*binding, scope)); }
+                StmtKind::Block { scope: child, statements } => collect(statements, *child, found),
+                StmtKind::If { then_scope, then_body, else_scope, else_body, .. } => {
+                    collect(then_body, *then_scope, found);
+                    if let Some(child) = else_scope { collect(else_body, *child, found); }
                 }
-                StmtKind::While { body, .. } => collect(body, found),
+                StmtKind::While { scope: child, body, .. } => collect(body, *child, found),
                 _ => {}
             }
         }
     }
     let mut assignments = HashMap::new();
-    collect(&program.statements, &mut assignments);
+    collect(&program.statements, ScopeId(0), &mut assignments);
     let mut seen = std::collections::HashSet::new();
     for operation in &plan.operations {
         if !seen.insert(operation.statement) {
             return Err(format!("promoción duplicada para StmtId {}", operation.statement.0));
         }
-        let destination = assignments.get(&operation.statement)
+        let (destination, statement_scope) = assignments.get(&operation.statement)
             .ok_or_else(|| format!("promoción sin asignación para StmtId {}", operation.statement.0))?;
         if *destination != operation.destination {
             return Err(format!("destino de promoción incoherente en StmtId {}", operation.statement.0));
+        }
+        if *statement_scope != operation.produced_in {
+            return Err(format!("región de producción incoherente en StmtId {}", operation.statement.0));
         }
         let binding = program.bindings.get(operation.destination.0 as usize)
             .ok_or_else(|| format!("destino inexistente en promoción: BindingId {}", operation.destination.0))?;
@@ -1355,6 +1362,20 @@ mod tests {
         memory.operations[0].source_owner = StorageOwner::Unknown;
         assert!(validate_memory_operations(&p, &memory)
             .unwrap_err().contains("propietario origen incoherente"));
+    }
+
+    #[test]
+    fn promotion_validation_rejects_wrong_statement_production_scope() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "outer".into(), value: A::StringLiteral("initial".into()) }),
+            S::Block(vec![S::Assign(crate::ast::AssignStatement {
+                name: "outer".into(), value: A::StringLiteral("inner".into()),
+            })]),
+        ]);
+        let mut memory = plan(&p);
+        memory.operations[0].produced_in = ScopeId(0);
+        assert!(validate_memory_operations(&p, &memory)
+            .unwrap_err().contains("región de producción incoherente"));
     }
 
     #[test]

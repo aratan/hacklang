@@ -138,3 +138,38 @@ while (index < 3) (
 "#,
     );
 }
+
+#[test]
+fn nested_array_mutation_matches_interpreter_and_preserves_value_copies() {
+    assert_interpreter_native_parity(
+        "nested_array_mutation",
+        r#"
+let matrix = [[1, 2], [3, 4]];
+let copied = matrix;
+matrix[1][0] = 77;
+copied[0][1] = 88;
+print matrix[0][0];
+print matrix[0][1];
+print matrix[1][0];
+print matrix[1][1];
+print copied[0][0];
+print copied[0][1];
+print copied[1][0];
+"#,
+    );
+}
+
+#[test]
+fn three_level_array_mutation_matches_interpreter() {
+    assert_interpreter_native_parity(
+        "three_level_array_mutation",
+        r#"
+let cube = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]];
+cube[1][0][1] = 66;
+print cube[0][1][0];
+print cube[1][0][0];
+print cube[1][0][1];
+print cube[1][1][1];
+"#,
+    );
+}

@@ -230,7 +230,7 @@ int main(void) {
         let c_file = directory.join("owned_child_scope.c");
         let executable = directory.join("owned_child_scope");
         let source = format!(
-            "{}\\n{}",
+            "{}\n{}",
             include_str!("native_runtime.c"),
             r#"
 int main(void) {

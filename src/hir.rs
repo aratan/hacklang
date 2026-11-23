@@ -44,6 +44,8 @@ pub struct FunctionBody {
     pub expression: Option<Expression>,
     /// Block-bodied lambdas execute statements and return explicitly.
     pub statements: Vec<Statement>,
+    /// The interpreter returns numeric zero when a block body falls through.
+    pub implicit_zero_return: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -378,11 +380,13 @@ impl Lowerer {
                     Ok(FunctionBody {
                         expression: None,
                         statements: self.statements(statements)?,
+                        implicit_zero_return: true,
                     })
                 },
                 expression => Ok(FunctionBody {
                     expression: Some(self.expr(expression)?),
                     statements: Vec::new(),
+                    implicit_zero_return: false,
                 }),
             }
         })();
@@ -418,6 +422,18 @@ mod tests {
     fn ast(statements: Vec<AstStmt>) -> AstProgram { AstProgram { statements } }
 
 
+
+
+    #[test]
+    fn block_lambda_preserves_interpreter_zero_fallthrough_value() {
+        let mut lexer = crate::lexer::Lexer::new("let noop = |x| (print x;);".to_string());
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = crate::parser::Parser::new(tokens);
+        let ast = parser.parse_program().unwrap();
+        let hir = lower(&ast).unwrap();
+        assert!(hir.functions[0].body.implicit_zero_return);
+        assert!(hir.functions[0].body.expression.is_none());
+    }
 
     #[test]
     fn predeclares_mutually_recursive_lambdas_in_the_same_lexical_scope() {

@@ -149,8 +149,9 @@ impl Generator {
 
 pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, String> {
     // Reject stale/incomplete plans instead of silently compiling without the
-    // frontend's storage decisions. This is metadata consumption, not yet an
-    // instruction to the runtime to allocate from physical regions.
+    // frontend's storage decisions. ScopeStackPlan is materialized below as
+    // physical HlArenaLane instances; BindingSlotPlan remains frame-layout
+    // metadata and is materialized separately as activation-local frame slots.
     for binding in &program.bindings {
         if !memory.bindings.contains_key(&binding.id) {
             return Err(format!("MemoryPlan incompleto: falta BindingId {}", binding.id.0));

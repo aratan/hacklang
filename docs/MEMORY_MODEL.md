@@ -420,7 +420,7 @@ Se añade en `memory.rs` un modelo neutral de estado para una asignación dinám
 - `Promote` cambia el propietario a uno de vida mayor, conservando la identidad del token.
 - `Drop` marca el token como destruido y conserva una lápida para rechazar un segundo `Drop`.
 
-El `OwnershipLedger` comprueba propietario esperado, rechaza propietarios desconocidos/inline para recursos dinámicos, detecta tokens inexistentes y evita una segunda destrucción. Los errores no mutan el registro. Las pruebas cubren movimiento, promoción, propietario incorrecto, token desconocido y doble destrucción.
+El `OwnershipLedger` comprueba propietario esperado, rechaza propietarios desconocidos/inline para recursos dinámicos, detecta tokens inexistentes y evita una segunda destrucción. Los errores no mutan el registro. La relación «más larga» de `Promote` sigue siendo una precondición que debe demostrar el análisis llamador: el ledger no puede inferir jerarquía de vidas a partir de `StorageOwner` por sí solo. Las pruebas cubren movimiento, promoción, propietario incorrecto, token desconocido y doble destrucción.
 
 **Alcance exacto:** esto es un modelo ejecutable de contrato y una base de pruebas, no un registro de destructores conectado a las asignaciones reales. No demuestra todavía orden LIFO, limpieza ante errores/retornos, ni liberación física exactamente una vez. Tampoco convierte automáticamente una lectura HIR en `Move`: el análisis actual no prueba exclusividad ni ausencia de alias. La integración con runtime C y evaluador Rust queda bloqueada hasta que ambos puedan asociar cada recurso real a un token y consumir las mismas acciones.
 

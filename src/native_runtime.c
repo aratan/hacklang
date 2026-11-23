@@ -892,7 +892,7 @@ static void hl_debug_value(HlValue value) {
                 hl_debug_value(value.as.map->entries[i].value);
                 putchar(')');
             }
-            fputs("])", stdout);
+            putchar(']');
             break;
     }
 }

@@ -735,7 +735,7 @@ pub fn validate_slot_plan(program: &Program, plan: &MemoryPlan) -> Result<(), St
     let mut observed: HashMap<DataStackId, u32> = HashMap::new();
     for (binding, slot) in &plan.binding_slots {
         if !program.bindings.iter().any(|item| item.id == *binding) {
-            return Err(format!("Slot para BindingId inexistente {}", binding.0));
+            return Err(format!("slot para BindingId inexistente {}", binding.0));
         }
         let count = observed.entry(slot.stack).or_insert(0);
         *count = (*count).max(slot.slot.saturating_add(1));

@@ -82,13 +82,41 @@ pub enum PromotionReason {
     ReadFromShorterLivedBinding,
 }
 
-/// Backend-neutral memory operation shared by the Rust and C backends.
+/// Where the value expression gets its semantic value from. This is
+/// deliberately separate from the storage owner: reading a binding does not
+/// imply that ownership was moved out of that binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueOrigin {
+    Literal,
+    Binding(BindingId),
+    Computed,
+    Unknown,
+}
+
+/// Logical owner known to the planner. `Binding` denotes the conservative
+/// owned storage associated with a binding, not a runtime allocation handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageOwner {
+    Inline,
+    Scope(ScopeId),
+    Binding(BindingId),
+    Unknown,
+}
+
+/// Backend-neutral operation shared by the Rust and C backends.
+///
+/// The fields distinguish value origin, current logical owner, and destination
+/// owner. They describe a required lifetime extension; they do not claim that
+/// a physical move or exactly-once destruction has been implemented.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryOperationKind { Promote }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MemoryOperation {
     pub kind: MemoryOperationKind,
+    pub origin: ValueOrigin,
+    pub source_owner: StorageOwner,
+    pub destination_owner: StorageOwner,
     pub destination: BindingId,
     pub source: Option<BindingId>,
     pub produced_in: ScopeId,
@@ -497,8 +525,25 @@ fn collect_operations(
                     && destination_scope != scope
                     && (source.is_none() || source_is_shorter)
                 {
+                    let source_owner = source.map_or(StorageOwner::Scope(scope), |source_id| {
+                        match bindings.get(&source_id) {
+                            Some(StorageClass::Inline) => StorageOwner::Inline,
+                            Some(StorageClass::ScopeRegion(owner_scope)) => StorageOwner::Scope(*owner_scope),
+                            Some(StorageClass::OwnedRegion) => StorageOwner::Binding(source_id),
+                            None => StorageOwner::Unknown,
+                        }
+                    });
+                    let origin = match (&value.kind, source) {
+                        (ExprKind::String(_) | ExprKind::Number(_) | ExprKind::Bool(_), _) => ValueOrigin::Literal,
+                        (_, Some(source_id)) => ValueOrigin::Binding(source_id),
+                        (ExprKind::Binary { .. } | ExprKind::Ternary { .. }, None) => ValueOrigin::Computed,
+                        _ => ValueOrigin::Unknown,
+                    };
                     operations.push(MemoryOperation {
                         kind: MemoryOperationKind::Promote,
+                        origin,
+                        source_owner,
+                        destination_owner: StorageOwner::Binding(*binding),
                         destination: *binding,
                         source,
                         produced_in: scope,
@@ -710,6 +755,9 @@ mod tests {
         assert_eq!(decision.source, None);
         assert_eq!(decision.destination_scope, ScopeId(0));
         assert_eq!(decision.kind, MemoryOperationKind::Promote);
+        assert_eq!(decision.origin, ValueOrigin::Literal);
+        assert_eq!(decision.source_owner, StorageOwner::Scope(ScopeId(1)));
+        assert_eq!(decision.destination_owner, StorageOwner::Binding(BindingId(0)));
         assert_eq!(decision.reason, PromotionReason::AssignedToLongerLivedBinding);
         assert_eq!(memory.bindings[&BindingId(0)], StorageClass::OwnedRegion);
     }
@@ -730,6 +778,9 @@ mod tests {
         let decision = memory.operations[0];
         assert_eq!(decision.destination, BindingId(0));
         assert_eq!(decision.source, Some(BindingId(1)));
+        assert_eq!(decision.origin, ValueOrigin::Binding(BindingId(1)));
+        assert_eq!(decision.source_owner, StorageOwner::Scope(ScopeId(1)));
+        assert_eq!(decision.destination_owner, StorageOwner::Binding(BindingId(0)));
         assert_eq!(decision.reason, PromotionReason::ReadFromShorterLivedBinding);
     }
 

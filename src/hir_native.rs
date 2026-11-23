@@ -228,6 +228,28 @@ mod tests {
     }
 
     #[test]
+    fn generated_c_promotes_reassigned_dynamic_binding_to_owned_storage() {
+        let ast = AstProgram { statements: vec![
+            AstStmt::Let(LetStatement {
+                name: "s".into(),
+                value: crate::ast::Expression::StringLiteral("first".into()),
+            }),
+            AstStmt::Assign(crate::ast::AssignStatement {
+                name: "s".into(),
+                value: crate::ast::Expression::StringLiteral("second".into()),
+            }),
+        ]};
+        let lowered = hir::lower(&ast).unwrap();
+        let memory = crate::memory::plan(&lowered);
+        assert_eq!(memory.bindings[&crate::hir::BindingId(0)], StorageClass::OwnedRegion);
+        let c = generate_c(&lowered, &memory).unwrap();
+        let generated_main = c.split("int main(void) {").last().unwrap();
+        assert!(generated_main.contains("hl_define_planned(env,"));
+        assert!(generated_main.contains("hl_assign_planned(env,"));
+        assert!(generated_main.contains("HL_STORAGE_OWNED"));
+    }
+
+    #[test]
     fn generated_c_uses_memory_plan_slots_for_inline_bindings() {
         let ast = AstProgram { statements: vec![
             AstStmt::Let(LetStatement { name: "x".into(), value: crate::ast::Expression::NumberLiteral(7.0) }),

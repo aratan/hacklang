@@ -147,22 +147,37 @@ impl TypeChecker {
                     self.check_compatible(&format!("asignación a '{}'", stmt.name), &expected, &actual);
                 }
                 Statement::IndexAssign(stmt) => {
-                    let target = self.lookup(&stmt.name);
-                    let index = self.infer(&stmt.index);
-                    let value = self.infer(&stmt.value);
-                    match target {
-                        Type::Array(element) => {
-                            if index != Type::Unknown && index != Type::Number {
-                                self.report(format!("el índice de '{}' debe ser number, no {}", stmt.name, index));
+                    let mut target = self.lookup(&stmt.name);
+                    for (position, expression) in stmt.indices.iter().enumerate() {
+                        let index = self.infer(expression);
+                        let is_last = position + 1 == stmt.indices.len();
+                        match target {
+                            Type::Array(element) => {
+                                if index != Type::Unknown && index != Type::Number {
+                                    self.report(format!("el índice {} de '{}' debe ser number, no {}", position, stmt.name, index));
+                                }
+                                if is_last {
+                                    let value = self.infer(&stmt.value);
+                                    self.check_compatible(&format!("elemento de '{}'", stmt.name), &element, &value);
+                                } else {
+                                    target = *element;
+                                }
                             }
-                            self.check_compatible(&format!("elemento de '{}'", stmt.name), &element, &value);
+                            Type::Map(key, map_value) if is_last => {
+                                self.check_compatible(&format!("clave de '{}'", stmt.name), &key, &index);
+                                let value = self.infer(&stmt.value);
+                                self.check_compatible(&format!("valor de '{}'", stmt.name), &map_value, &value);
+                            }
+                            Type::Unknown => {
+                                if is_last { self.infer(&stmt.value); }
+                                target = Type::Unknown;
+                            }
+                            other => {
+                                self.report(format!("no se puede indexar el nivel {} de '{}' de tipo {}", position, stmt.name, other));
+                                if is_last { self.infer(&stmt.value); }
+                                target = Type::Unknown;
+                            }
                         }
-                        Type::Map(key, map_value) => {
-                            self.check_compatible(&format!("clave de '{}'", stmt.name), &key, &index);
-                            self.check_compatible(&format!("valor de '{}'", stmt.name), &map_value, &value);
-                        }
-                        Type::Unknown => {}
-                        other => self.report(format!("no se puede asignar por índice a '{}' de tipo {}", stmt.name, other)),
                     }
                 }
                 Statement::Print(stmt) => { self.infer(&stmt.value); }

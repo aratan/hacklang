@@ -72,6 +72,8 @@ typedef struct HlBinding {
     const char *name;
     HlValue value;
     HlEnv *owner;
+    char *string_storage;
+    size_t string_capacity;
     struct HlBinding *next;
 } HlBinding;
 struct HlEnv {
@@ -195,6 +197,13 @@ static void hl_env_free(HlEnv *environment) {
         free(allocation);
         allocation = next;
     }
+    /* Binding-owned string buffers are individually reusable and are
+     * released before the arena that contains the binding descriptors. */
+    for (HlBinding *binding = environment->bindings; binding; binding = binding->next) {
+        free(binding->string_storage);
+        binding->string_storage = NULL;
+        binding->string_capacity = 0;
+    }
     HlArenaBlock *block = environment->arena;
     while (block) {
         HlArenaBlock *next = block->next;
@@ -242,18 +251,48 @@ static HlBinding *hl_find(HlEnv *environment, const char *name) {
     }
     return NULL;
 }
-static HlValue hl_store_value(HlEnv *owner, HlValue value) {
-    if (value.tag == HL_STRING) value.as.string = hl_copy_string(owner, value.as.string);
+/* Store a value in its binding. Strings use one growable owner buffer,
+ * avoiding one permanent arena allocation per reassignment. Copy through a
+ * temporary first because the input may alias this binding's current buffer. */
+static HlValue hl_store_value(HlBinding *binding, HlValue value) {
+    if (value.tag != HL_STRING) {
+        free(binding->string_storage);
+        binding->string_storage = NULL;
+        binding->string_capacity = 0;
+        return value;
+    }
+
+    const size_t size = strlen(value.as.string) + 1;
+    char *incoming = (char *)malloc(size);
+    if (!incoming) hl_fail(binding->owner, "memoria agotada al copiar una cadena");
+    memcpy(incoming, value.as.string, size);
+
+    if (size > binding->string_capacity) {
+        char *grown = (char *)realloc(binding->string_storage, size);
+        if (!grown) {
+            free(incoming);
+            hl_fail(binding->owner, "memoria agotada al ampliar una cadena");
+        }
+        binding->string_storage = grown;
+        binding->string_capacity = size;
+    }
+    memcpy(binding->string_storage, incoming, size);
+    free(incoming);
+    value.as.string = binding->string_storage;
     return value;
 }
 static void hl_define(HlEnv *environment, const char *name, HlValue value) {
     HlBinding *item = hl_find_local(environment, name);
-    value = hl_store_value(environment, value);
-    if (item) { item->value = value; return; }
+    if (item) {
+        item->value = hl_store_value(item, value);
+        return;
+    }
     item = (HlBinding *)hl_alloc(environment, sizeof(HlBinding));
     item->name = hl_copy_string(environment, name);
-    item->value = value;
     item->owner = environment;
+    item->string_storage = NULL;
+    item->string_capacity = 0;
+    item->value = hl_store_value(item, value);
     item->next = environment->bindings;
     environment->bindings = item;
 }
@@ -264,7 +303,7 @@ static void hl_assign(HlEnv *environment, const char *name, HlValue value) {
         snprintf(message, sizeof(message), "Variable '%s' no definida para asignación", name);
         hl_fail(environment, message);
     }
-    item->value = hl_store_value(item->owner, value);
+    item->value = hl_store_value(item, value);
 }
 static HlValue hl_get(HlEnv *environment, const char *name) {
     HlBinding *item = hl_find(environment, name);

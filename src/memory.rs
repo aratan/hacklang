@@ -909,7 +909,7 @@ mod tests {
         assert!(memory.interference[&BindingId(0)].contains(&BindingId(1)));
         memory.binding_slots.remove(&BindingId(1));
         assert!(validate_slot_plan(&p, &memory)
-            .unwrap_err().contains("sin slot para vecino BindingId"));
+            .unwrap_err().contains("sin slot para BindingId"));
     }
 
     #[test]

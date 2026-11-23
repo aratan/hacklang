@@ -11,6 +11,7 @@ struct Generator {
     loops: Vec<(String, String, usize)>,
     inline_slots: HashMap<crate::hir::BindingId, u32>,
     owned_bindings: std::collections::HashSet<crate::hir::BindingId>,
+    ownership_sites: HashMap<crate::hir::BindingId, u64>,
     scope_lanes: HashMap<ScopeId, u32>,
     promotion_statements: std::collections::HashSet<StmtId>,
 }
@@ -89,7 +90,8 @@ impl Generator {
                     Self::line(out, format!("hl_frame_write_or_fail(env, &frame, {slot}, {v});"));
                 } else {
                     let storage = if self.owned_bindings.contains(binding) { "HL_STORAGE_OWNED" } else { "HL_STORAGE_SCOPE" };
-                    Self::line(out, format!("hl_define_planned(env, {}, {v}, {storage});", Self::binding(p, *binding)?));
+                    let site = self.ownership_sites.get(binding).copied().unwrap_or(0);
+                    Self::line(out, format!("hl_define_planned_site(env, {}, {v}, {storage}, UINT64_C({site}));", Self::binding(p, *binding)?));
                 }
             }
             StmtKind::Assign { binding, value } => {
@@ -170,13 +172,16 @@ pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, Stri
     let owned_bindings = memory.bindings.iter()
         .filter_map(|(binding, class)| matches!(class, StorageClass::OwnedRegion).then_some(*binding))
         .collect();
+    let ownership_sites: HashMap<_, _> = memory.ownership_tokens.iter()
+        .map(|(binding, token)| (*binding, token.0))
+        .collect();
     let scope_lanes: HashMap<_, _> = memory.scope_stacks.iter()
         .map(|(scope, plan)| (*scope, plan.stack.0))
         .collect();
     let lane_count = scope_lanes.values().copied().max().map_or(0, |max| max + 1);
     let promotion_statements = memory.operations.iter().map(|operation| operation.statement).collect();
     let mut body = String::new();
-    let mut generator = Generator { inline_slots, owned_bindings, scope_lanes: scope_lanes.clone(), promotion_statements, ..Generator::default() };
+    let mut generator = Generator { inline_slots, owned_bindings, ownership_sites, scope_lanes: scope_lanes.clone(), promotion_statements, ..Generator::default() };
     for stmt in &program.statements { generator.stmt(program, stmt, &mut body)?; }
     let mut source = include_str!("native_runtime.c").to_string();
     source.push_str("\n/* Compiler MemoryPlan: physical scope lanes. */\n");

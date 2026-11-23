@@ -945,11 +945,11 @@ int main(void) {
             r#"
 int main(void) {
     HlEnv *outer = hl_env_new(NULL);
-    hl_define_planned(outer, "destination", hl_string(outer, "initial"), HL_STORAGE_OWNED);
+    hl_define_planned_site(outer, "destination", hl_string(outer, "initial"), HL_STORAGE_OWNED, UINT64_C(1));
     HlEnv *inner = hl_env_new(outer);
     hl_define_planned(inner, "source", hl_string(inner, "survives-region"), HL_STORAGE_SCOPE);
 
-    hl_assign_promoted_copy(outer, "destination", hl_get(inner, "source"));
+    hl_assign_planned_site(outer, "destination", hl_get(inner, "source"), HL_STORAGE_OWNED, UINT64_C(1));
     if (strcmp(hl_get(outer, "destination").as.string, "survives-region") != 0) return 1;
     hl_env_free(inner);
 

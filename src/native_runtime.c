@@ -455,6 +455,13 @@ static HlValue hl_clone_value(HlEnv *environment, HlValue value) {
     hl_fail(environment, "tipo de valor desconocido al copiar");
     return hl_number(0);
 }
+static void *hl_alloc_in_lane(HlEnv *environment, HlArenaLane *lane, size_t size) {
+    HlArenaLane *previous_lane = environment->lane;
+    environment->lane = lane;
+    void *memory = hl_alloc(environment, size);
+    environment->lane = previous_lane;
+    return memory;
+}
 static HlValue hl_clone_value_in_lane(HlEnv *environment, HlArenaLane *lane, HlValue value) {
     HlArenaLane *previous_lane = environment->lane;
     environment->lane = lane;
@@ -653,7 +660,7 @@ static HlValue hl_get(HlEnv *environment, const char *name) {
     }
     /* Arrays have value semantics: each read receives an independent
      * graph allocated in the current activation's lane. */
-    if (item->value.tag == HL_ARRAY)
+    if (item->value.tag == HL_ARRAY || item->value.tag == HL_MAP)
         return hl_clone_value(environment, item->value);
     return item->value;
 }
@@ -688,15 +695,16 @@ static HlValue hl_clone_for_binding(HlBinding *binding, HlValue value) {
 }
 static void hl_map_set(HlBinding *binding, HlMap *map, HlValue key, HlValue value) {
     size_t position = hl_map_find_key(map, key);
-    HlValue stored_key = hl_clone_for_binding(binding, key);
     HlValue stored_value = hl_clone_for_binding(binding, value);
     if (position != SIZE_MAX) {
         map->entries[position].value = stored_value;
         return;
     }
+    HlValue stored_key = hl_clone_for_binding(binding, key);
     if (map->length >= SIZE_MAX / sizeof(HlMapEntry))
         hl_fail(binding->owner, "mapa demasiado grande al insertar clave");
-    HlMapEntry *grown = (HlMapEntry *)hl_alloc(binding->owner,
+    HlMapEntry *grown = (HlMapEntry *)hl_alloc_in_lane(binding->owner,
+        binding->ownership_token ? &binding->aggregate_lane : binding->owner->lane,
         (map->length + 1) * sizeof(HlMapEntry));
     if (map->length) memcpy(grown, map->entries, map->length * sizeof(HlMapEntry));
     grown[map->length].key = stored_key;

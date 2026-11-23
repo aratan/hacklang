@@ -117,8 +117,6 @@ impl Generator {
 }
 
 pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, String> {
-    // Validate stack counts, stack ownership, and interference constraints before codegen.
-    crate::memory::validate_slot_plan(program, memory)?;
     // Reject stale/incomplete plans instead of silently compiling without the
     // frontend's storage decisions. This is metadata consumption, not yet an
     // instruction to the runtime to allocate from physical regions.
@@ -127,6 +125,8 @@ pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, Stri
             return Err(format!("MemoryPlan incompleto: falta BindingId {}", binding.id.0));
         }
     }
+    // Validate stack counts, stack ownership, and interference constraints before codegen.
+    crate::memory::validate_slot_plan(program, memory)?;
     let mut body = String::new(); let mut generator = Generator::default();
     for stmt in &program.statements { generator.stmt(program, stmt, &mut body)?; }
     let mut source = include_str!("native_runtime.c").to_string();

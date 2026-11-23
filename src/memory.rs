@@ -103,8 +103,8 @@ pub enum StorageOwner {
     Unknown,
 }
 
-/// Identity of one dynamic allocation tracked by the ownership model.
-/// It is not a pointer and is not yet emitted by either runtime.
+/// Stable planner identity for an ownership acquisition site. The runtime may
+/// create multiple distinct dynamic handles when that site executes repeatedly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct OwnershipTokenId(pub u64);
 
@@ -966,6 +966,20 @@ mod tests {
     use crate::{ast::{Expression as A, LetStatement, PrintStatement, Program as AP, Statement as S}, hir};
 
     fn lower(statements: Vec<S>) -> Program { hir::lower(&AP { statements }).unwrap() }
+
+    #[test]
+    fn ownership_sites_are_stable_and_only_assigned_to_owned_bindings() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "scoped".into(), value: A::StringLiteral("local".into()) }),
+            S::Let(LetStatement { name: "owned".into(), value: A::StringLiteral("first".into()) }),
+            S::Assign(crate::ast::AssignStatement { name: "owned".into(), value: A::StringLiteral("second".into()) }),
+        ]);
+        let memory = plan(&p);
+        let scoped = p.bindings.iter().find(|binding| binding.name == "scoped").unwrap().id;
+        let owned = p.bindings.iter().find(|binding| binding.name == "owned").unwrap().id;
+        assert!(!memory.ownership_tokens.contains_key(&scoped));
+        assert_eq!(memory.ownership_tokens.get(&owned), Some(&OwnershipTokenId(u64::from(owned.0) + 1)));
+    }
 
     #[test]
     fn cfg_does_not_create_fallthrough_after_break_inside_nested_block() {

@@ -69,11 +69,20 @@ typedef struct HlArenaLane {
     HlArenaBlock *current;
 } HlArenaLane;
 
+typedef struct HlOwnershipRecord HlOwnershipRecord;
 typedef struct HlAllocation {
     HlCleanupFn cleanup;
     void *context;
     struct HlAllocation *next;
+    HlOwnershipRecord *ownership;
 } HlAllocation;
+struct HlOwnershipRecord {
+    uint64_t id;
+    HlEnv *owner;
+    HlAllocation *allocation;
+    int active;
+    HlOwnershipRecord *next;
+};
 typedef struct HlBinding {
     const char *name;
     HlValue value;
@@ -87,6 +96,7 @@ struct HlEnv {
     HlEnv *parent;
     HlBinding *bindings;
     HlAllocation *allocations;
+    HlOwnershipRecord *ownership_records; /* root environment owns token tombstones */
     HlArenaLane *lane;
     HlArenaBlock *lane_mark_block;
     size_t lane_mark_used;
@@ -138,6 +148,7 @@ HlAllocation *hl_env_defer(HlEnv *environment, HlCleanupFn cleanup, void *contex
     if (!entry) return NULL;
     entry->cleanup = cleanup;
     entry->context = context;
+    entry->ownership = NULL;
     entry->next = environment->allocations;
     environment->allocations = entry;
     return entry;
@@ -150,6 +161,12 @@ static int hl_cleanup_detach(HlEnv *environment, HlAllocation *entry) {
     if (!*cursor) return 0;
     *cursor = entry->next;
     entry->next = NULL;
+    if (entry->ownership) {
+        entry->ownership->active = 0;
+        entry->ownership->owner = NULL;
+        entry->ownership->allocation = NULL;
+        entry->ownership = NULL;
+    }
     return 1;
 }
 
@@ -167,6 +184,7 @@ int hl_env_transfer(HlEnv *from, HlEnv *to, HlAllocation *entry) {
         || !hl_env_is_ancestor(to, from) || !hl_cleanup_detach(from, entry)) return 0;
     entry->next = to->allocations;
     to->allocations = entry;
+    if (entry->ownership) entry->ownership->owner = to;
     return 1;
 }
 
@@ -176,6 +194,55 @@ int hl_env_cancel(HlEnv *environment, HlAllocation *entry) {
     if (!hl_cleanup_detach(environment, entry)) return 0;
     free(entry);
     return 1;
+}
+
+
+/* Ownership tokens are stable integer identities, not allocation pointers.
+ * Their tombstones are owned by the root environment; a child cleanup
+ * invalidates the token before invoking its callback, while the tombstone
+ * remains queryable until the root itself is destroyed. */
+static HlEnv *hl_env_root(HlEnv *environment) {
+    if (!environment) return NULL;
+    while (environment->parent) environment = environment->parent;
+    return environment;
+}
+static HlOwnershipRecord *hl_ownership_find(HlEnv *environment, uint64_t id) {
+    HlEnv *root = hl_env_root(environment);
+    if (!root) return NULL;
+    for (HlOwnershipRecord *record = root->ownership_records; record; record = record->next)
+        if (record->id == id) return record;
+    return NULL;
+}
+int hl_ownership_acquire(HlEnv *environment, uint64_t id, HlCleanupFn cleanup, void *context) {
+    HlEnv *root = hl_env_root(environment);
+    if (!root || !environment || environment->closing || !cleanup
+        || hl_ownership_find(environment, id)) return 0;
+    HlOwnershipRecord *record = (HlOwnershipRecord *)malloc(sizeof(HlOwnershipRecord));
+    if (!record) return 0;
+    HlAllocation *allocation = hl_env_defer(environment, cleanup, context);
+    if (!allocation) { free(record); return 0; }
+    record->id = id;
+    record->owner = environment;
+    record->allocation = allocation;
+    record->active = 1;
+    record->next = root->ownership_records;
+    root->ownership_records = record;
+    allocation->ownership = record;
+    return 1;
+}
+int hl_ownership_transfer(HlEnv *from, HlEnv *to, uint64_t id) {
+    HlOwnershipRecord *record = hl_ownership_find(from, id);
+    if (!record || !record->active || record->owner != from || !record->allocation) return 0;
+    return hl_env_transfer(from, to, record->allocation);
+}
+int hl_ownership_drop(HlEnv *environment, uint64_t id) {
+    HlOwnershipRecord *record = hl_ownership_find(environment, id);
+    if (!record || !record->active || record->owner != environment || !record->allocation) return 0;
+    return hl_env_cancel(environment, record->allocation);
+}
+int hl_ownership_is_active(HlEnv *environment, uint64_t id) {
+    HlOwnershipRecord *record = hl_ownership_find(environment, id);
+    return record && record->active && record->owner != NULL && record->allocation != NULL;
 }
 
 static void hl_lane_init(HlArenaLane *lane) {
@@ -229,9 +296,21 @@ static void hl_env_free(HlEnv *environment) {
     environment->allocations = NULL;
     while (allocation) {
         HlAllocation *next = allocation->next;
+        if (allocation->ownership) {
+            allocation->ownership->active = 0;
+            allocation->ownership->owner = NULL;
+            allocation->ownership->allocation = NULL;
+            allocation->ownership = NULL;
+        }
         allocation->cleanup(allocation->context);
         free(allocation);
         allocation = next;
+    }
+    /* Token tombstones live in the root until all descendant callbacks have run. */
+    if (!environment->parent) {
+        HlOwnershipRecord *record = environment->ownership_records;
+        while (record) { HlOwnershipRecord *next = record->next; free(record); record = next; }
+        environment->ownership_records = NULL;
     }
     /* Binding-owned buffers are released by registered callbacks above. */
     if (environment->owns_lane) {
@@ -265,6 +344,7 @@ static HlEnv *hl_env_new_in_lane(HlEnv *parent, HlArenaLane *lane) {
     environment->parent = parent;
     environment->bindings = NULL;
     environment->allocations = NULL;
+    environment->ownership_records = NULL;
     environment->lane = lane;
     environment->lane_mark_block = lane->current ? lane->current : lane->blocks;
     environment->lane_mark_used = environment->lane_mark_block ? environment->lane_mark_block->used : 0;

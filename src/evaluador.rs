@@ -570,7 +570,7 @@ mod tests {
     #[test]
     fn test_call_keeps_temporary_returned_closure_rooted_while_evaluating_arguments() {
         let ev = eval_program(
-            "let make = |x| |y| x + y; let result = make(10)((let temporary = 0; return 5;));"
+            "let make = |x| |y| x + y; let result = make(10)((|z| (let temporary = 0; return 5;))(0));"
         ).unwrap();
         assert_eq!(ev.get_var("result"), Some(&Value::Number(15.0)));
     }

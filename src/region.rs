@@ -6,11 +6,23 @@
 
 use std::any::Any;
 use std::ops::Range;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_FINALIZER_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RegionFinalizerId(pub u64);
+
+struct TrackedFinalizer {
+    id: RegionFinalizerId,
+    sequence: u64,
+    value: Box<dyn Any>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RegionMark {
     cursor: usize,
-    finalizers: usize,
+    finalizers: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,7 +37,8 @@ pub enum RegionError {
 pub struct Region {
     bytes: Vec<u8>,
     cursor: usize,
-    tracked: Vec<Box<dyn Any>>,
+    tracked: Vec<TrackedFinalizer>,
+    next_finalizer: u64,
 }
 
 impl Region {
@@ -46,7 +59,7 @@ impl Region {
     pub fn mark(&self) -> RegionMark {
         RegionMark {
             cursor: self.cursor,
-            finalizers: self.tracked.len(),
+            finalizers: self.next_finalizer,
         }
     }
 
@@ -74,17 +87,33 @@ impl Region {
 
     /// Store an owned value whose destructor must run when this region is
     /// restored or dropped. This models deterministic finalizer ordering.
-    pub fn track<T: Any>(&mut self, value: T) {
-        self.tracked.push(Box::new(value));
+    /// Register an owned value with a stable identity. Its destructor runs
+    /// exactly once when canceled ownership is returned, restored, or dropped.
+    pub fn track<T: Any>(&mut self, value: T) -> RegionFinalizerId {
+        let id = RegionFinalizerId(NEXT_FINALIZER_ID.fetch_add(1, Ordering::Relaxed));
+        self.track_box(id, Box::new(value));
+        id
     }
 
-    /// Rewind to a previously created mark. Values tracked after the mark are
-    /// dropped in reverse insertion order by Vec::truncate.
+    fn track_box(&mut self, id: RegionFinalizerId, value: Box<dyn Any>) {
+        let sequence = self.next_finalizer;
+        self.next_finalizer = self.next_finalizer.saturating_add(1);
+        self.tracked.push(TrackedFinalizer { id, sequence, value });
+    }
+
+    /// Remove a registration and return its value to the caller. This is an
+    /// ownership transfer, not destruction; dropping the returned box runs it.
+    fn take_finalizer(&mut self, id: RegionFinalizerId) -> Option<Box<dyn Any>> {
+        let index = self.tracked.iter().position(|entry| entry.id == id)?;
+        Some(self.tracked.remove(index).value)
+    }
+
+    /// Rewind to a mark. Registrations created after it are destroyed LIFO.
     pub fn restore(&mut self, mark: RegionMark) -> Result<(), RegionError> {
-        if mark.cursor > self.cursor || mark.finalizers > self.tracked.len() {
+        if mark.cursor > self.cursor || mark.finalizers > self.next_finalizer {
             return Err(RegionError::InvalidMark);
         }
-        while self.tracked.len() > mark.finalizers {
+        while self.tracked.last().is_some_and(|entry| entry.sequence >= mark.finalizers) {
             drop(self.tracked.pop());
         }
         self.cursor = mark.cursor;
@@ -211,6 +240,25 @@ impl RegionTable {
 
     /// Close a region only after all its direct children have been closed.
     /// Descendants are checked transitively by requiring each direct child closed.
+    /// Transfer one finalizer to an ancestor region without cloning ownership.
+    /// The source registration is removed only after both lifetimes are validated.
+    pub fn transfer_finalizer(
+        &mut self,
+        source: RegionId,
+        destination: RegionId,
+        finalizer: RegionFinalizerId,
+    ) -> Result<(), RegionError> {
+        if source == destination || !self.is_ancestor(destination, source) {
+            return Err(RegionError::InvalidMark);
+        }
+        self.active_mut(destination)?;
+        let value = self.active_mut(source)?.region.take_finalizer(finalizer)
+            .ok_or(RegionError::InvalidMark)?;
+        let destination_region = self.active_mut(destination)?;
+        destination_region.region.track_box(finalizer, value);
+        Ok(())
+    }
+
     pub fn close(&mut self, id: RegionId) -> Result<(), RegionError> {
         if self.descriptors.iter().any(|child|
             child.parent == Some(id) && child.state == RegionState::Active

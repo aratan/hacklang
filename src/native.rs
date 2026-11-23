@@ -1113,6 +1113,14 @@ int main(void) {
     HlArray *stored_inner = root_binding->value.as.array->items[0].as.array;
     if (stored_inner->items[0].as.number != 123) return 19;
     if (strcmp(stored_inner->items[1].as.string, "owned-text") != 0) return 20;
+
+    HlValue indexed = hl_index(environment, root_binding->value, hl_number(0));
+    indexed.as.array->items[0] = hl_number(321);
+    if (stored_inner->items[0].as.number != 123) return 21;
+    hl_index_assign(environment, "items", hl_number(0), indexed);
+    root_binding = hl_find(environment, "items");
+    stored_inner = root_binding->value.as.array->items[0].as.array;
+    if (stored_inner->items[0].as.number != 321) return 22;
     hl_env_free(environment);
     return 0;
 }

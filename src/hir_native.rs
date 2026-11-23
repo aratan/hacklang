@@ -264,7 +264,7 @@ mod tests {
         assert!(c.contains("binding 0 (n) => inline"));
         assert!(c.contains("binding 1 (s) => scope-region"));
         let generated_main = c.split("int main(void) {").last().unwrap();
-        assert!(generated_main.contains("hl_define_planned(env,"));
+        assert!(generated_main.contains("hl_define_planned_site(env,"));
         assert!(generated_main.contains("HL_STORAGE_SCOPE"));
         assert!(!generated_main.contains("HL_STORAGE_OWNED"));
     }
@@ -286,7 +286,7 @@ mod tests {
         assert_eq!(memory.bindings[&crate::hir::BindingId(0)], StorageClass::OwnedRegion);
         let c = generate_c(&lowered, &memory).unwrap();
         let generated_main = c.split("int main(void) {").last().unwrap();
-        assert!(generated_main.contains("hl_define_planned(env,"));
+        assert!(generated_main.contains("hl_define_planned_site(env,"));
         assert!(generated_main.contains("hl_assign_planned(env,"));
         assert!(generated_main.contains("HL_STORAGE_OWNED"));
     }

@@ -114,6 +114,7 @@ int main(void) {
     CleanupProbe two = { &order, 2 };
     CleanupProbe three = { &order, 3 };
     CleanupProbe four = { &order, 4 };
+    CleanupProbe five = { &order, 5 };
     HlEnv *outer = hl_env_new(NULL);
     HlEnv *inner = hl_env_new(outer);
     HlAllocation *first = hl_env_defer(inner, record_cleanup, &one);
@@ -121,12 +122,15 @@ int main(void) {
     HlAllocation *cancelled = hl_env_defer(inner, record_cleanup, &three);
     if (!first || !moved || !cancelled) return 10;
     if (!hl_env_transfer(inner, outer, moved)) return 11;
-    if (!hl_env_cancel(inner, cancelled)) return 12;
-    if (!hl_env_defer(inner, record_cleanup, &four)) return 13;
+    HlAllocation *outer_owned = hl_env_defer(outer, record_cleanup, &five);
+    if (!outer_owned) return 12;
+    if (hl_env_transfer(outer, inner, outer_owned)) return 13;
+    if (!hl_env_cancel(inner, cancelled)) return 14;
+    if (!hl_env_defer(inner, record_cleanup, &four)) return 15;
     hl_env_free(inner);
-    if (order != 41) return 14;
+    if (order != 41) return 16;
     hl_env_free(outer);
-    if (order != 412) return 15;
+    if (order != 4125) return 17;
     return 0;
 }
 "#

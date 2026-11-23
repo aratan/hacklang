@@ -161,6 +161,61 @@ int main(void) {
     }
 
     #[test]
+    fn c_runtime_bump_arena_grows_aligns_and_releases_by_scope() {
+        let directory = temporary_directory().expect("temporary directory");
+        let c_file = directory.join("arena_runtime.c");
+        let executable = directory.join("arena_runtime");
+        let source = format!(
+            "{}\\n{}",
+            include_str!("native_runtime.c"),
+            r#"
+int main(void) {
+    HlEnv *outer = hl_env_new(NULL);
+    HlEnv *inner = hl_env_new(outer);
+    unsigned char *outer_value = (unsigned char *)hl_alloc(outer, 32);
+    outer_value[0] = 0x5a;
+
+    for (int i = 0; i < 24; ++i) {
+        void *item = hl_alloc(inner, 512);
+        if (((uintptr_t)item % _Alignof(max_align_t)) != 0) return 10;
+        memset(item, i, 512);
+    }
+    if (!inner->arena || !inner->arena->next) return 11;
+    if (outer_value[0] != 0x5a) return 12;
+
+    hl_env_free(inner);
+    if (outer_value[0] != 0x5a) return 13;
+    hl_env_free(outer);
+    return 0;
+}
+"#
+        );
+        fs::write(&c_file, source).expect("write C arena test");
+        let compiler = select_c_compiler().expect("C compiler");
+        let build = Command::new(&compiler)
+            .arg("-std=c11")
+            .arg("-O2")
+            .arg(&c_file)
+            .arg("-o")
+            .arg(&executable)
+            .arg("-lm")
+            .output()
+            .expect("compile C arena test");
+        assert!(
+            build.status.success(),
+            "C arena test compilation failed: {}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let run = Command::new(&executable).output().expect("run C arena test");
+        assert!(
+            run.status.success(),
+            "C arena growth/alignment/scope test failed with code {:?}",
+            run.status.code()
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn c_runtime_failure_cleans_the_entire_active_environment_chain() {
         let directory = temporary_directory().expect("temporary directory");
         let c_file = directory.join("cleanup_failure.c");

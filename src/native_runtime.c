@@ -547,20 +547,34 @@ static HlValue hl_index(HlEnv *environment, HlValue target, HlValue index) {
         hl_fail(environment, "índice de array fuera de rango");
     return hl_clone_value(environment, target.as.array->items[position]);
 }
-static void hl_index_assign(HlEnv *environment, const char *name, HlValue index, HlValue value) {
+static void hl_index_assign_path(HlEnv *environment, const char *name,
+                                 const HlValue *indices, size_t index_count,
+                                 HlValue value) {
     HlBinding *binding = hl_find(environment, name);
     if (!binding) {
         char message[512];
         snprintf(message, sizeof(message), "Variable '%s' no definida para asignación", name);
         hl_fail(environment, message);
     }
-    if (binding->value.tag != HL_ARRAY || !binding->value.as.array)
-        hl_fail(environment, "no se puede asignar por índice a un valor que no sea array");
-    size_t position = hl_array_index(environment, index);
-    if (position >= binding->value.as.array->length)
-        hl_fail(environment, "índice de array fuera de rango");
-    /* The element must outlive the expression's temporary scope. */
-    binding->value.as.array->items[position] = hl_clone_value(binding->owner, value);
+    if (!indices || index_count == 0)
+        hl_fail(environment, "la asignación por índice requiere al menos un índice");
+
+    HlValue *slot = &binding->value;
+    for (size_t depth = 0; depth < index_count; ++depth) {
+        if (slot->tag != HL_ARRAY || !slot->as.array)
+            hl_fail(environment, "no se puede asignar por índice a un valor que no sea array");
+        size_t position = hl_array_index(environment, indices[depth]);
+        if (position >= slot->as.array->length)
+            hl_fail(environment, "índice de array fuera de rango");
+        slot = &slot->as.array->items[position];
+    }
+
+    /* Deep-clone the replacement into the root binding's owner lane. */
+    *slot = hl_clone_value(binding->owner, value);
+}
+
+static void hl_index_assign(HlEnv *environment, const char *name, HlValue index, HlValue value) {
+    hl_index_assign_path(environment, name, &index, 1, value);
 }
 static int hl_truthy(HlValue value) {
     switch (value.tag) {

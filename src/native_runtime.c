@@ -866,7 +866,7 @@ static void hl_debug_value(HlValue value) {
     switch (value.tag) {
         case HL_NUMBER: {
             char buffer[512];
-            snprintf(buffer, sizeof(buffer), "%.17g", value.as.number);
+            hl_number_text(value.as.number, buffer, sizeof(buffer));
             if (isfinite(value.as.number) && !strchr(buffer, '.') && !strchr(buffer, 'e') && !strchr(buffer, 'E'))
                 strncat(buffer, ".0", sizeof(buffer) - strlen(buffer) - 1);
             printf("Number(%s)", buffer);

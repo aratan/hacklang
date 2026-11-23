@@ -307,7 +307,7 @@ mod tests {
         assert_eq!(memory.bindings[&crate::hir::BindingId(0)], StorageClass::OwnedRegion);
         let c = generate_c(&lowered, &memory).unwrap();
         let generated_main = c.split("int main(void) {").last().unwrap();
-        assert!(generated_main.contains("hl_assign_planned(env,"));
+        assert!(generated_main.contains("hl_assign_promoted_copy(env,"));
         assert!(generated_main.contains("HL_STORAGE_OWNED"));
     }
 

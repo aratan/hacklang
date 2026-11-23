@@ -165,6 +165,66 @@ int main(void) {
     }
 
     #[test]
+    fn c_runtime_applies_scope_and_owned_storage_policies() {
+        let directory = temporary_directory().expect("temporary directory");
+        let c_file = directory.join("planned_storage.c");
+        let executable = directory.join("planned_storage");
+        let source = format!(
+            "{}\n{}",
+            include_str!("native_runtime.c"),
+            r#"
+int main(void) {
+    HlEnv *environment = hl_env_new(NULL);
+    hl_define_planned(environment, "scoped",
+        hl_string(environment, "scope-value"), HL_STORAGE_SCOPE);
+    HlBinding *scoped = hl_find(environment, "scoped");
+    if (!scoped || scoped->string_storage != NULL) return 10;
+    if (strcmp(scoped->value.as.string, "scope-value") != 0) return 11;
+
+    hl_define_planned(environment, "owned",
+        hl_string(environment, "owned-value"), HL_STORAGE_OWNED);
+    HlBinding *owned = hl_find(environment, "owned");
+    if (!owned || !owned->string_storage || owned->string_capacity == 0) return 12;
+    char *storage = owned->string_storage;
+    for (int i = 0; i < 1000; ++i) {
+        char value[32];
+        snprintf(value, sizeof(value), "owned-%d", i);
+        hl_assign_planned(environment, "owned",
+            hl_string(environment, value), HL_STORAGE_OWNED);
+        if (owned->string_storage != storage) return 13;
+    }
+    if (strcmp(owned->value.as.string, "owned-999") != 0) return 14;
+    hl_env_free(environment);
+    return 0;
+}
+"#
+        );
+        fs::write(&c_file, source).expect("write C runtime test");
+        let compiler = select_c_compiler().expect("C compiler");
+        let build = Command::new(&compiler)
+            .arg("-std=c11")
+            .arg("-O2")
+            .arg(&c_file)
+            .arg("-o")
+            .arg(&executable)
+            .arg("-lm")
+            .output()
+            .expect("compile C runtime test");
+        assert!(
+            build.status.success(),
+            "C runtime test compilation failed: {}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let run = Command::new(&executable).output().expect("run C runtime test");
+        assert!(
+            run.status.success(),
+            "planned storage test failed with code {:?}",
+            run.status.code()
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn c_runtime_cleanup_callbacks_cannot_resurrect_closing_environments() {
         let directory = temporary_directory().expect("temporary directory");
         let c_file = directory.join("cleanup_reentrancy.c");

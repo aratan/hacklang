@@ -778,11 +778,12 @@ pub fn validate_memory_operations(program: &Program, plan: &MemoryPlan) -> Resul
             return Err(format!("propietario destino inválido en promoción StmtId {}", operation.statement.0));
         }
         let expected_source_owner = if let Some(source) = operation.source {
-            let _source_binding = program.bindings.get(source.0 as usize)
+            let source_binding = program.bindings.get(source.0 as usize)
                 .ok_or_else(|| format!("origen inexistente en promoción: BindingId {}", source.0))?;
             match plan.bindings.get(&source) {
                 Some(StorageClass::Inline) => StorageOwner::Inline,
-                Some(StorageClass::ScopeRegion(scope)) => StorageOwner::Scope(*scope),
+                Some(StorageClass::ScopeRegion(scope)) if *scope == source_binding.scope => StorageOwner::Scope(*scope),
+                Some(StorageClass::ScopeRegion(_)) => return Err(format!("región de almacenamiento incoherente para origen BindingId {}", source.0)),
                 Some(StorageClass::OwnedRegion) => StorageOwner::Binding(source),
                 None => return Err(format!("clase de almacenamiento ausente para origen BindingId {}", source.0)),
             }
@@ -1354,6 +1355,23 @@ mod tests {
         memory.operations[0].source_owner = StorageOwner::Unknown;
         assert!(validate_memory_operations(&p, &memory)
             .unwrap_err().contains("propietario origen incoherente"));
+    }
+
+    #[test]
+    fn promotion_validation_rejects_source_region_that_disagrees_with_binding_scope() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "outer".into(), value: A::StringLiteral("initial".into()) }),
+            S::Block(vec![
+                S::Let(LetStatement { name: "inner".into(), value: A::StringLiteral("temporary".into()) }),
+                S::Assign(crate::ast::AssignStatement {
+                    name: "outer".into(), value: A::Identifier("inner".into()),
+                }),
+            ]),
+        ]);
+        let mut memory = plan(&p);
+        memory.bindings.insert(BindingId(1), StorageClass::ScopeRegion(ScopeId(u32::MAX)));
+        assert!(validate_memory_operations(&p, &memory)
+            .unwrap_err().contains("región de almacenamiento incoherente"));
     }
 
     #[test]

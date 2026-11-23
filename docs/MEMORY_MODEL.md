@@ -516,3 +516,39 @@ Antes de que el backend consuma el plan, cada programa deberá satisfacer:
 
 El planificador deberá poder explicar, para cada binding y temporal, su clase de almacenamiento, lane, propietario, ámbito de vida y motivo de promoción. Esta explicación será la base de una futura orden `hl explain-memory`.
 
+
+
+### 2.6.3 Contrato de limpieza y estado real de los backends
+
+La inspección del código existente identifica dos mecanismos parciales que deben converger conceptualmente, sin crear un tercer subsistema:
+
+- `Region::track<T>` registra valores Rust en un vector; `Region::restore` extrae y destruye los registros posteriores a la marca en orden LIFO.
+- `HlEnv` mantiene una lista enlazada de asignaciones C insertadas al principio; `hl_env_free` recorre esa lista y libera las asignaciones en orden LIFO. Actualmente solo ejecuta `free`: no hay callbacks de destrucción tipada ni transferencia de registros entre entornos.
+- El generador C crea y libera entornos en bloques, y emite limpieza explícita antes de los saltos `break` y `continue`. La salida normal del bloque también libera el entorno. El backend no dispone de una ruta de limpieza para errores: `hl_fail` termina el proceso con `exit(1)`.
+
+Por tanto, no debe confundirse el orden LIFO de liberación de bloques C con un sistema de destructores, ni el prototipo `Region` con el runtime de HackLang. Ninguno de los dos está conectado todavía al `OwnershipLedger`.
+
+#### Contrato común propuesto
+
+La futura integración utilizará un único concepto backend-neutral de registro de limpieza, asociado al token de propiedad ya definido:
+
+1. **Acquire:** al crear un recurso que requiera destrucción, registrar una acción de limpieza en el propietario actual. La identidad del registro será estable durante su vida.
+2. **Move:** transferir el registro existente al propietario nuevo; no registrar una segunda destrucción ni duplicar el recurso.
+3. **Promote:** transferir el registro a un propietario cuya vida mayor haya sido demostrada por el análisis. El registro conserva el mismo token.
+4. **Drop:** desactivar/consumir el registro exactamente una vez. Un registro consumido no puede volver a ejecutarse.
+5. **Scope exit:** ejecutar los registros activos en orden inverso de adquisición y solo después recuperar el almacenamiento de la región.
+6. **Non-local exit:** `return`, `break`, `continue` y error deben recorrer los mismos frames abandonados que la salida normal, respetando el destino del salto.
+7. **Failure safety:** los fallos durante la reserva o la ejecución no pueden provocar una segunda destrucción. La política para fallos dentro de un destructor deberá definirse explícitamente; no se asumirá que un callback puede abortar la limpieza restante.
+
+El ledger seguirá siendo el verificador del estado lógico; no será por sí mismo el registro físico de callbacks. El backend Rust y el backend C consumirán la misma secuencia de acciones del plan, adaptándola a sus mecanismos de almacenamiento, sin volver a inferir propiedad por separado.
+
+#### Secuencia de integración y bloqueos
+
+La implementación se hará por etapas verificables:
+
+- Primero, definir un registro/stack de limpieza con identidad estable, desactivación y transferencia, y probar orden LIFO, transferencia y doble consumo en Rust.
+- Después, conectar ese contrato al runtime C. Los callbacks deberán ejecutarse antes de liberar los bloques que puedan necesitar.
+- Sustituir la terminación directa de `hl_fail` por propagación estructurada del error y limpieza de los entornos activos. No se añadirá un `longjmp` improvisado: debe preservarse el estado de los saltos generados y evitar saltarse destructores.
+- Finalmente, generar y probar los mismos casos de salida en ambos backends: salida normal, anidamiento, `return`, `break`, `continue`, error y transferencia/promoción.
+
+**No implementado todavía:** el runtime C no tiene callbacks ni cleanup stack; el runtime Rust de HackLang aún no consume el ledger; el error C todavía llama a `exit(1)`; y no existe aún una prueba de paridad de destrucción entre backends. Hasta que esas pruebas existan, la garantía de destrucción exactamente una vez se limita al modelo lógico del ledger y no se atribuye al runtime.

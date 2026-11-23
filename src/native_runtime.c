@@ -556,7 +556,7 @@ static HlValue hl_store_value(HlBinding *binding, HlValue value, HlStorageClass 
     }
 
     if (value.tag == HL_STRING) {
-        if (binding->value.tag == HL_ARRAY && binding->ownership_token) {
+        if (hl_is_aggregate_tag(binding->value.tag) && binding->ownership_token) {
             hl_release_binding_resource(binding, "no se pudo liberar la propiedad anterior de array");
         }
 

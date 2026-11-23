@@ -1246,6 +1246,15 @@ int main(void) {
     HlValue inserted = hl_index(environment, binding->value, hl_string(environment, "new"));
     if (inserted.tag != HL_BOOL || !inserted.as.boolean) return 15;
 
+    uint64_t first_token = binding->ownership_token;
+    hl_assign_planned(environment, "data", hl_number(3), HL_STORAGE_OWNED);
+    if (hl_ownership_is_active(environment, first_token)
+        || binding->aggregate_lane.blocks != NULL) return 16;
+    hl_assign_planned(environment, "data", original, HL_STORAGE_OWNED);
+    if (binding->value.tag != HL_MAP || !binding->ownership_token
+        || binding->ownership_token == first_token
+        || !hl_ownership_is_active(environment, binding->ownership_token)) return 17;
+
     hl_env_free(environment);
     return 0;
 }

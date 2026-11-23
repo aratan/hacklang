@@ -35,8 +35,15 @@ struct HlEnv {
     int closing;
 };
 
-static void hl_fail(const char *message) {
-    fprintf(stderr, "Error en tiempo de ejecución: %s\n", message);
+static void hl_env_free(HlEnv *environment);
+
+static void hl_fail(HlEnv *environment, const char *message) {
+    fprintf(stderr, "Error en tiempo de ejecución: %s\\n", message);
+    while (environment) {
+        HlEnv *parent = environment->parent;
+        hl_env_free(environment);
+        environment = parent;
+    }
     exit(1);
 }
 
@@ -85,10 +92,10 @@ int hl_env_cancel(HlEnv *environment, HlAllocation *entry) {
 
 static void *hl_alloc(HlEnv *environment, size_t size) {
     void *memory = malloc(size ? size : 1);
-    if (!memory) hl_fail("memoria agotada");
+    if (!memory) hl_fail(environment, "memoria agotada");
     if (!hl_env_defer(environment, hl_cleanup_free, memory)) {
         free(memory);
-        hl_fail("memoria agotada");
+        hl_fail(environment, "memoria agotada");
     }
     return memory;
 }
@@ -124,7 +131,7 @@ static HlValue hl_string(HlEnv *environment, const char *value) {
 }
 static HlEnv *hl_env_new(HlEnv *parent) {
     HlEnv *environment = (HlEnv *)malloc(sizeof(HlEnv));
-    if (!environment) hl_fail("memoria agotada");
+    if (!environment) hl_fail(parent, "memoria agotada");
     environment->parent = parent;
     environment->bindings = NULL;
     environment->allocations = NULL;
@@ -164,7 +171,7 @@ static void hl_assign(HlEnv *environment, const char *name, HlValue value) {
     if (!item) {
         char message[512];
         snprintf(message, sizeof(message), "Variable '%s' no definida para asignación", name);
-        hl_fail(message);
+        hl_fail(environment, message);
     }
     item->value = hl_store_value(item->owner, value);
 }
@@ -173,7 +180,7 @@ static HlValue hl_get(HlEnv *environment, const char *name) {
     if (!item) {
         char message[512];
         snprintf(message, sizeof(message), "Variable '%s' no definida", name);
-        hl_fail(message);
+        hl_fail(environment, message);
     }
     return item->value;
 }
@@ -274,11 +281,11 @@ static HlValue hl_mixed_text(HlEnv *environment, HlValue left, HlValue right) {
     snprintf(joined, size, "%s(%s)", left_text, right_text);
     return hl_string(environment, joined);
 }
-static void hl_require_numbers(HlValue left, HlValue right, const char *operation) {
+static void hl_require_numbers(HlEnv *environment, HlValue left, HlValue right, const char *operation) {
     if (left.tag != HL_NUMBER || right.tag != HL_NUMBER) {
         char message[256];
         snprintf(message, sizeof(message), "Type mismatch: valores incompatibles con el operador %s", operation);
-        hl_fail(message);
+        hl_fail(environment, message);
     }
 }
 static HlValue hl_add(HlEnv *environment, HlValue left, HlValue right) {
@@ -298,37 +305,37 @@ static HlValue hl_add(HlEnv *environment, HlValue left, HlValue right) {
         snprintf(joined, size, "%s%s", number, right.as.string);
         return hl_string(environment, joined);
     }
-    hl_fail("Type mismatch: valores incompatibles con el operador Plus");
+    hl_fail(environment, "Type mismatch: valores incompatibles con el operador Plus");
     return hl_number(0);
 }
 static HlValue hl_sub(HlEnv *environment, HlValue left, HlValue right) {
     if (hl_is_string_number_pair(left, right)) return hl_mixed_text(environment, left, right);
-    hl_require_numbers(left, right, "Minus"); return hl_number(left.as.number - right.as.number);
+    hl_require_numbers(environment, left, right, "Minus"); return hl_number(left.as.number - right.as.number);
 }
 static HlValue hl_mul(HlEnv *environment, HlValue left, HlValue right) {
     if (hl_is_string_number_pair(left, right)) return hl_mixed_text(environment, left, right);
-    hl_require_numbers(left, right, "Star"); return hl_number(left.as.number * right.as.number);
+    hl_require_numbers(environment, left, right, "Star"); return hl_number(left.as.number * right.as.number);
 }
 static HlValue hl_div(HlEnv *environment, HlValue left, HlValue right) {
     if (hl_is_string_number_pair(left, right)) return hl_mixed_text(environment, left, right);
-    hl_require_numbers(left, right, "Slash");
-    if (right.as.number == 0.0) hl_fail("Division by zero");
+    hl_require_numbers(environment, left, right, "Slash");
+    if (right.as.number == 0.0) hl_fail(environment, "Division by zero");
     return hl_number(left.as.number / right.as.number);
 }
 static HlValue hl_less(HlEnv *environment, HlValue left, HlValue right) {
     if (hl_is_string_number_pair(left, right)) return hl_mixed_text(environment, left, right);
-    hl_require_numbers(left, right, "Less"); return hl_bool(left.as.number < right.as.number);
+    hl_require_numbers(environment, left, right, "Less"); return hl_bool(left.as.number < right.as.number);
 }
 static HlValue hl_greater(HlEnv *environment, HlValue left, HlValue right) {
     if (hl_is_string_number_pair(left, right)) return hl_mixed_text(environment, left, right);
-    hl_require_numbers(left, right, "Greater"); return hl_bool(left.as.number > right.as.number);
+    hl_require_numbers(environment, left, right, "Greater"); return hl_bool(left.as.number > right.as.number);
 }
 static HlValue hl_equal(HlEnv *environment, HlValue left, HlValue right) {
     if (hl_is_string_number_pair(left, right)) return hl_mixed_text(environment, left, right);
-    hl_require_numbers(left, right, "Tilde"); return hl_bool(left.as.number == right.as.number);
+    hl_require_numbers(environment, left, right, "Tilde"); return hl_bool(left.as.number == right.as.number);
 }
 static HlValue hl_not_equal(HlEnv *environment, HlValue left, HlValue right) {
     if (hl_is_string_number_pair(left, right)) return hl_mixed_text(environment, left, right);
-    hl_require_numbers(left, right, "Caret");
+    hl_require_numbers(environment, left, right, "Caret");
     return hl_bool(fabs(left.as.number - right.as.number) > DBL_EPSILON);
 }

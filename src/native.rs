@@ -157,6 +157,64 @@ int main(void) {
     }
 
     #[test]
+    fn c_runtime_failure_cleans_the_entire_active_environment_chain() {
+        let directory = temporary_directory().expect("temporary directory");
+        let c_file = directory.join("cleanup_failure.c");
+        let executable = directory.join("cleanup_failure");
+        let source = format!(
+            "{}\n{}",
+            include_str!("native_runtime.c"),
+            r#"
+static int cleanup_order = 0;
+static int outer_digit = 1;
+static int inner_digit = 2;
+static void record_failure_cleanup(void *context) {
+    cleanup_order = cleanup_order * 10 + *(int *)context;
+}
+static void verify_failure_cleanup(void) {
+    _Exit(cleanup_order == 21 ? 0 : 90);
+}
+int main(void) {
+    atexit(verify_failure_cleanup);
+    HlEnv *outer = hl_env_new(NULL);
+    HlEnv *inner = hl_env_new(outer);
+    if (!hl_env_defer(outer, record_failure_cleanup, &outer_digit)) return 10;
+    if (!hl_env_defer(inner, record_failure_cleanup, &inner_digit)) return 11;
+    hl_fail(inner, "forced test failure");
+    return 99;
+}
+"#
+        );
+        fs::write(&c_file, source).expect("write C runtime failure test");
+        let compiler = select_c_compiler().expect("C compiler");
+        let build = Command::new(&compiler)
+            .arg("-std=c11")
+            .arg("-O2")
+            .arg(&c_file)
+            .arg("-o")
+            .arg(&executable)
+            .arg("-lm")
+            .output()
+            .expect("compile C runtime failure test");
+        assert!(
+            build.status.success(),
+            "C runtime failure test compilation failed: {}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let run = Command::new(&executable).output().expect("run C runtime failure test");
+        assert!(
+            run.status.success(),
+            "runtime error skipped cleanup or ran it in the wrong order; stderr: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&run.stderr).contains("forced test failure"),
+            "runtime failure diagnostic was not emitted"
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn compiles_and_runs_a_native_program_with_variables_conditions_and_loops() {
         let program = Program {
             statements: vec![

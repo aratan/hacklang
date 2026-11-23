@@ -137,7 +137,7 @@ mod tests {
         assert!(c.contains("int hl_env_transfer("));
         assert!(c.contains("int hl_env_cancel("));
         assert!(c.contains("allocation->cleanup(allocation->context);"));
-        assert!(c.contains("allocation->next = environment->allocations;"));
+        assert!(c.contains("entry->next = environment->allocations;"));
     }
 
     #[test]

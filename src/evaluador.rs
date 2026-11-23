@@ -14,22 +14,35 @@ pub enum Value {
     Function { params: Vec<String>, body: Box<Expression>, captured_env: usize },
 }
 
-fn assign_nested_array(target: &mut Value, indices: &[Value], value: Value) -> Result<(), String> {
-    let index = match &indices[0] {
-        Value::Number(number) if number.is_finite() && *number >= 0.0 && number.fract() == 0.0 => *number as usize,
-        other => return Err(format!("El índice de un array debe ser entero no negativo: {:?}", other)),
-    };
-    let items = match target {
-        Value::Array(items) => items,
-        other => return Err(format!("No se puede indexar por asignación el valor {:?}", other)),
-    };
-    let item = items.get_mut(index)
-        .ok_or_else(|| format!("Índice de array fuera de rango: {}", index))?;
-    if indices.len() == 1 {
-        *item = value;
-        Ok(())
-    } else {
-        assign_nested_array(item, &indices[1..], value)
+fn assign_nested_value(target: &mut Value, indices: &[Value], value: Value) -> Result<(), String> {
+    if indices.is_empty() {
+        return Err("La asignación por índice requiere al menos un índice".to_string());
+    }
+    let is_last = indices.len() == 1;
+    match target {
+        Value::Array(items) => {
+            let index = match &indices[0] {
+                Value::Number(number) if number.is_finite() && *number >= 0.0 && number.fract() == 0.0 => *number as usize,
+                other => return Err(format!("El índice de un array debe ser entero no negativo: {:?}", other)),
+            };
+            let item = items.get_mut(index)
+                .ok_or_else(|| format!("Índice de array fuera de rango: {}", index))?;
+            if is_last { *item = value; Ok(()) }
+            else { assign_nested_value(item, &indices[1..], value) }
+        }
+        Value::Map(entries) => {
+            let key = &indices[0];
+            if let Some((_, existing)) = entries.iter_mut().find(|(candidate, _)| candidate == key) {
+                if is_last { *existing = value; Ok(()) }
+                else { assign_nested_value(existing, &indices[1..], value) }
+            } else if is_last {
+                entries.push((key.clone(), value));
+                Ok(())
+            } else {
+                Err(format!("Clave no encontrada en mapa: {:?}", key))
+            }
+        }
+        other => Err(format!("No se puede indexar por asignación el valor {:?}", other)),
     }
 }
 
@@ -284,18 +297,7 @@ impl Evaluator {
             .ok_or_else(|| format!("Variable '{}' no definida para asignación", stmt.name))?;
         let target = self.environments[environment].values.get_mut(&stmt.name).unwrap();
 
-        if indices.len() == 1 {
-            if let Value::Map(entries) = target {
-                let index = indices.into_iter().next().unwrap();
-                if let Some((_, existing)) = entries.iter_mut().find(|(key, _)| key == &index) {
-                    *existing = value;
-                } else {
-                    entries.push((index, value));
-                }
-                return Ok(());
-            }
-        }
-        assign_nested_array(target, &indices, value)
+        assign_nested_value(target, &indices, value)
     }
 
     fn eval_print(&mut self, stmt: &PrintStatement) -> Result<(), String> {

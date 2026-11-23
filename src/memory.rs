@@ -312,6 +312,13 @@ fn build_cfg_sequence(
 ) -> Vec<u32> {
     let mut current = incoming;
     for statement in statements {
+        // A terminating break/continue leaves no fallthrough predecessor.
+        // Do not manufacture disconnected CFG blocks for subsequent dead
+        // statements: they can otherwise become false loop back-edges and
+        // contaminate liveness/interference decisions.
+        if current.is_empty() {
+            continue;
+        }
         match &statement.kind {
             StmtKind::Let { binding, value } | StmtKind::Assign { binding, value } => {
                 let id = new_cfg_block(cfg);
@@ -1310,6 +1317,41 @@ mod tests {
         let cfg = &plan(&p).cfg;
         assert!(cfg.blocks.iter().any(|block| block.successors.iter().any(|next| (*next as usize) <= block.id as usize)));
         assert!(cfg.blocks.iter().any(|block| block.live_in.contains(&BindingId(0))));
+    }
+
+    #[test]
+    fn cfg_does_not_create_fallthrough_after_break_or_continue() {
+        let after_break = lower(vec![
+            S::Let(LetStatement { name: "x".into(), value: A::NumberLiteral(1.0) }),
+            S::While(crate::ast::WhileStatement {
+                condition: A::BoolLiteral(true),
+                body: vec![
+                    S::Break,
+                    S::Assign(crate::ast::AssignStatement { name: "x".into(), value: A::NumberLiteral(2.0) }),
+                ],
+            }),
+            S::Print(PrintStatement { value: A::Identifier("x".into()) }),
+        ]);
+        let cfg = &plan(&after_break).cfg;
+        let dead_write = cfg.blocks.iter().find(|block| block.defs.contains(&BindingId(0))
+            && !block.uses.contains(&BindingId(0)));
+        assert!(dead_write.is_none(), "statement after break must not create a reachable CFG block");
+
+        let after_continue = lower(vec![
+            S::Let(LetStatement { name: "x".into(), value: A::NumberLiteral(1.0) }),
+            S::While(crate::ast::WhileStatement {
+                condition: A::BoolLiteral(true),
+                body: vec![
+                    S::Continue,
+                    S::Assign(crate::ast::AssignStatement { name: "x".into(), value: A::NumberLiteral(2.0) }),
+                ],
+            }),
+            S::Print(PrintStatement { value: A::Identifier("x".into()) }),
+        ]);
+        let cfg = &plan(&after_continue).cfg;
+        assert!(!cfg.blocks.iter().any(|block| block.defs.contains(&BindingId(0))
+            && !block.uses.contains(&BindingId(0))),
+            "statement after continue must not create a reachable CFG block");
     }
 
     #[test]

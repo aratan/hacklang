@@ -994,9 +994,13 @@ int main(void) {
             r#"
 int main(void) {
     HlEnv *env = hl_env_new(NULL);
-    hl_define_planned(env, "value", hl_string(env, "first"), HL_STORAGE_OWNED);
+    hl_define_planned_site(env, "value", hl_string(env, "first"), HL_STORAGE_OWNED, UINT64_C(77));
     HlBinding *binding = hl_find(env, "value");
     if (!binding || !binding->string_storage || !binding->string_cleanup) return 1;
+    if (binding->ownership_site != 77 || !binding->ownership_token
+        || !hl_ownership_is_active(env, binding->ownership_token)) return 7;
+    HlOwnershipRecord *record = hl_ownership_find(env, binding->ownership_token);
+    if (!record || record->site_id != 77 || record->allocation != binding->string_cleanup) return 8;
     HlAllocation *registration = binding->string_cleanup;
 
     for (int i = 0; i < 1000; ++i) {

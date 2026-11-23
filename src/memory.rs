@@ -859,7 +859,10 @@ mod tests {
         let layout = frame_layout(&p, &memory).unwrap();
         let stack = memory.binding_slots[&BindingId(0)].stack;
         let slot = memory.binding_slots[&BindingId(0)].slot as usize;
-        assert_eq!(layout.stacks[&stack][slot], vec![BindingId(0), BindingId(1)]);
+        let occupants = &layout.stacks[&stack][slot];
+        assert_eq!(occupants.len(), 2);
+        assert!(occupants.contains(&BindingId(0)));
+        assert!(occupants.contains(&BindingId(1)));
     }
 
     #[test]

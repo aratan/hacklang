@@ -38,7 +38,7 @@ struct HlEnv {
 static void hl_env_free(HlEnv *environment);
 
 static void hl_fail(HlEnv *environment, const char *message) {
-    fprintf(stderr, "Error en tiempo de ejecución: %s\\n", message);
+    fprintf(stderr, "Error en tiempo de ejecución: %s\n", message);
     while (environment) {
         HlEnv *parent = environment->parent;
         hl_env_free(environment);

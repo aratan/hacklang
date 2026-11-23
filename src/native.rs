@@ -883,16 +883,19 @@ int main(void) {
         let compiler = select_c_compiler().expect("C compiler");
         let build = Command::new(&compiler)
             .arg("-std=c11")
-            .arg("-O2")
+            .arg("-O1")
+            .arg("-g")
+            .arg("-fsanitize=address,undefined")
+            .arg("-fno-omit-frame-pointer")
             .arg(&c_file)
             .arg("-o")
             .arg(&executable)
             .arg("-lm")
             .output()
-            .expect("compile C runtime test");
-        assert!(build.status.success(), "C runtime test compilation failed: {}",
+            .expect("compile C runtime test with sanitizers");
+        assert!(build.status.success(), "sanitized C runtime test compilation failed: {}",
             String::from_utf8_lossy(&build.stderr));
-        let run = Command::new(&executable).output().expect("run C runtime test");
+        let run = Command::new(&executable).output().expect("run sanitized C runtime test");
         assert!(run.status.success(), "C runtime test failed: {}",
             String::from_utf8_lossy(&run.stderr));
         let _ = fs::remove_dir_all(directory);

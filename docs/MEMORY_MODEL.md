@@ -576,3 +576,8 @@ La implementación se hará por etapas verificables:
 ### Frame de activación (runtime C)
 
 El runtime incorpora una API mínima `HlFrame` con almacenamiento de slots proporcionado por el llamador. Cada activación mantiene su propio array `HlFrameSlot`, separado de los frames anidados o recursivos. Los slots registran si han sido inicializados; lectura de slots no inicializados, índices fuera de rango y escrituras inválidas fallan de forma controlada. La API no reserva memoria por sí misma: el compilador debe calcular y emitir el almacenamiento y conectar `BindingSlotPlan` antes de que el backend la use. Por tanto, esta entrega implementa el contrato/runtime de frames, no la asignación física automática desde `MemoryPlan`.
+
+
+### Materialización del layout de frames
+
+`frame_layout(program, memory_plan)` valida el plan y lo convierte en vectores densos por `DataStackId`. Cada posición contiene el `BindingId` asignado o queda vacía; el tamaño de cada vector coincide con `stack_slot_counts`. Esto proporciona una representación backend-neutral para emitir arrays C o almacenamiento equivalente en Rust. No conecta todavía esos vectores con las lecturas/escrituras de variables del generador, que siguen usando el entorno dinámico por nombre.

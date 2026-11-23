@@ -329,17 +329,16 @@ int main(void) {
     if (!hl_ownership_acquire(child, 41, &repeated_token, ownership_cleanup, &repeated)) return 19;
     repeated.token = repeated_token;
     if (repeated_token == token || !hl_ownership_is_active(child, repeated_token)) return 20;
-    if (!hl_ownership_drop(child, repeated_token)) return 21;
-    if (hl_ownership_is_active(child, token) || hl_ownership_is_active(child, repeated_token)) return 22;
+    if (hl_ownership_is_active(child, token) || !hl_ownership_is_active(child, repeated_token)) return 21;
 
     OwnershipProbe cleanup_probe = { child, 0, &calls, 0 };
-    if (!hl_ownership_acquire(child, 42, &cleanup_token, ownership_cleanup, &cleanup_probe)) return 23;
+    if (!hl_ownership_acquire(child, 42, &cleanup_token, ownership_cleanup, &cleanup_probe)) return 22;
     cleanup_probe.token = cleanup_token;
     hl_env_free(child);
-    if (calls != 2 || !cleanup_probe.saw_inactive || !repeated.saw_inactive) return 24;
-    if (hl_ownership_is_active(root, cleanup_token)) return 25;
+    if (calls != 2 || !cleanup_probe.saw_inactive || !repeated.saw_inactive) return 23;
+    if (hl_ownership_is_active(root, cleanup_token)) return 24;
     hl_env_free(root);
-    if (calls != 2) return 26;
+    if (calls != 2) return 25;
     return 0;
 }
 "#

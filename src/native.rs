@@ -996,18 +996,18 @@ int main(void) {
     HlEnv *env = hl_env_new(NULL);
     hl_define_planned_site(env, "value", hl_string(env, "first"), HL_STORAGE_OWNED, UINT64_C(77));
     HlBinding *binding = hl_find(env, "value");
-    if (!binding || !binding->string_storage || !binding->string_cleanup) return 1;
+    if (!binding || !binding->string_storage) return 1;
     if (binding->ownership_site != 77 || !binding->ownership_token
         || !hl_ownership_is_active(env, binding->ownership_token)) return 7;
     HlOwnershipRecord *record = hl_ownership_find(env, binding->ownership_token);
-    if (!record || record->site_id != 77 || record->allocation != binding->string_cleanup) return 8;
-    HlAllocation *registration = binding->string_cleanup;
+    if (!record || record->site_id != 77 || !record->allocation) return 8;
+    HlAllocation *registration = record->allocation;
 
     for (int i = 0; i < 1000; ++i) {
         char value[32];
         snprintf(value, sizeof(value), "value-%d", i);
         hl_assign_planned(env, "value", hl_string(env, value), HL_STORAGE_OWNED);
-        if (binding->string_cleanup != registration) return 2;
+        if (record->allocation != registration) return 2;
     }
 
     size_t registrations = 0;
@@ -1018,9 +1018,9 @@ int main(void) {
     hl_assign_planned(env, "value", hl_number(7.0), HL_STORAGE_OWNED);
     if (binding->string_storage || binding->string_capacity != 0) return 4;
     hl_assign_planned(env, "value", hl_string(env, "scoped"), HL_STORAGE_SCOPE);
-    if (binding->string_storage || binding->string_cleanup != registration) return 5;
+    if (binding->string_storage || record->allocation != registration) return 5;
     hl_assign_planned(env, "value", hl_string(env, "again"), HL_STORAGE_OWNED);
-    if (!binding->string_storage || binding->string_cleanup != registration) return 6;
+    if (!binding->string_storage || record->allocation != registration) return 6;
 
     hl_env_free(env);
     return 0;

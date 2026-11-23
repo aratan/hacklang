@@ -87,6 +87,7 @@ pub enum ExprKind {
     },
     Array(Vec<Expression>),
     Map(Vec<(Expression, Expression)>),
+    Length(Box<Expression>),
     Index { target: Box<Expression>, index: Box<Expression> },
 }
 
@@ -187,7 +188,10 @@ impl Lowerer {
                 when_false: Box::new(self.expr(false_branch)?),
             },
             AstExpr::Lambda { .. } => return Err(LowerError { message: "Las funciones y closures todavía no están soportadas por HIR nativa".into() }),
-            AstExpr::FunctionCall { .. } => return Err(LowerError { message: "Las llamadas a funciones y builtins todavía no están soportadas por HIR nativa".into() }),
+            AstExpr::FunctionCall { func, args }
+                if matches!(func.as_ref(), AstExpr::Identifier(name) if name == "len") && args.len() == 1 =>
+                    ExprKind::Length(Box::new(self.expr(&args[0])?)),
+            AstExpr::FunctionCall { .. } => return Err(LowerError { message: "Las llamadas a funciones todavía no están soportadas por HIR nativa".into() }),
             AstExpr::Array(items) => ExprKind::Array(items.iter().map(|item| self.expr(item)).collect::<Result<_, _>>()?),
             AstExpr::Map(items) => ExprKind::Map(items.iter().map(|(key, value)| Ok((self.expr(key)?, self.expr(value)?))).collect::<Result<_, LowerError>>()?),
             AstExpr::Index { target, index } => ExprKind::Index { target: Box::new(self.expr(target)?), index: Box::new(self.expr(index)?) },

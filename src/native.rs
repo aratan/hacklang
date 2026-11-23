@@ -845,7 +845,7 @@ int main(void) {
         let c_file = directory.join("owned_binding_cleanup.c");
         let executable = directory.join("owned_binding_cleanup");
         let source = format!(
-            "{}\\n{}",
+            "{}\n{}",
             include_str!("native_runtime.c"),
             r#"
 int main(void) {

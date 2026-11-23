@@ -404,6 +404,10 @@ static HlValue hl_store_value(HlBinding *binding, HlValue value, HlStorageClass 
         if (!hl_ownership_acquire(binding->owner, binding->ownership_site,
                 &binding->ownership_token, hl_cleanup_binding_string, binding))
             hl_fail(binding->owner, "no se pudo adquirir la propiedad de una cadena");
+        HlOwnershipRecord *record = hl_ownership_find(binding->owner, binding->ownership_token);
+        if (!record || !record->allocation)
+            hl_fail(binding->owner, "registro de propiedad de cadena inconsistente");
+        binding->string_cleanup = record->allocation;
     }
 
     const size_t size = strlen(value.as.string) + 1;

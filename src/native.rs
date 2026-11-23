@@ -130,6 +130,7 @@ int main(void) {
     if (!outer_owned) return 12;
     if (hl_env_transfer(outer, inner, outer_owned)) return 13;
     if (!hl_env_cancel(inner, cancelled)) return 14;
+    if (hl_env_cancel(inner, cancelled)) return 20;
     if (!hl_env_defer(inner, record_cleanup, &four)) return 15;
     hl_env_free(inner);
     if (order != 41) return 16;
@@ -143,19 +144,22 @@ int main(void) {
         let compiler = select_c_compiler().expect("C compiler");
         let build = Command::new(&compiler)
             .arg("-std=c11")
-            .arg("-O2")
+            .arg("-O1")
+            .arg("-g")
+            .arg("-fsanitize=address,undefined")
+            .arg("-fno-omit-frame-pointer")
             .arg(&c_file)
             .arg("-o")
             .arg(&executable)
             .arg("-lm")
             .output()
-            .expect("compile C runtime test");
+            .expect("compile C cleanup registry test with sanitizers");
         assert!(
             build.status.success(),
-            "C runtime test compilation failed: {}",
+            "sanitized C cleanup test compilation failed: {}",
             String::from_utf8_lossy(&build.stderr)
         );
-        let run = Command::new(&executable).output().expect("run C runtime test");
+        let run = Command::new(&executable).output().expect("run sanitized C cleanup registry test");
         assert!(
             run.status.success(),
             "C cleanup test failed with code {:?}",

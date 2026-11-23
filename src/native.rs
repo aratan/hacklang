@@ -122,6 +122,10 @@ int main(void) {
     HlAllocation *cancelled = hl_env_defer(inner, record_cleanup, &three);
     if (!first || !moved || !cancelled) return 10;
     if (!hl_env_transfer(inner, outer, moved)) return 11;
+    /* The old owner no longer controls this registration. A second transfer
+     * or cancellation through it must fail without duplicating/dropping it. */
+    if (hl_env_transfer(inner, outer, moved)) return 18;
+    if (hl_env_cancel(inner, moved)) return 19;
     HlAllocation *outer_owned = hl_env_defer(outer, record_cleanup, &five);
     if (!outer_owned) return 12;
     if (hl_env_transfer(outer, inner, outer_owned)) return 13;
@@ -155,6 +159,65 @@ int main(void) {
         assert!(
             run.status.success(),
             "C cleanup test failed with code {:?}",
+            run.status.code()
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn c_runtime_cleanup_callbacks_cannot_resurrect_closing_environments() {
+        let directory = temporary_directory().expect("temporary directory");
+        let c_file = directory.join("cleanup_reentrancy.c");
+        let executable = directory.join("cleanup_reentrancy");
+        let source = format!(
+            "{}\n{}",
+            include_str!("native_runtime.c"),
+            r#"
+typedef struct {
+    HlEnv *environment;
+    int called;
+    int rejected_registration;
+} ReentrantCleanupProbe;
+static void noop_cleanup(void *context) { (void)context; }
+static void reentrant_cleanup(void *context) {
+    ReentrantCleanupProbe *probe = (ReentrantCleanupProbe *)context;
+    probe->called += 1;
+    if (!hl_env_defer(probe->environment, noop_cleanup, NULL))
+        probe->rejected_registration += 1;
+    /* Closing an environment from its own cleanup callback must be a no-op. */
+    hl_env_free(probe->environment);
+}
+int main(void) {
+    HlEnv *environment = hl_env_new(NULL);
+    ReentrantCleanupProbe probe = { environment, 0, 0 };
+    if (!hl_env_defer(environment, reentrant_cleanup, &probe)) return 10;
+    hl_env_free(environment);
+    if (probe.called != 1) return 11;
+    if (probe.rejected_registration != 1) return 12;
+    return 0;
+}
+"#
+        );
+        fs::write(&c_file, source).expect("write C runtime test");
+        let compiler = select_c_compiler().expect("C compiler");
+        let build = Command::new(&compiler)
+            .arg("-std=c11")
+            .arg("-O2")
+            .arg(&c_file)
+            .arg("-o")
+            .arg(&executable)
+            .arg("-lm")
+            .output()
+            .expect("compile C runtime test");
+        assert!(
+            build.status.success(),
+            "C runtime test compilation failed: {}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let run = Command::new(&executable).output().expect("run C runtime test");
+        assert!(
+            run.status.success(),
+            "cleanup reentrancy test failed with code {:?}",
             run.status.code()
         );
         let _ = fs::remove_dir_all(directory);

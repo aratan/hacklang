@@ -3,7 +3,7 @@
 //! This module is analysis-only: it does not allocate memory or change runtime
 //! semantics. Unknown lifetimes are promoted to an owned region, never shortened.
 
-use crate::hir::{BindingId, BinaryOp, ExprKind, Expression, Program, ScopeId, StmtId, StmtKind, Statement};
+use crate::hir::{BindingId, BinaryOp, ExprKind, Expression, FunctionId, Program, ScopeId, StmtId, StmtKind, Statement};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -282,8 +282,19 @@ pub struct MemoryOperation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunctionActivationPlan {
+    /// Conservative storage classes for parameters and locals in this activation.
+    pub bindings: HashMap<BindingId, StorageClass>,
+    /// Locals that require stable identity because another closure captures them.
+    pub captured_cells: Vec<BindingId>,
+    pub ownership_tokens: HashMap<BindingId, OwnershipTokenId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryPlan {
     pub bindings: HashMap<BindingId, StorageClass>,
+    /// Per-function storage metadata. It is not yet consumed by native codegen.
+    pub function_activations: HashMap<FunctionId, FunctionActivationPlan>,
     /// Stable compiler-site identities for bindings that own dynamic resources.
     /// The native runtime pairs these sites with dynamic handles and cleanup
     /// registrations for owned strings and aggregate graphs.
@@ -969,37 +980,95 @@ pub fn frame_layout(program: &Program, plan: &MemoryPlan) -> Result<FrameLayout,
     Ok(layout)
 }
 
-pub fn plan(program: &Program) -> MemoryPlan {
-    let mut bindings = HashMap::new();
-    fn visit(statements: &[Statement], program: &Program, result: &mut HashMap<BindingId, StorageClass>) {
-        for statement in statements {
-            match &statement.kind {
-                StmtKind::Let { binding, value } => {
-                    let scope = program.bindings[binding.0 as usize].scope;
-                    let class = match (&value.kind, is_dynamic_string(value, result)) {
-                        (_, Some(false)) => StorageClass::Inline,
-                        (ExprKind::Read(_), Some(true)) | (_, None) => StorageClass::OwnedRegion,
-                        (_, Some(true)) => StorageClass::ScopeRegion(scope),
-                    };
-                    result.insert(*binding, class);
-                }
-                StmtKind::Block { statements, .. } => visit(statements, program, result),
-                StmtKind::If { then_body, else_body, .. } => {
-                    visit(then_body, program, result);
-                    visit(else_body, program, result);
-                }
-                StmtKind::While { body, .. } => visit(body, program, result),
-                StmtKind::Assign { binding, value } => {
-                    if is_dynamic_string(value, result) != Some(false) {
-                        result.insert(*binding, StorageClass::OwnedRegion);
-                    }
-                }
-                StmtKind::IndexAssign { binding, .. } => { result.insert(*binding, StorageClass::OwnedRegion); }
-                StmtKind::Print(_) | StmtKind::Return(_) | StmtKind::Break | StmtKind::Continue => {}
+fn visit_storage_bindings(
+    statements: &[Statement],
+    program: &Program,
+    result: &mut HashMap<BindingId, StorageClass>,
+) {
+    for statement in statements {
+        match &statement.kind {
+            StmtKind::Let { binding, value } => {
+                let scope = program.bindings[binding.0 as usize].scope;
+                let class = match (&value.kind, is_dynamic_string(value, result)) {
+                    (_, Some(false)) => StorageClass::Inline,
+                    (ExprKind::Read(_), Some(true)) | (_, None) => StorageClass::OwnedRegion,
+                    (_, Some(true)) => StorageClass::ScopeRegion(scope),
+                };
+                result.insert(*binding, class);
             }
+            StmtKind::Block { statements, .. } => visit_storage_bindings(statements, program, result),
+            StmtKind::If { then_body, else_body, .. } => {
+                visit_storage_bindings(then_body, program, result);
+                visit_storage_bindings(else_body, program, result);
+            }
+            StmtKind::While { body, .. } => visit_storage_bindings(body, program, result),
+            StmtKind::Assign { binding, value } => {
+                if is_dynamic_string(value, result) != Some(false) {
+                    result.insert(*binding, StorageClass::OwnedRegion);
+                }
+            }
+            StmtKind::IndexAssign { binding, .. } => { result.insert(*binding, StorageClass::OwnedRegion); }
+            StmtKind::Print(_) | StmtKind::Return(_) | StmtKind::Break | StmtKind::Continue => {}
         }
     }
-    visit(&program.statements, program, &mut bindings);
+}
+
+fn plan_function_activations(program: &Program) -> HashMap<FunctionId, FunctionActivationPlan> {
+    let mut plans = HashMap::new();
+    for function in &program.functions {
+        let mut bindings = HashMap::new();
+        // Parameter types are not statically known here; keep them out of short
+        // inline/lexical storage until type and lifetime analysis proves safety.
+        for parameter in &function.params {
+            bindings.insert(*parameter, StorageClass::OwnedRegion);
+        }
+        visit_storage_bindings(&function.body.statements, program, &mut bindings);
+
+        // Include every local even if it is only referenced through a nested
+        // expression or future HIR node not yet visited by the storage walker.
+        for binding in &program.bindings {
+            if binding.function_owner == Some(function.id) {
+                bindings.entry(binding.id).or_insert(StorageClass::OwnedRegion);
+            }
+        }
+
+        let mut captured_cells: Vec<_> = program.capture_storage.bindings.iter()
+            .filter_map(|entry| match entry.storage {
+                crate::capture::CaptureStorageKind::ActivationCell(owner) if owner == function.id =>
+                    Some(entry.binding),
+                _ => None,
+            })
+            .collect();
+        captured_cells.sort_unstable();
+        captured_cells.dedup();
+        for binding in &captured_cells {
+            bindings.insert(*binding, StorageClass::OwnedRegion);
+        }
+
+        let ownership_tokens = bindings.iter()
+            .filter_map(|(binding, class)| matches!(class, StorageClass::OwnedRegion)
+                .then_some((*binding, OwnershipTokenId(u64::from(binding.0) + 1))))
+            .collect();
+        plans.insert(function.id, FunctionActivationPlan {
+            bindings,
+            captured_cells,
+            ownership_tokens,
+        });
+    }
+    plans
+}
+
+pub fn plan(program: &Program) -> MemoryPlan {
+    let mut bindings = HashMap::new();
+    visit_storage_bindings(&program.statements, program, &mut bindings);
+    // A module binding captured by any closure must not be assigned to an
+    // ephemeral inline slot or short-lived lexical lane.
+    for entry in &program.capture_storage.bindings {
+        if entry.storage == crate::capture::CaptureStorageKind::ModuleCell {
+            bindings.insert(entry.binding, StorageClass::OwnedRegion);
+        }
+    }
+    let function_activations = plan_function_activations(program);
     let scope_stacks = plan_scope_stacks(program, &bindings);
     let mut usage = HashMap::new();
     let mut position = 0;
@@ -1018,7 +1087,7 @@ pub fn plan(program: &Program) -> MemoryPlan {
         .collect();
     let mut operations = Vec::new();
     collect_operations(&program.statements, ScopeId(0), program, &bindings, &ownership_tokens, &mut operations);
-    MemoryPlan { bindings, scope_stacks, usage, cfg, interference, binding_slots, stack_slot_counts, operations, ownership_tokens }
+    MemoryPlan { bindings, function_activations, scope_stacks, usage, cfg, interference, binding_slots, stack_slot_counts, operations, ownership_tokens }
 }
 
 #[cfg(test)]

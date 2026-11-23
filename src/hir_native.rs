@@ -13,7 +13,7 @@ struct Generator {
     owned_bindings: std::collections::HashSet<crate::hir::BindingId>,
     ownership_sites: HashMap<crate::hir::BindingId, u64>,
     scope_lanes: HashMap<ScopeId, u32>,
-    promotion_statements: std::collections::HashSet<StmtId>,
+    promotion_sites: HashMap<StmtId, (crate::hir::BindingId, u64)>,
 }
 
 impl Generator {
@@ -96,8 +96,11 @@ impl Generator {
             }
             StmtKind::Assign { binding, value } => {
                 let v = self.expr(p, value, out)?;
-                if self.promotion_statements.contains(&s.id) {
-                    Self::line(out, format!("hl_assign_promoted_copy(env, {}, {v});", Self::binding(p, *binding)?));
+                if let Some((destination, site)) = self.promotion_sites.get(&s.id) {
+                    if destination != binding {
+                        return Err(format!("destino de promoción incoherente para StmtId {}", s.id.0));
+                    }
+                    Self::line(out, format!("hl_assign_planned_site(env, {}, {v}, HL_STORAGE_OWNED, UINT64_C({site}));", Self::binding(p, *binding)?));
                 } else if let Some(slot) = self.inline_slots.get(binding) {
                     Self::line(out, format!("hl_frame_write_or_fail(env, &frame, {slot}, {v});"));
                 } else {
@@ -179,9 +182,11 @@ pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, Stri
         .map(|(scope, plan)| (*scope, plan.stack.0))
         .collect();
     let lane_count = scope_lanes.values().copied().max().map_or(0, |max| max + 1);
-    let promotion_statements = memory.operations.iter().map(|operation| operation.statement).collect();
+    let promotion_sites = memory.operations.iter()
+        .map(|operation| (operation.statement, (operation.destination, operation.ownership_token.0)))
+        .collect();
     let mut body = String::new();
-    let mut generator = Generator { inline_slots, owned_bindings, ownership_sites, scope_lanes: scope_lanes.clone(), promotion_statements, ..Generator::default() };
+    let mut generator = Generator { inline_slots, owned_bindings, ownership_sites, scope_lanes: scope_lanes.clone(), promotion_sites, ..Generator::default() };
     for stmt in &program.statements { generator.stmt(program, stmt, &mut body)?; }
     let mut source = include_str!("native_runtime.c").to_string();
     source.push_str("\n/* Compiler MemoryPlan: physical scope lanes. */\n");
@@ -314,7 +319,7 @@ mod tests {
         assert_eq!(memory.bindings[&crate::hir::BindingId(0)], StorageClass::OwnedRegion);
         let c = generate_c(&lowered, &memory).unwrap();
         let generated_main = c.split("int main(void) {").last().unwrap();
-        assert!(generated_main.contains("hl_assign_promoted_copy(env,"));
+        assert!(generated_main.contains("hl_assign_planned_site(env,"));
         assert!(generated_main.contains("HL_STORAGE_OWNED"));
     }
 
@@ -367,7 +372,7 @@ mod tests {
         let memory = crate::memory::plan(&lowered);
         assert_eq!(memory.operations.len(), 1);
         let c = generate_c(&lowered, &memory).unwrap();
-        assert!(c.contains("hl_assign_promoted_copy(env, \"outer\","));
+        assert!(c.contains("hl_assign_planned_site(env, \"outer\","));
     }
 
     #[test]

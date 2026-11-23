@@ -722,6 +722,13 @@ pub fn validate_slot_plan(program: &Program, plan: &MemoryPlan) -> Result<(), St
             return Err(format!("slot para BindingId inexistente {}", binding.0));
         }
     }
+    // Validate graph vertices before edges so diagnostics do not depend on
+    // HashMap iteration order when a binding's slot is missing.
+    for binding in plan.interference.keys() {
+        if !plan.binding_slots.contains_key(binding) {
+            return Err(format!("MemoryPlan sin slot para BindingId {}", binding.0));
+        }
+    }
 
     for (binding, neighbors) in &plan.interference {
         let slot = plan.binding_slots.get(binding)

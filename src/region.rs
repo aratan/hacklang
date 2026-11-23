@@ -338,8 +338,8 @@ impl RegionTable {
         }
 
         let base = self.objects.len();
-        let final_len = base.checked_add(order.len()).ok_or(RegionError::CapacityOverflow)?;
-        u32::try_from(final_len).map_err(|_| RegionError::CapacityOverflow)?;
+        let last_index = base.checked_add(order.len() - 1).ok_or(RegionError::CapacityOverflow)?;
+        u32::try_from(last_index).map_err(|_| RegionError::CapacityOverflow)?;
 
         let mut copies = std::collections::HashMap::<RegionObjectId, RegionObjectId>::new();
         copies.try_reserve(order.len()).map_err(|_| RegionError::AllocationFailed)?;

@@ -3,7 +3,7 @@
 //! This module is analysis-only: it does not allocate memory or change runtime
 //! semantics. Unknown lifetimes are promoted to an owned region, never shortened.
 
-use crate::hir::{BindingId, BinaryOp, ExprKind, Expression, Program, ScopeId, StmtKind, Statement};
+use crate::hir::{BindingId, BinaryOp, ExprKind, Expression, Program, ScopeId, StmtId, StmtKind, Statement};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -247,16 +247,15 @@ impl OwnershipLedger {
     }
 }
 
-/// Backend-neutral operation shared by the Rust and C backends.
-///
-/// The fields distinguish value origin, current logical owner, and destination
-/// owner. They describe a required lifetime extension; they do not claim that
-/// a physical move or exactly-once destruction has been implemented.
+/// Backend-neutral lifetime extension discovered for one HIR assignment.
+/// The native backend consumes this for string promotion-by-copy; it is not
+/// a general graph move or ownership implementation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryOperationKind { Promote }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MemoryOperation {
+    pub statement: StmtId,
     pub kind: MemoryOperationKind,
     pub origin: ValueOrigin,
     pub source_owner: StorageOwner,
@@ -284,7 +283,7 @@ pub struct MemoryPlan {
     pub binding_slots: HashMap<BindingId, BindingSlotPlan>,
     /// Number of slots reserved in each data stack.
     pub stack_slot_counts: HashMap<DataStackId, u32>,
-    /// Proven lifetime extensions discovered in assignments. Not yet consumed by C.
+    /// Proven lifetime extensions consumed by backend-specific promotion paths.
     pub operations: Vec<MemoryOperation>,
 }
 
@@ -697,6 +696,7 @@ fn collect_operations(
                         _ => ValueOrigin::Unknown,
                     };
                     operations.push(MemoryOperation {
+                        statement: statement.id,
                         kind: MemoryOperationKind::Promote,
                         origin,
                         source_owner,
@@ -722,6 +722,53 @@ fn collect_operations(
             StmtKind::Let { .. } | StmtKind::Print(_) | StmtKind::Break | StmtKind::Continue => {}
         }
     }
+}
+
+/// Validate that each planned promotion still points to the assignment it describes.
+pub fn validate_memory_operations(program: &Program, plan: &MemoryPlan) -> Result<(), String> {
+    fn collect(statements: &[Statement], found: &mut HashMap<StmtId, BindingId>) {
+        for statement in statements {
+            match &statement.kind {
+                StmtKind::Assign { binding, .. } => { found.insert(statement.id, *binding); }
+                StmtKind::Block { statements, .. } => collect(statements, found),
+                StmtKind::If { then_body, else_body, .. } => {
+                    collect(then_body, found);
+                    collect(else_body, found);
+                }
+                StmtKind::While { body, .. } => collect(body, found),
+                _ => {}
+            }
+        }
+    }
+    let mut assignments = HashMap::new();
+    collect(&program.statements, &mut assignments);
+    let mut seen = std::collections::HashSet::new();
+    for operation in &plan.operations {
+        if !seen.insert(operation.statement) {
+            return Err(format!("promoción duplicada para StmtId {}", operation.statement.0));
+        }
+        let destination = assignments.get(&operation.statement)
+            .ok_or_else(|| format!("promoción sin asignación para StmtId {}", operation.statement.0))?;
+        if *destination != operation.destination {
+            return Err(format!("destino de promoción incoherente en StmtId {}", operation.statement.0));
+        }
+        let binding = program.bindings.get(operation.destination.0 as usize)
+            .ok_or_else(|| format!("destino inexistente en promoción: BindingId {}", operation.destination.0))?;
+        if binding.scope != operation.destination_scope
+            || plan.bindings.get(&operation.destination) != Some(&StorageClass::OwnedRegion) {
+            return Err(format!("propietario de promoción incoherente en StmtId {}", operation.statement.0));
+        }
+        if operation.produced_in.0 as usize >= program.scopes.len()
+            || !is_scope_ancestor(program, operation.destination_scope, operation.produced_in) {
+            return Err(format!("vida útil de promoción inválida en StmtId {}", operation.statement.0));
+        }
+        if let Some(source) = operation.source {
+            if program.bindings.get(source.0 as usize).is_none() {
+                return Err(format!("origen inexistente en promoción: BindingId {}", source.0));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Validate physical slot metadata before a backend consumes it.

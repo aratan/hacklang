@@ -161,13 +161,14 @@ static int hl_cleanup_detach(HlEnv *environment, HlAllocation *entry) {
     if (!*cursor) return 0;
     *cursor = entry->next;
     entry->next = NULL;
-    if (entry->ownership) {
-        entry->ownership->active = 0;
-        entry->ownership->owner = NULL;
-        entry->ownership->allocation = NULL;
-        entry->ownership = NULL;
-    }
     return 1;
+}
+static void hl_ownership_invalidate_allocation(HlAllocation *entry) {
+    if (!entry || !entry->ownership) return;
+    entry->ownership->active = 0;
+    entry->ownership->owner = NULL;
+    entry->ownership->allocation = NULL;
+    entry->ownership = NULL;
 }
 
 /* A transfer may only extend a registration to the source environment's
@@ -192,6 +193,7 @@ int hl_env_transfer(HlEnv *from, HlEnv *to, HlAllocation *entry) {
  * have handled or transferred the resource. */
 int hl_env_cancel(HlEnv *environment, HlAllocation *entry) {
     if (!hl_cleanup_detach(environment, entry)) return 0;
+    hl_ownership_invalidate_allocation(entry);
     free(entry);
     return 1;
 }
@@ -296,12 +298,7 @@ static void hl_env_free(HlEnv *environment) {
     environment->allocations = NULL;
     while (allocation) {
         HlAllocation *next = allocation->next;
-        if (allocation->ownership) {
-            allocation->ownership->active = 0;
-            allocation->ownership->owner = NULL;
-            allocation->ownership->allocation = NULL;
-            allocation->ownership = NULL;
-        }
+        hl_ownership_invalidate_allocation(allocation);
         allocation->cleanup(allocation->context);
         free(allocation);
         allocation = next;

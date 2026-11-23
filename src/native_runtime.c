@@ -91,6 +91,8 @@ typedef struct HlBinding {
     char *string_storage;
     size_t string_capacity;
     HlAllocation *string_cleanup;
+    uint64_t ownership_site;
+    uint64_t ownership_token;
     struct HlBinding *next;
 } HlBinding;
 struct HlEnv {
@@ -116,6 +118,7 @@ static void hl_cleanup_binding_string(void *context) {
     binding->string_storage = NULL;
     binding->string_capacity = 0;
     binding->string_cleanup = NULL;
+    binding->ownership_token = 0;
 }
 
 static void hl_env_free(HlEnv *environment);
@@ -397,11 +400,10 @@ static HlValue hl_store_value(HlBinding *binding, HlValue value, HlStorageClass 
         return value;
     }
 
-    if (!binding->string_cleanup) {
-        binding->string_cleanup = hl_env_defer(
-            binding->owner, hl_cleanup_binding_string, binding);
-        if (!binding->string_cleanup)
-            hl_fail(binding->owner, "no se pudo registrar la limpieza de una cadena");
+    if (!binding->ownership_token) {
+        if (!hl_ownership_acquire(binding->owner, binding->ownership_site,
+                &binding->ownership_token, hl_cleanup_binding_string, binding))
+            hl_fail(binding->owner, "no se pudo adquirir la propiedad de una cadena");
     }
 
     const size_t size = strlen(value.as.string) + 1;
@@ -423,7 +425,8 @@ static HlValue hl_store_value(HlBinding *binding, HlValue value, HlStorageClass 
     value.as.string = binding->string_storage;
     return value;
 }
-static void hl_define_planned(HlEnv *environment, const char *name, HlValue value, HlStorageClass storage) {
+static void hl_define_planned_site(HlEnv *environment, const char *name, HlValue value,
+        HlStorageClass storage, uint64_t ownership_site) {
     HlBinding *item = hl_find_local(environment, name);
     if (item) {
         item->value = hl_store_value(item, value, storage);
@@ -435,9 +438,14 @@ static void hl_define_planned(HlEnv *environment, const char *name, HlValue valu
     item->string_storage = NULL;
     item->string_capacity = 0;
     item->string_cleanup = NULL;
+    item->ownership_site = ownership_site;
+    item->ownership_token = 0;
     item->value = hl_store_value(item, value, storage);
     item->next = environment->bindings;
     environment->bindings = item;
+}
+static void hl_define_planned(HlEnv *environment, const char *name, HlValue value, HlStorageClass storage) {
+    hl_define_planned_site(environment, name, value, storage, 0);
 }
 static void hl_assign_planned(HlEnv *environment, const char *name, HlValue value, HlStorageClass storage) {
     HlBinding *item = hl_find(environment, name);

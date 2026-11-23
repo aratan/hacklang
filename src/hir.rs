@@ -26,6 +26,7 @@ pub struct Program {
     pub scopes: Vec<Scope>,
     pub bindings: Vec<Binding>,
     pub functions: Vec<Function>,
+    pub capture_storage: crate::capture::CaptureStoragePlan,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -408,8 +409,11 @@ pub fn lower(program: &AstProgram) -> Result<Program, LowerError> {
         scopes: lowerer.scopes,
         bindings: lowerer.bindings,
         functions: lowerer.functions,
+        capture_storage: crate::capture::CaptureStoragePlan::default(),
     };
     program.functions = crate::capture::analyze(&program)
+        .map_err(|error| LowerError { message: error.message })?;
+    program.capture_storage = crate::capture::plan_storage(&program)
         .map_err(|error| LowerError { message: error.message })?;
     Ok(program)
 }

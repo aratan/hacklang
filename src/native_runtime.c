@@ -713,6 +713,23 @@ static void hl_map_set(HlBinding *binding, HlMap *map, HlValue key, HlValue valu
     map->entries = grown;
     map->length += 1;
 }
+static HlValue hl_length(HlEnv *environment, HlValue value) {
+    if (value.tag == HL_ARRAY && value.as.array)
+        return hl_number((double)value.as.array->length);
+    if (value.tag == HL_MAP && value.as.map)
+        return hl_number((double)value.as.map->length);
+    if (value.tag == HL_STRING && value.as.string) {
+        size_t characters = 0;
+        const unsigned char *cursor = (const unsigned char *)value.as.string;
+        while (*cursor) {
+            if ((*cursor & 0xC0u) != 0x80u) ++characters;
+            ++cursor;
+        }
+        return hl_number((double)characters);
+    }
+    hl_fail(environment, "len() requiere string, array o map");
+    return hl_number(0);
+}
 static void hl_index_assign_path(HlEnv *environment, const char *name,
                                  const HlValue *indices, size_t index_count,
                                  HlValue value) {

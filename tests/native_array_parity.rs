@@ -384,3 +384,19 @@ print result["reacquired"];
 "#,
     );
 }
+
+#[test]
+fn len_builtin_matches_interpreter_for_strings_arrays_and_maps() {
+    assert_interpreter_native_parity(
+        "len_builtin_collections",
+        r#"
+let values = [1, 2, 3];
+let entries = @("alpha": 1, 2: 3);
+let text = "mañana";
+print len(values);
+print len(entries);
+print len(text);
+print len(@());
+"#,
+    );
+}

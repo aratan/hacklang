@@ -986,7 +986,7 @@ mod tests {
     #[test]
     fn mem_029_nested_map_array_reads_are_independent_values() {
         let ev = eval_program(
-            "let source = @(\\"items\\":[1]); let copy = source[\\"items\\"]; copy[0] = 2; let result = source[\\"items\\"][0];"
+            r#"let source = @("items":[1]); let copy = source["items"]; copy[0] = 2; let result = source["items"][0];"#
         ).unwrap();
         assert_eq!(ev.get_var("result"), Some(&Value::Number(1.0)));
     }

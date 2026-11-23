@@ -1207,7 +1207,7 @@ int main(void) {
         let c_file = directory.join("map_runtime.c");
         let executable = directory.join("map_runtime");
         let source = format!(
-            "{}\\n{}",
+            "{}\n{}",
             include_str!("native_runtime.c"),
             r#"
 int main(void) {

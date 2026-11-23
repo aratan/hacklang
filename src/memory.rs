@@ -638,8 +638,10 @@ fn collect_usage(
             StmtKind::Print(value) => {
                 collect_expr_usage(value, scope, usage, position, loop_touched);
             }
-            StmtKind::IndexAssign { binding, index, value } => {
-                collect_expr_usage(index, scope, usage, position, loop_touched);
+            StmtKind::IndexAssign { binding, indices, value } => {
+                for index in indices {
+                    collect_expr_usage(index, scope, usage, position, loop_touched);
+                }
                 collect_expr_usage(value, scope, usage, position, loop_touched);
                 *position += 1;
                 let facts = usage.entry(*binding).or_default();
@@ -1031,7 +1033,7 @@ mod tests {
             }),
             S::IndexAssign(IndexAssignStatement {
                 name: "items".into(),
-                index: A::NumberLiteral(0.0),
+                indices: vec![A::NumberLiteral(0.0), A::NumberLiteral(0.0)],
                 value: A::Array(vec![A::NumberLiteral(2.0)]),
             }),
             S::Print(PrintStatement {

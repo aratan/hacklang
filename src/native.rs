@@ -1099,7 +1099,7 @@ int main(void) {
 
     /* Binding storage owns its graph in the binding owner's lane. Reads from
      * a child scope are independent and assigning them back promotes by copy. */
-    hl_define(environment, "items", original);
+    hl_define_planned_site(environment, "items", original, HL_STORAGE_OWNED, 77);
     HlEnv *child = hl_env_new(environment);
     HlValue child_read = hl_get(child, "items");
     HlArray *child_inner = child_read.as.array->items[0].as.array;
@@ -1121,6 +1121,34 @@ int main(void) {
     root_binding = hl_find(environment, "items");
     stored_inner = root_binding->value.as.array->items[0].as.array;
     if (stored_inner->items[0].as.number != 321) return 22;
+
+    HlValue nested_path[2] = { hl_number(0), hl_number(0) };
+    hl_index_assign_path(environment, "items", nested_path, 2, hl_number(444));
+    root_binding = hl_find(environment, "items");
+    stored_inner = root_binding->value.as.array->items[0].as.array;
+    if (stored_inner->items[0].as.number != 444) return 23;
+
+    uint64_t first_token = root_binding->ownership_token;
+    HlOwnershipRecord *first_record = hl_ownership_find(environment, first_token);
+    if (!first_token || !first_record || first_record->site_id != 77
+        || !hl_ownership_is_active(environment, first_token)
+        || !root_binding->aggregate_lane.blocks) return 24;
+
+    /* Replacing the aggregate with a scalar must drop its token and release
+     * the complete aggregate arena exactly once. */
+    hl_assign_planned(environment, "items", hl_number(9), HL_STORAGE_OWNED);
+    if (hl_ownership_is_active(environment, first_token)
+        || root_binding->aggregate_lane.blocks != NULL) return 25;
+
+    /* A later aggregate value acquires a fresh dynamic handle at the same
+     * deterministic compiler site. */
+    hl_assign_planned(environment, "items", original, HL_STORAGE_OWNED);
+    uint64_t second_token = root_binding->ownership_token;
+    HlOwnershipRecord *second_record = hl_ownership_find(environment, second_token);
+    if (root_binding->value.tag != HL_ARRAY || !second_token || second_token == first_token
+        || !second_record || second_record->site_id != 77
+        || !hl_ownership_is_active(environment, second_token)) return 26;
+
     hl_env_free(environment);
     return 0;
 }

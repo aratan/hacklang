@@ -46,4 +46,13 @@ A native implementation must preserve all of the following:
 
 ## Current status
 
-The interpreter already implements and tests the semantics above. The native HIR currently supports the builtin `len()`, but user lambdas, user calls, function bodies, parameters, and `return` are not represented in the native HIR. The C runtime's lexical `hl_env_free` currently destroys a scope immediately; it is therefore not safe for escaping captures. Native function/closure support remains intentionally disabled until the environment lifetime and tracing design is implemented.
+The interpreter already implements and tests the semantics above. The HIR now represents:
+
+- Function IDs and lexical function-parent relationships.
+- Function scopes and parameter bindings using the same `BindingId` space as ordinary variables.
+- Expression-bodied and block-bodied lambdas.
+- Closure construction, general call sites, and explicit `return` statements.
+- Direct free-variable captures with read/write access flags, resolved from HIR `BindingId` values rather than a second name-resolution table.
+- Same-scope self-recursive and mutually recursive lambda declarations through deterministic predeclaration of function bindings.
+
+The capture pass is run as part of AST -> HIR lowering. It does not yet build stable runtime cells or propagate storage decisions into per-function activation plans. The native compiler deliberately rejects programs containing functions before memory planning/code generation: the C runtime's lexical `hl_env_free` still destroys a scope immediately, so it is not safe for escaping captures. Native function/closure execution remains disabled until environment lifetime, tracing, and unwinding are implemented and tested.

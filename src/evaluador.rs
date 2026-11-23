@@ -14,6 +14,25 @@ pub enum Value {
     Function { params: Vec<String>, body: Box<Expression>, captured_env: usize },
 }
 
+fn assign_nested_array(target: &mut Value, indices: &[Value], value: Value) -> Result<(), String> {
+    let index = match &indices[0] {
+        Value::Number(number) if number.is_finite() && *number >= 0.0 && number.fract() == 0.0 => *number as usize,
+        other => return Err(format!("El índice de un array debe ser entero no negativo: {:?}", other)),
+    };
+    let items = match target {
+        Value::Array(items) => items,
+        other => return Err(format!("No se puede indexar por asignación el valor {:?}", other)),
+    };
+    let item = items.get_mut(index)
+        .ok_or_else(|| format!("Índice de array fuera de rango: {}", index))?;
+    if indices.len() == 1 {
+        *item = value;
+        Ok(())
+    } else {
+        assign_nested_array(item, &indices[1..], value)
+    }
+}
+
 impl Value {
     fn as_bool(&self) -> bool {
         match self {
@@ -254,31 +273,29 @@ impl Evaluator {
     }
 
     fn eval_index_assign(&mut self, stmt: &IndexAssignStatement) -> Result<(), String> {
-        let index = self.eval_expression(&stmt.index)?;
+        let indices = stmt.indices.iter()
+            .map(|index| self.eval_expression(index))
+            .collect::<Result<Vec<_>, _>>()?;
+        if indices.is_empty() {
+            return Err("La asignación por índice requiere al menos un índice".to_string());
+        }
         let value = self.eval_expression(&stmt.value)?;
         let environment = self.find_environment(&stmt.name)
             .ok_or_else(|| format!("Variable '{}' no definida para asignación", stmt.name))?;
         let target = self.environments[environment].values.get_mut(&stmt.name).unwrap();
-        match target {
-            Value::Array(items) => match index {
-                Value::Number(n) if n >= 0.0 && n.fract() == 0.0 => {
-                    let item = items.get_mut(n as usize)
-                        .ok_or_else(|| format!("Índice de array fuera de rango: {}", n))?;
-                    *item = value;
-                    Ok(())
-                }
-                other => Err(format!("El índice de un array debe ser entero no negativo: {:?}", other)),
-            },
-            Value::Map(entries) => {
+
+        if indices.len() == 1 {
+            if let Value::Map(entries) = target {
+                let index = indices.into_iter().next().unwrap();
                 if let Some((_, existing)) = entries.iter_mut().find(|(key, _)| key == &index) {
                     *existing = value;
                 } else {
                     entries.push((index, value));
                 }
-                Ok(())
+                return Ok(());
             }
-            other => Err(format!("No se puede asignar por índice al valor {:?}", other)),
         }
+        assign_nested_array(target, &indices, value)
     }
 
     fn eval_print(&mut self, stmt: &PrintStatement) -> Result<(), String> {

@@ -161,6 +161,45 @@ int main(void) {
     }
 
     #[test]
+    fn c_runtime_frame_slots_are_activation_local_and_checked() {
+        let directory = temporary_directory().expect("temporary directory");
+        let c_file = directory.join("frame_runtime.c");
+        let executable = directory.join("frame_runtime");
+        let source = format!(
+            "{}\n{}",
+            include_str!("native_runtime.c"),
+            r#"
+int main(void) {
+    HlFrameSlot outer_slots[2];
+    HlFrameSlot inner_slots[2];
+    HlFrame outer, inner;
+    HlValue value;
+    if (!hl_frame_init(&outer, outer_slots, 2)) return 10;
+    if (!hl_frame_init(&inner, inner_slots, 2)) return 11;
+    if (hl_frame_read(&outer, 0, &value)) return 12;
+    if (!hl_frame_write(&outer, 0, hl_number(42.0))) return 13;
+    if (!hl_frame_read(&outer, 0, &value) || value.as.number != 42.0) return 14;
+    if (!hl_frame_write(&inner, 0, hl_number(7.0))) return 15;
+    if (!hl_frame_read(&inner, 0, &value) || value.as.number != 7.0) return 16;
+    if (!hl_frame_read(&outer, 0, &value) || value.as.number != 42.0) return 17;
+    if (hl_frame_write(&outer, 2, hl_number(0.0))) return 18;
+    return 0;
+}
+"#
+        );
+        fs::write(&c_file, source).expect("write C frame test");
+        let compiler = select_c_compiler().expect("C compiler");
+        let build = Command::new(&compiler).arg("-std=c11").arg("-O2")
+            .arg(&c_file).arg("-o").arg(&executable).arg("-lm")
+            .output().expect("compile C frame test");
+        assert!(build.status.success(), "frame test compilation failed: {}",
+            String::from_utf8_lossy(&build.stderr));
+        let run = Command::new(&executable).output().expect("run C frame test");
+        assert!(run.status.success(), "frame test failed: {:?}", run.status.code());
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn c_runtime_bump_arena_grows_aligns_and_releases_by_scope() {
         let directory = temporary_directory().expect("temporary directory");
         let c_file = directory.join("arena_runtime.c");

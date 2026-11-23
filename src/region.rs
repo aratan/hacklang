@@ -393,6 +393,46 @@ mod tests {
     }
 
     #[test]
+    fn finalizer_transfer_preserves_identity_and_drops_only_in_ancestor() {
+        struct DropRecord(usize, Arc<Mutex<Vec<usize>>>);
+        impl Drop for DropRecord {
+            fn drop(&mut self) { self.1.lock().unwrap().push(self.0); }
+        }
+
+        let drops = Arc::new(Mutex::new(Vec::new()));
+        let mut table = RegionTable::new();
+        let parent = table.create(None).unwrap();
+        let child = table.create(Some(parent)).unwrap();
+        let finalizer = table.active_mut(child).unwrap().region
+            .track(DropRecord(7, drops.clone()));
+        assert_eq!(table.transfer_finalizer(child, parent, finalizer), Ok(()));
+        table.close(child).unwrap();
+        assert!(drops.lock().unwrap().is_empty());
+        table.close(parent).unwrap();
+        assert_eq!(*drops.lock().unwrap(), vec![7]);
+    }
+
+    #[test]
+    fn finalizer_transfer_to_shorter_lived_region_is_rejected_without_loss() {
+        struct DropRecord(Arc<Mutex<Vec<usize>>>);
+        impl Drop for DropRecord {
+            fn drop(&mut self) { self.0.lock().unwrap().push(1); }
+        }
+
+        let drops = Arc::new(Mutex::new(Vec::new()));
+        let mut table = RegionTable::new();
+        let parent = table.create(None).unwrap();
+        let child = table.create(Some(parent)).unwrap();
+        let finalizer = table.active_mut(parent).unwrap().region
+            .track(DropRecord(drops.clone()));
+        assert_eq!(table.transfer_finalizer(parent, child, finalizer), Err(RegionError::InvalidMark));
+        table.close(child).unwrap();
+        assert!(drops.lock().unwrap().is_empty());
+        table.close(parent).unwrap();
+        assert_eq!(*drops.lock().unwrap(), vec![1]);
+    }
+
+    #[test]
     fn restore_runs_tracked_destructors_in_reverse_order() {
         struct DropRecord(usize, Arc<Mutex<Vec<usize>>>);
         impl Drop for DropRecord {

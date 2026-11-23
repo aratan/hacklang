@@ -473,7 +473,7 @@ mod tests {
             }),
             AstStmt::IndexAssign(IndexAssignStatement {
                 name: "items".into(),
-                index: A::NumberLiteral(0.0),
+                indices: vec![A::NumberLiteral(0.0)],
                 value: A::NumberLiteral(9.0),
             }),
             AstStmt::Print(PrintStatement {
@@ -488,7 +488,7 @@ mod tests {
         let c = generate_c(&lowered, &memory).unwrap();
         let main = c.split("int main(void) {").last().unwrap();
         assert!(main.contains("hl_array(env, (HlValue[]){"));
-        assert!(main.contains(r#"hl_index_assign(env, "items""#));
+        assert!(main.contains(r#"hl_index_assign_path(env, "items""#));
         assert!(main.contains("hl_index(env,"));
         assert!(!main.contains("la asignación por índice está representada"));
     }

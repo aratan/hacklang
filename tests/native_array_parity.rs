@@ -146,8 +146,10 @@ fn nested_array_mutation_matches_interpreter_and_preserves_value_copies() {
         r#"
 let matrix = [[1, 2], [3, 4]];
 let copied = matrix;
-matrix[1][0] = 77;
-copied[0][1] = 88;
+let row = 1;
+let column = 0;
+matrix[row][column] = 77;
+copied[0][column] = 88;
 print matrix[0][0];
 print matrix[0][1];
 print matrix[1][0];

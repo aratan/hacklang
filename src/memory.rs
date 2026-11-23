@@ -1020,6 +1020,35 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_index_mutation_is_tracked_as_dynamic_binding_write() {
+        use crate::ast::IndexAssignStatement;
+        let p = lower(vec![
+            S::Let(LetStatement {
+                name: "items".into(),
+                value: A::Array(vec![A::Array(vec![A::NumberLiteral(1.0)])]),
+            }),
+            S::IndexAssign(IndexAssignStatement {
+                name: "items".into(),
+                index: A::NumberLiteral(0.0),
+                value: A::Array(vec![A::NumberLiteral(2.0)]),
+            }),
+            S::Print(PrintStatement {
+                value: A::Index {
+                    target: Box::new(A::Identifier("items".into())),
+                    index: Box::new(A::NumberLiteral(0.0)),
+                },
+            }),
+        ]);
+        let binding = p.bindings[0].id;
+        let memory = plan(&p);
+        assert_eq!(memory.bindings.get(&binding), Some(&StorageClass::OwnedRegion));
+        let mutation = memory.cfg.blocks.iter()
+            .find(|block| block.defs.contains(&binding) && block.uses.contains(&binding))
+            .expect("index mutation must be a read-modify-write of the aggregate binding");
+        assert!(mutation.uses.contains(&binding));
+    }
+
+    #[test]
     fn cfg_does_not_create_fallthrough_after_break_inside_nested_block() {
         use crate::ast::{AssignStatement, WhileStatement};
         let p = lower(vec![

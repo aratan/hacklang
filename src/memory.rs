@@ -1376,7 +1376,13 @@ mod tests {
         ]);
         let mut memory = plan(&p);
         assert_eq!(memory.operations.len(), 1);
+        let expected_token = memory.ownership_tokens[&BindingId(0)];
+        assert_eq!(memory.operations[0].ownership_token, expected_token);
         assert!(validate_memory_operations(&p, &memory).is_ok());
+        memory.operations[0].ownership_token = OwnershipTokenId(expected_token.0 + 1);
+        assert!(validate_memory_operations(&p, &memory)
+            .unwrap_err().contains("token de propiedad incoherente"));
+        memory.operations[0].ownership_token = expected_token;
         memory.operations[0].statement = StmtId(u32::MAX);
         assert!(validate_memory_operations(&p, &memory).unwrap_err().contains("promoción sin asignación"));
     }
@@ -1452,6 +1458,7 @@ mod tests {
         assert_eq!(memory.operations.len(), 1);
         let decision = memory.operations[0];
         assert_eq!(decision.destination, BindingId(0));
+        assert_eq!(decision.ownership_token, memory.ownership_tokens[&BindingId(0)]);
         assert_eq!(decision.source, None);
         assert_eq!(decision.destination_scope, ScopeId(0));
         assert_eq!(decision.kind, MemoryOperationKind::Promote);

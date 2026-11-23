@@ -234,13 +234,20 @@ impl OwnershipLedger {
         &mut self,
         owner: StorageOwner,
     ) -> Result<Vec<OwnershipAction>, OwnershipError> {
-        let tokens = self.cleanup_order.remove(&owner).unwrap_or_default();
-        let mut actions = Vec::with_capacity(tokens.len());
-        for token in tokens.into_iter().rev() {
-            let record = self.records.get_mut(&token).ok_or(OwnershipError::UnknownToken)?;
+        // Validate the complete batch before mutating either index. A stale
+        // or inconsistent registration must not partially consume the owner's
+        // cleanup stack and make the remaining resources unreachable.
+        let tokens = self.cleanup_order.get(&owner).cloned().unwrap_or_default();
+        for token in &tokens {
+            let record = self.records.get(token).ok_or(OwnershipError::UnknownToken)?;
             if record.dropped { return Err(OwnershipError::AlreadyDropped); }
             if record.owner != owner { return Err(OwnershipError::OwnerMismatch); }
-            record.dropped = true;
+        }
+
+        self.cleanup_order.remove(&owner);
+        let mut actions = Vec::with_capacity(tokens.len());
+        for token in tokens.into_iter().rev() {
+            self.records.get_mut(&token).expect("cleanup batch validated above").dropped = true;
             actions.push(OwnershipAction::Drop { token, owner });
         }
         Ok(actions)
@@ -1659,6 +1666,34 @@ mod tests {
         );
         assert_eq!(ledger.owner(first), Err(OwnershipError::AlreadyDropped));
         assert_eq!(ledger.drain_owner(owner), Ok(vec![]));
+    }
+
+    #[test]
+    fn ownership_drain_is_atomic_when_a_registration_is_inconsistent() {
+        let owner = StorageOwner::Scope(ScopeId(20));
+        let wrong_owner = StorageOwner::Scope(ScopeId(21));
+        let mut ledger = OwnershipLedger::default();
+        let first = ledger.acquire(owner).unwrap();
+        let second = ledger.acquire(owner).unwrap();
+
+        // Simulate corrupted/stale internal state: the cleanup index still
+        // lists the token under owner, but its record claims another owner.
+        ledger.records.get_mut(&second).unwrap().owner = wrong_owner;
+        assert_eq!(ledger.drain_owner(owner), Err(OwnershipError::OwnerMismatch));
+
+        // Failure must leave the entire batch available for diagnosis/recovery.
+        assert_eq!(ledger.cleanup_order.get(&owner), Some(&vec![first, second]));
+        assert_eq!(ledger.records.get(&first).unwrap().dropped, false);
+        assert_eq!(ledger.records.get(&second).unwrap().dropped, false);
+
+        ledger.records.get_mut(&second).unwrap().owner = owner;
+        assert_eq!(
+            ledger.drain_owner(owner),
+            Ok(vec![
+                OwnershipAction::Drop { token: second, owner },
+                OwnershipAction::Drop { token: first, owner },
+            ])
+        );
     }
 
     #[test]

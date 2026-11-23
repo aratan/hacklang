@@ -1,55 +1,10 @@
-//! Deterministic lexical capture analysis for lambda expressions.
+//! Capture analysis over resolved HIR bindings.
 //!
-//! This pass is deliberately metadata-only: it does not enable native closure
-//! code generation or change interpreter semantics. Binding and function IDs
-//! are assigned in AST traversal order so later HIR/runtime phases can consume
-//! stable identities without re-resolving names.
+//! Names are resolved exactly once by AST -> HIR lowering. This pass consumes
+//! BindingId identities and never maintains a second symbol table.
 
-use crate::ast::{Expression, Program, Statement};
+use crate::hir::{BindingId, Capture, ExprKind, Expression, Function, Program, StmtKind, Statement};
 use std::collections::HashMap;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct CaptureBindingId(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct FunctionId(pub u32);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CaptureBinding {
-    pub id: CaptureBindingId,
-    pub name: String,
-    /// The lambda activation that declares this binding; None means module scope.
-    pub function_owner: Option<FunctionId>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CaptureAccess {
-    /// The closure reads the binding's current value.
-    pub reads: bool,
-    /// The closure writes or mutates the binding.
-    pub writes: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Capture {
-    pub binding: CaptureBindingId,
-    pub access: CaptureAccess,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FunctionCaptures {
-    pub id: FunctionId,
-    pub parent: Option<FunctionId>,
-    pub params: Vec<CaptureBindingId>,
-    /// Direct free-variable references, sorted by stable binding ID.
-    pub captures: Vec<Capture>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct CaptureAnalysis {
-    pub bindings: Vec<CaptureBinding>,
-    pub functions: Vec<FunctionCaptures>,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaptureError {
@@ -64,331 +19,191 @@ impl std::fmt::Display for CaptureError {
 
 impl std::error::Error for CaptureError {}
 
-#[derive(Debug)]
-struct FunctionBuilder {
-    id: FunctionId,
-    parent: Option<FunctionId>,
-    params: Vec<CaptureBindingId>,
-    captures: HashMap<CaptureBindingId, CaptureAccess>,
+#[derive(Default)]
+struct Access {
+    reads: bool,
+    writes: bool,
 }
 
-struct Analyzer {
-    bindings: Vec<CaptureBinding>,
-    functions: Vec<FunctionBuilder>,
-    scopes: Vec<HashMap<String, CaptureBindingId>>,
-    function_stack: Vec<FunctionId>,
+fn record(
+    program: &Program,
+    function: usize,
+    binding: BindingId,
+    write: bool,
+    captures: &mut HashMap<BindingId, Access>,
+) -> Result<(), CaptureError> {
+    let metadata = program.bindings.get(binding.0 as usize).ok_or_else(|| CaptureError {
+        message: format!("BindingId inválido durante análisis de capturas: {}", binding.0),
+    })?;
+    if metadata.function_owner != Some(program.functions[function].id) {
+        let access = captures.entry(binding).or_default();
+        if write { access.writes = true; } else { access.reads = true; }
+    }
+    Ok(())
 }
 
-impl Analyzer {
-    fn new() -> Self {
-        Self {
-            bindings: Vec::new(),
-            functions: Vec::new(),
-            scopes: vec![HashMap::new()],
-            function_stack: Vec::new(),
+fn expression(
+    program: &Program,
+    function: usize,
+    value: &Expression,
+    captures: &mut HashMap<BindingId, Access>,
+) -> Result<(), CaptureError> {
+    match &value.kind {
+        ExprKind::Read(binding) => record(program, function, *binding, false, captures)?,
+        ExprKind::Binary { left, right, .. } => {
+            expression(program, function, left, captures)?;
+            expression(program, function, right, captures)?;
         }
-    }
-
-    fn current_function(&self) -> Option<FunctionId> {
-        self.function_stack.last().copied()
-    }
-
-    fn enter_scope(&mut self) {
-        self.scopes.push(HashMap::new());
-    }
-
-    fn leave_scope(&mut self) {
-        if self.scopes.len() > 1 {
-            self.scopes.pop();
+        ExprKind::Ternary { condition, when_true, when_false } => {
+            expression(program, function, condition, captures)?;
+            expression(program, function, when_true, captures)?;
+            expression(program, function, when_false, captures)?;
         }
-    }
-
-    fn declare(&mut self, name: &str) -> CaptureBindingId {
-        let id = CaptureBindingId(self.bindings.len() as u32);
-        self.bindings.push(CaptureBinding {
-            id,
-            name: name.to_string(),
-            function_owner: self.current_function(),
-        });
-        self.scopes.last_mut().expect("module scope exists").insert(name.to_string(), id);
-        id
-    }
-
-    fn resolve(&self, name: &str) -> Result<CaptureBindingId, CaptureError> {
-        self.scopes.iter().rev()
-            .find_map(|scope| scope.get(name).copied())
-            .ok_or_else(|| CaptureError {
-                message: format!("Variable no resuelta durante análisis de capturas: '{}'", name),
-            })
-    }
-
-    fn reference(&mut self, name: &str, write: bool) -> Result<(), CaptureError> {
-        let binding = self.resolve(name)?;
-        if let Some(function) = self.current_function() {
-            let owner = self.bindings[binding.0 as usize].function_owner;
-            if owner != Some(function) {
-                let access = self.functions[function.0 as usize].captures.entry(binding)
-                    .or_insert(CaptureAccess { reads: false, writes: false });
-                if write { access.writes = true; } else { access.reads = true; }
+        ExprKind::Array(items) => {
+            for item in items { expression(program, function, item, captures)?; }
+        }
+        ExprKind::Map(items) => {
+            for (key, value) in items {
+                expression(program, function, key, captures)?;
+                expression(program, function, value, captures)?;
             }
         }
-        Ok(())
-    }
-
-    fn lambda(&mut self, params: &[String], body: &Expression) -> Result<(), CaptureError> {
-        let id = FunctionId(self.functions.len() as u32);
-        let parent = self.current_function();
-        self.functions.push(FunctionBuilder {
-            id,
-            parent,
-            params: Vec::with_capacity(params.len()),
-            captures: HashMap::new(),
-        });
-
-        self.function_stack.push(id);
-        self.enter_scope();
-        for param in params {
-            let binding = self.declare(param);
-            self.functions[id.0 as usize].params.push(binding);
+        ExprKind::Length(value) => expression(program, function, value, captures)?,
+        ExprKind::Index { target, index } => {
+            expression(program, function, target, captures)?;
+            expression(program, function, index, captures)?;
         }
-
-        let result = self.expression(body);
-        self.leave_scope();
-        self.function_stack.pop();
-        result
+        ExprKind::Call { callee, args } => {
+            expression(program, function, callee, captures)?;
+            for arg in args { expression(program, function, arg, captures)?; }
+        }
+        ExprKind::Number(_) | ExprKind::Bool(_) | ExprKind::String(_) | ExprKind::Closure(_) => {}
     }
+    Ok(())
+}
 
-    fn expression(&mut self, expression: &Expression) -> Result<(), CaptureError> {
-        match expression {
-            Expression::Identifier(name) => self.reference(name, false),
-            Expression::NumberLiteral(_) | Expression::BoolLiteral(_) | Expression::StringLiteral(_) => Ok(()),
-            Expression::Infix { left, right, .. } => {
-                self.expression(left)?;
-                self.expression(right)
+fn statements(
+    program: &Program,
+    function: usize,
+    body: &[Statement],
+    captures: &mut HashMap<BindingId, Access>,
+) -> Result<(), CaptureError> {
+    for statement in body {
+        match &statement.kind {
+            StmtKind::Let { value, .. } | StmtKind::Print(value) | StmtKind::Return(value) =>
+                expression(program, function, value, captures)?,
+            StmtKind::Assign { binding, value } => {
+                expression(program, function, value, captures)?;
+                record(program, function, *binding, true, captures)?;
             }
-            Expression::Ternary { condition, true_branch, false_branch } => {
-                self.expression(condition)?;
-                self.expression(true_branch)?;
-                self.expression(false_branch)
+            StmtKind::IndexAssign { binding, indices, value } => {
+                record(program, function, *binding, false, captures)?;
+                record(program, function, *binding, true, captures)?;
+                for index in indices { expression(program, function, index, captures)?; }
+                expression(program, function, value, captures)?;
             }
-            Expression::Lambda { params, body } => self.lambda(params, body),
-            Expression::Block(statements) => {
-                self.enter_scope();
-                let result = self.statements(statements);
-                self.leave_scope();
-                result
+            StmtKind::Block { statements: nested, .. } =>
+                statements(program, function, nested, captures)?,
+            StmtKind::If { condition, then_body, else_body, .. } => {
+                expression(program, function, condition, captures)?;
+                statements(program, function, then_body, captures)?;
+                statements(program, function, else_body, captures)?;
             }
-            Expression::FunctionCall { func, args }
-                if matches!(func.as_ref(), Expression::Identifier(name) if name == "len") && args.len() == 1 =>
-                    self.expression(&args[0]),
-            Expression::FunctionCall { func, args } => {
-                self.expression(func)?;
-                for arg in args {
-                    self.expression(arg)?;
-                }
-                Ok(())
+            StmtKind::While { condition, body, .. } => {
+                expression(program, function, condition, captures)?;
+                statements(program, function, body, captures)?;
             }
-            Expression::Array(items) => {
-                for item in items {
-                    self.expression(item)?;
-                }
-                Ok(())
-            }
-            Expression::Map(items) => {
-                for (key, value) in items {
-                    self.expression(key)?;
-                    self.expression(value)?;
-                }
-                Ok(())
-            }
-            Expression::Index { target, index } => {
-                self.expression(target)?;
-                self.expression(index)
-            }
+            StmtKind::Break | StmtKind::Continue => {}
         }
     }
+    Ok(())
+}
 
-    fn statements(&mut self, statements: &[Statement]) -> Result<(), CaptureError> {
-        for statement in statements {
-            self.statement(statement)?;
+/// Fill each HIR function's direct free-variable set, sorted by BindingId.
+pub fn analyze(program: &Program) -> Result<Vec<Function>, CaptureError> {
+    let mut functions = program.functions.clone();
+    for index in 0..functions.len() {
+        let mut captures = HashMap::<BindingId, Access>::new();
+        if let Some(value) = &functions[index].body.expression {
+            expression(program, index, value, &mut captures)?;
         }
-        Ok(())
-    }
-
-    fn statement(&mut self, statement: &Statement) -> Result<(), CaptureError> {
-        match statement {
-            Statement::Let(binding) => {
-                // Match the interpreter/HIR declaration rule: the initializer
-                // is resolved before the new name enters the current scope.
-                self.expression(&binding.value)?;
-                self.declare(&binding.name);
-                Ok(())
-            }
-            Statement::Assign(assignment) => {
-                self.expression(&assignment.value)?;
-                self.reference(&assignment.name, true)
-            }
-            Statement::IndexAssign(assignment) => {
-                // Updating an element both reads the aggregate and mutates it.
-                self.reference(&assignment.name, false)?;
-                self.reference(&assignment.name, true)?;
-                for index in &assignment.indices {
-                    self.expression(index)?;
-                }
-                self.expression(&assignment.value)
-            }
-            Statement::Print(print) => self.expression(&print.value),
-            Statement::Return(value) => self.expression(value),
-            Statement::Break | Statement::Continue => Ok(()),
-            Statement::Block(statements) => {
-                self.enter_scope();
-                let result = self.statements(statements);
-                self.leave_scope();
-                result
-            }
-            Statement::While(loop_statement) => {
-                self.enter_scope();
-                let result = (|| {
-                    self.expression(&loop_statement.condition)?;
-                    self.statements(&loop_statement.body)
-                })();
-                self.leave_scope();
-                result
-            }
-            Statement::If(branch) => {
-                self.expression(&branch.condition)?;
-                self.enter_scope();
-                let then_result = self.statements(&branch.true_body);
-                self.leave_scope();
-                then_result?;
-                if let Some(body) = &branch.false_body {
-                    self.enter_scope();
-                    let else_result = self.statements(body);
-                    self.leave_scope();
-                    else_result?;
-                }
-                Ok(())
-            }
-        }
-    }
-
-    fn finish(self) -> CaptureAnalysis {
-        let functions = self.functions.into_iter().map(|function| {
-            let mut captures: Vec<_> = function.captures.into_iter()
-                .map(|(binding, access)| Capture { binding, access })
-                .collect();
-            captures.sort_by_key(|capture| capture.binding);
-            FunctionCaptures {
-                id: function.id,
-                parent: function.parent,
-                params: function.params,
-                captures,
-            }
+        statements(program, index, &functions[index].body.statements, &mut captures)?;
+        let mut ordered: Vec<_> = captures.into_iter().map(|(binding, access)| Capture {
+            binding, reads: access.reads, writes: access.writes,
         }).collect();
-        CaptureAnalysis { bindings: self.bindings, functions }
+        ordered.sort_by_key(|capture| capture.binding);
+        functions[index].captures = ordered;
     }
-}
-
-/// Analyze every lambda in a parsed program without changing its execution path.
-pub fn analyze(program: &Program) -> Result<CaptureAnalysis, CaptureError> {
-    let mut analyzer = Analyzer::new();
-    analyzer.statements(&program.statements)?;
-    Ok(analyzer.finish())
+    Ok(functions)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ast::{Program as AstProgram, Statement as AstStatement}, hir};
 
-    fn analyze_source(source: &str) -> CaptureAnalysis {
+    fn lower(source: &str) -> Program {
         let mut lexer = crate::lexer::Lexer::new(source.to_string());
         let tokens = lexer.tokenize().unwrap();
         let mut parser = crate::parser::Parser::new(tokens);
-        let program = parser.parse_program().unwrap();
-        analyze(&program).unwrap()
+        let ast = parser.parse_program().unwrap();
+        hir::lower(&ast).unwrap()
     }
 
     #[test]
-    fn captures_outer_binding_by_identity_and_not_parameter_name() {
-        let result = analyze_source("let outside = 7; let add = |x| x + outside;");
-        assert_eq!(result.functions.len(), 1);
-        let outside = result.bindings.iter().find(|binding| binding.name == "outside").unwrap().id;
-        assert_eq!(result.functions[0].captures, vec![Capture {
-            binding: outside,
-            access: CaptureAccess { reads: true, writes: false },
-        }]);
-        assert_eq!(result.functions[0].params.len(), 1);
+    fn captures_use_hir_binding_ids_and_ignore_shadowed_parameters() {
+        let p = lower("let outside = 7; let add = |x| x + outside;");
+        assert_eq!(p.functions.len(), 1);
+        let outside = p.bindings.iter().find(|binding| binding.name == "outside").unwrap().id;
+        assert_eq!(p.functions[0].captures, vec![Capture { binding: outside, reads: true, writes: false }]);
     }
 
     #[test]
-    fn nested_lambda_captures_parent_parameter_not_its_own_parameter() {
-        let result = analyze_source("let factory = |x| |y| x + y;");
-        assert_eq!(result.functions.len(), 2);
-        let x = result.bindings.iter().find(|binding| binding.name == "x").unwrap().id;
-        assert_eq!(result.functions[0].parent, None);
-        assert!(result.functions[0].captures.is_empty());
-        assert_eq!(result.functions[1].parent, Some(FunctionId(0)));
-        assert_eq!(result.functions[1].captures, vec![Capture {
-            binding: x,
-            access: CaptureAccess { reads: true, writes: false },
-        }]);
+    fn nested_closure_capture_is_owned_by_the_nested_function() {
+        let p = lower("let factory = |x| |y| x + y;");
+        assert_eq!(p.functions.len(), 2);
+        let x = p.bindings.iter().find(|binding| binding.name == "x").unwrap().id;
+        assert!(p.functions[0].captures.is_empty());
+        assert_eq!(p.functions[1].parent, Some(p.functions[0].id));
+        assert_eq!(p.functions[1].captures, vec![Capture { binding: x, reads: true, writes: false }]);
     }
 
     #[test]
-    fn shadowing_resolves_to_inner_binding_without_false_capture() {
-        let result = analyze_source("let value = 1; let identity = |value| value;");
-        assert_eq!(result.functions.len(), 1);
-        assert!(result.functions[0].captures.is_empty());
+    fn mutable_outer_capture_records_reads_and_writes() {
+        let p = lower("let total = 0; let update = |x| (total = total + x; return total;);");
+        let total = p.bindings.iter().find(|binding| binding.name == "total").unwrap().id;
+        assert_eq!(p.functions[0].captures, vec![Capture { binding: total, reads: true, writes: true }]);
     }
 
     #[test]
-    fn block_lambda_captures_outer_binding_through_returned_inner_closure() {
-        let result = analyze_source("let factory = |x| (let inner = |y| x + y; return inner;);");
-        assert_eq!(result.functions.len(), 2);
-        let x = result.bindings.iter().find(|binding| binding.name == "x").unwrap().id;
-        assert_eq!(result.functions[1].captures, vec![Capture {
-            binding: x,
-            access: CaptureAccess { reads: true, writes: false },
-        }]);
+    fn indexed_capture_is_a_read_modify_write() {
+        let p = lower("let values = [1]; let update = |x| (values[0] = x; return 0;);");
+        let values = p.bindings.iter().find(|binding| binding.name == "values").unwrap().id;
+        assert_eq!(p.functions[0].captures, vec![Capture { binding: values, reads: true, writes: true }]);
     }
 
     #[test]
-    fn captured_assignment_is_a_capture_too() {
-        let result = analyze_source("let total = 0; let update = |x| (total = total + x; return total;);");
-        let total = result.bindings.iter().find(|binding| binding.name == "total").unwrap().id;
-        assert_eq!(result.functions[0].captures, vec![Capture {
-            binding: total,
-            access: CaptureAccess { reads: true, writes: true },
-        }]);
-    }
-
-    
-    #[test]
-    fn builtin_len_is_not_misclassified_as_an_unresolved_capture() {
-        let result = analyze_source("let values = [1, 2]; let size = |x| len(values) + x;");
-        let values = result.bindings.iter().find(|binding| binding.name == "values").unwrap().id;
-        assert_eq!(result.functions[0].captures, vec![Capture {
-            binding: values,
-            access: CaptureAccess { reads: true, writes: false },
-        }]);
+    fn function_return_is_lowered_and_capture_analysis_sees_return_expression() {
+        let p = lower("let make = |x| (let inner = |y| x + y; return inner;);");
+        assert_eq!(p.functions.len(), 2);
+        assert!(matches!(p.functions[0].body.statements.last().unwrap().kind, StmtKind::Return(_)));
+        let x = p.bindings.iter().find(|binding| binding.name == "x").unwrap().id;
+        assert_eq!(p.functions[1].captures, vec![Capture { binding: x, reads: true, writes: false }]);
     }
 
     #[test]
-    fn indexed_mutation_records_both_read_and_write_access() {
-        let result = analyze_source("let values = [1]; let change = |x| (values[0] = x; return 0;);");
-        let values = result.bindings.iter().find(|binding| binding.name == "values").unwrap().id;
-        assert_eq!(result.functions[0].captures, vec![Capture {
-            binding: values,
-            access: CaptureAccess { reads: true, writes: true },
-        }]);
-    }
-
-    #[test]
-    fn unresolved_names_fail_instead_of_becoming_accidental_captures() {
-        let mut lexer = crate::lexer::Lexer::new("let f = |x| x + missing;".to_string());
+    fn top_level_return_is_rejected_by_hir() {
+        let mut lexer = crate::lexer::Lexer::new("return 1;".to_string());
         let tokens = lexer.tokenize().unwrap();
         let mut parser = crate::parser::Parser::new(tokens);
-        let program = parser.parse_program().unwrap();
-        assert!(analyze(&program).unwrap_err().message.contains("missing"));
+        let ast = parser.parse_program().unwrap();
+        assert!(hir::lower(&ast).unwrap_err().message.contains("return fuera"));
+    }
+
+    #[test]
+    fn builtin_len_is_not_a_function_capture() {
+        let p = lower("let values = [1, 2]; let size = |x| len(values) + x;");
+        let values = p.bindings.iter().find(|binding| binding.name == "values").unwrap().id;
+        assert_eq!(p.functions[0].captures, vec![Capture { binding: values, reads: true, writes: false }]);
     }
 }

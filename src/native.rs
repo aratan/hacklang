@@ -285,6 +285,76 @@ int main(void) {
         let _ = fs::remove_dir_all(directory);
     }
 
+
+    #[test]
+    fn c_runtime_ownership_tokens_track_transfer_drop_and_callback_invalidation() {
+        let directory = temporary_directory().expect("temporary directory");
+        let c_file = directory.join("ownership_tokens.c");
+        let executable = directory.join("ownership_tokens");
+        let source = format!(
+            "{}\n{}",
+            include_str!("native_runtime.c"),
+            r#"
+typedef struct {
+    HlEnv *environment;
+    uint64_t token;
+    int *calls;
+    int saw_inactive;
+} OwnershipProbe;
+static void ownership_cleanup(void *context) {
+    OwnershipProbe *probe = (OwnershipProbe *)context;
+    *probe->calls += 1;
+    probe->saw_inactive = !hl_ownership_is_active(probe->environment, probe->token);
+}
+int main(void) {
+    int calls = 0;
+    HlEnv *root = hl_env_new(NULL);
+    HlEnv *child = hl_env_new(root);
+    OwnershipProbe probe = { child, 41, &calls, 0 };
+    if (!hl_ownership_acquire(child, 41, ownership_cleanup, &probe)) return 10;
+    if (!hl_ownership_is_active(child, 41)) return 11;
+    if (hl_ownership_acquire(child, 41, ownership_cleanup, &probe)) return 12;
+    if (!hl_ownership_transfer(child, root, 41)) return 13;
+    if (hl_ownership_transfer(child, root, 41)) return 14;
+    if (hl_ownership_drop(child, 41)) return 15;
+    if (!hl_ownership_is_active(root, 41)) return 16;
+    if (!hl_ownership_drop(root, 41)) return 17;
+    if (hl_ownership_drop(root, 41)) return 18;
+    if (calls != 0 || hl_ownership_is_active(root, 41)) return 19;
+
+    OwnershipProbe cleanup_probe = { child, 42, &calls, 0 };
+    if (!hl_ownership_acquire(child, 42, ownership_cleanup, &cleanup_probe)) return 20;
+    hl_env_free(child);
+    if (calls != 1 || !cleanup_probe.saw_inactive) return 21;
+    if (hl_ownership_is_active(root, 42)) return 22;
+    hl_env_free(root);
+    if (calls != 1) return 23;
+    return 0;
+}
+"#
+        );
+        fs::write(&c_file, source).expect("write C ownership token test");
+        let compiler = select_c_compiler().expect("C compiler");
+        let build = Command::new(&compiler)
+            .arg("-std=c11")
+            .arg("-O1")
+            .arg("-g")
+            .arg("-fsanitize=address,undefined")
+            .arg("-fno-omit-frame-pointer")
+            .arg(&c_file)
+            .arg("-o")
+            .arg(&executable)
+            .arg("-lm")
+            .output()
+            .expect("compile C ownership token test with sanitizers");
+        assert!(build.status.success(), "sanitized ownership token compilation failed: {}",
+            String::from_utf8_lossy(&build.stderr));
+        let run = Command::new(&executable).output().expect("run C ownership token test");
+        assert!(run.status.success(), "ownership token test failed with code {:?}: {}",
+            run.status.code(), String::from_utf8_lossy(&run.stderr));
+        let _ = fs::remove_dir_all(directory);
+    }
+
     #[test]
     fn c_runtime_cleanup_callbacks_cannot_resurrect_closing_environments() {
         let directory = temporary_directory().expect("temporary directory");

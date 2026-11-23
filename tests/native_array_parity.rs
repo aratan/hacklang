@@ -16,7 +16,7 @@ fn case_directory() -> PathBuf {
 }
 
 fn interpreter_output(stdout: &[u8]) -> String {
-    let output = String::from_utf8(stdout).expect("interpreter output must be UTF-8");
+    let output = String::from_utf8(stdout.to_vec()).expect("interpreter output must be UTF-8");
     let start_marker = "--- Ejecutando código Hacklang ---\n";
     let end_marker = "--------------------------------\nPrograma finalizado sin errores.\n";
     let start = output

@@ -774,10 +774,23 @@ pub fn validate_memory_operations(program: &Program, plan: &MemoryPlan) -> Resul
             || !is_scope_ancestor(program, operation.destination_scope, operation.produced_in) {
             return Err(format!("vida útil de promoción inválida en StmtId {}", operation.statement.0));
         }
-        if let Some(source) = operation.source {
-            if program.bindings.get(source.0 as usize).is_none() {
-                return Err(format!("origen inexistente en promoción: BindingId {}", source.0));
+        if operation.destination_owner != StorageOwner::Binding(operation.destination) {
+            return Err(format!("propietario destino inválido en promoción StmtId {}", operation.statement.0));
+        }
+        let expected_source_owner = if let Some(source) = operation.source {
+            let _source_binding = program.bindings.get(source.0 as usize)
+                .ok_or_else(|| format!("origen inexistente en promoción: BindingId {}", source.0))?;
+            match plan.bindings.get(&source) {
+                Some(StorageClass::Inline) => StorageOwner::Inline,
+                Some(StorageClass::ScopeRegion(scope)) => StorageOwner::Scope(*scope),
+                Some(StorageClass::OwnedRegion) => StorageOwner::Binding(source),
+                None => return Err(format!("clase de almacenamiento ausente para origen BindingId {}", source.0)),
             }
+        } else {
+            StorageOwner::Scope(operation.produced_in)
+        };
+        if operation.source_owner != expected_source_owner {
+            return Err(format!("propietario origen incoherente en promoción StmtId {}", operation.statement.0));
         }
     }
     Ok(())
@@ -1313,6 +1326,20 @@ mod tests {
         assert!(validate_memory_operations(&p, &memory).is_ok());
         memory.operations[0].statement = StmtId(u32::MAX);
         assert!(validate_memory_operations(&p, &memory).unwrap_err().contains("promoción sin asignación"));
+    }
+
+    #[test]
+    fn promotion_validation_rejects_stale_source_owner() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "outer".into(), value: A::StringLiteral("initial".into()) }),
+            S::Block(vec![S::Assign(crate::ast::AssignStatement {
+                name: "outer".into(), value: A::StringLiteral("inner".into()),
+            })]),
+        ]);
+        let mut memory = plan(&p);
+        memory.operations[0].source_owner = StorageOwner::Unknown;
+        assert!(validate_memory_operations(&p, &memory)
+            .unwrap_err().contains("propietario origen incoherente"));
     }
 
     #[test]

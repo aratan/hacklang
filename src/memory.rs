@@ -746,6 +746,32 @@ pub fn validate_slot_plan(program: &Program, plan: &MemoryPlan) -> Result<(), St
     Ok(())
 }
 
+/// Concrete, backend-neutral slot layout derived from a validated MemoryPlan.
+/// Each stack owns a dense slot vector; entries identify the binding assigned
+/// to that slot. This is a layout description, not runtime allocation.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FrameLayout {
+    pub stacks: HashMap<DataStackId, Vec<Option<BindingId>>>,
+}
+
+pub fn frame_layout(program: &Program, plan: &MemoryPlan) -> Result<FrameLayout, String> {
+    validate_slot_plan(program, plan)?;
+    let mut layout = FrameLayout::default();
+    for (stack, count) in &plan.stack_slot_counts {
+        layout.stacks.insert(*stack, vec![None; *count as usize]);
+    }
+    for (binding, assignment) in &plan.binding_slots {
+        let slots = layout.stacks.get_mut(&assignment.stack)
+            .ok_or_else(|| format!("DataStackId {} sin conteo", assignment.stack.0))?;
+        let target = slots.get_mut(assignment.slot as usize)
+            .ok_or_else(|| format!("Slot fuera del frame para BindingId {}", binding.0))?;
+        if target.replace(*binding).is_some() {
+            return Err(format!("Slot duplicado en DataStackId {}", assignment.stack.0));
+        }
+    }
+    Ok(layout)
+}
+
 pub fn plan(program: &Program) -> MemoryPlan {
     let mut bindings = HashMap::new();
     fn visit(statements: &[Statement], program: &Program, result: &mut HashMap<BindingId, StorageClass>) {

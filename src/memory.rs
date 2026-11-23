@@ -200,11 +200,16 @@ impl OwnershipLedger {
         let record = self.records.get(&token).ok_or(OwnershipError::UnknownToken)?;
         if record.dropped { return Err(OwnershipError::AlreadyDropped); }
         if record.owner != expected_owner { return Err(OwnershipError::OwnerMismatch); }
-        if let Some(entries) = self.cleanup_order.get_mut(&expected_owner) {
-            entries.retain(|entry| *entry != token);
+        // A same-owner move/promotion is a lifecycle no-op. In particular,
+        // do not remove and append the token: that would silently change the
+        // owner's LIFO destruction order despite no ownership transfer.
+        if expected_owner != new_owner {
+            if let Some(entries) = self.cleanup_order.get_mut(&expected_owner) {
+                entries.retain(|entry| *entry != token);
+            }
+            self.cleanup_order.entry(new_owner).or_default().push(token);
+            self.records.get_mut(&token).expect("record validated above").owner = new_owner;
         }
-        self.cleanup_order.entry(new_owner).or_default().push(token);
-        self.records.get_mut(&token).expect("record validated above").owner = new_owner;
         Ok(if promotion {
             OwnershipAction::Promote { token, from: expected_owner, to: new_owner }
         } else {
@@ -1139,6 +1144,30 @@ mod tests {
         );
         assert_eq!(ledger.owner(token), Ok(outer));
         assert_eq!(ledger.move_to(token, local, outer), Err(OwnershipError::OwnerMismatch));
+    }
+
+    #[test]
+    fn ownership_ledger_same_owner_reassignment_preserves_lifo_order() {
+        let owner = StorageOwner::Scope(ScopeId(4));
+        let mut ledger = OwnershipLedger::default();
+        let first = ledger.acquire(owner).unwrap();
+        let second = ledger.acquire(owner).unwrap();
+
+        assert_eq!(
+            ledger.move_to(first, owner, owner),
+            Ok(OwnershipAction::Move { token: first, from: owner, to: owner })
+        );
+        assert_eq!(
+            ledger.promote_to(second, owner, owner),
+            Ok(OwnershipAction::Promote { token: second, from: owner, to: owner })
+        );
+        assert_eq!(
+            ledger.drain_owner(owner),
+            Ok(vec![
+                OwnershipAction::Drop { token: second, owner },
+                OwnershipAction::Drop { token: first, owner },
+            ])
+        );
     }
 
     #[test]

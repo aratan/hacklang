@@ -337,6 +337,28 @@ mod tests {
     }
 
     #[test]
+    fn generated_c_emits_runtime_copy_for_each_proven_promotion() {
+        let ast = AstProgram { statements: vec![
+            AstStmt::Let(LetStatement {
+                name: "outer".into(), value: crate::ast::Expression::StringLiteral("initial".into()),
+            }),
+            AstStmt::Block(vec![
+                AstStmt::Let(LetStatement {
+                    name: "inner".into(), value: crate::ast::Expression::StringLiteral("temporary".into()),
+                }),
+                AstStmt::Assign(crate::ast::AssignStatement {
+                    name: "outer".into(), value: crate::ast::Expression::Identifier("inner".into()),
+                }),
+            ]),
+        ]};
+        let lowered = hir::lower(&ast).unwrap();
+        let memory = crate::memory::plan(&lowered);
+        assert_eq!(memory.operations.len(), 1);
+        let c = generate_c(&lowered, &memory).unwrap();
+        assert!(c.contains("hl_assign_promoted_copy(env, \"outer\","));
+    }
+
+    #[test]
     fn generated_c_routes_scope_bindings_through_planned_physical_lanes() {
         let ast = AstProgram { statements: vec![
             AstStmt::Block(vec![AstStmt::Let(LetStatement {

@@ -875,15 +875,15 @@ static void hl_debug_value(HlValue value) {
         case HL_BOOL: printf("Bool(%s)", value.as.boolean ? "true" : "false"); break;
         case HL_STRING: fputs("String(", stdout); hl_debug_string(value.as.string ? value.as.string : ""); putchar(')'); break;
         case HL_ARRAY:
-            putchar('[');
+            fputs("Array([", stdout);
             if (value.as.array) for (size_t i = 0; i < value.as.array->length; ++i) {
                 if (i) fputs(", ", stdout);
                 hl_debug_value(value.as.array->items[i]);
             }
-            putchar(']');
+            fputs("])", stdout);
             break;
         case HL_MAP:
-            putchar('[');
+            fputs("Map([", stdout);
             if (value.as.map) for (size_t i = 0; i < value.as.map->length; ++i) {
                 if (i) fputs(", ", stdout);
                 putchar('(');
@@ -892,9 +892,29 @@ static void hl_debug_value(HlValue value) {
                 hl_debug_value(value.as.map->entries[i].value);
                 putchar(')');
             }
-            putchar(']');
+            fputs("])", stdout);
             break;
     }
+}
+static void hl_debug_print_array(HlValue value) {
+    putchar('[');
+    if (value.as.array) for (size_t i = 0; i < value.as.array->length; ++i) {
+        if (i) fputs(", ", stdout);
+        hl_debug_value(value.as.array->items[i]);
+    }
+    putchar(']');
+}
+static void hl_debug_print_map(HlValue value) {
+    putchar('[');
+    if (value.as.map) for (size_t i = 0; i < value.as.map->length; ++i) {
+        if (i) fputs(", ", stdout);
+        putchar('(');
+        hl_debug_value(value.as.map->entries[i].key);
+        fputs(", ", stdout);
+        hl_debug_value(value.as.map->entries[i].value);
+        putchar(')');
+    }
+    putchar(']');
 }
 static void hl_print(HlValue value) {
     switch (value.tag) {
@@ -906,8 +926,8 @@ static void hl_print(HlValue value) {
         }
         case HL_BOOL: puts(value.as.boolean ? "true" : "false"); break;
         case HL_STRING: puts(value.as.string); break;
-        case HL_ARRAY:
-        case HL_MAP: hl_debug_value(value); putchar('\\n'); break;
+        case HL_ARRAY: hl_debug_print_array(value); putchar('\n'); break;
+        case HL_MAP: hl_debug_print_map(value); putchar('\n'); break;
     }
 }
 static int hl_is_string_number_pair(HlValue left, HlValue right) {

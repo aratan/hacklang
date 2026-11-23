@@ -82,10 +82,13 @@ pub enum PromotionReason {
     ReadFromShorterLivedBinding,
 }
 
-/// Statically justified ownership extension. This is analysis metadata; the
-/// backend must not execute it until it consumes the complete memory plan.
+/// Backend-neutral memory operation shared by the Rust and C backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PromotionDecision {
+pub enum MemoryOperationKind { Promote }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemoryOperation {
+    pub kind: MemoryOperationKind,
     pub destination: BindingId,
     pub source: Option<BindingId>,
     pub produced_in: ScopeId,
@@ -110,7 +113,7 @@ pub struct MemoryPlan {
     /// Number of slots reserved in each data stack.
     pub stack_slot_counts: HashMap<DataStackId, u32>,
     /// Proven lifetime extensions discovered in assignments. Not yet consumed by C.
-    pub promotions: Vec<PromotionDecision>,
+    pub operations: Vec<MemoryOperation>,
 }
 
 
@@ -478,12 +481,12 @@ fn is_scope_ancestor(program: &Program, ancestor: ScopeId, mut child: ScopeId) -
     }
 }
 
-fn collect_promotions(
+fn collect_operations(
     statements: &[Statement],
     scope: ScopeId,
     program: &Program,
     bindings: &HashMap<BindingId, StorageClass>,
-    promotions: &mut Vec<PromotionDecision>,
+    operations: &mut Vec<MemoryOperation>,
 ) {
     for statement in statements {
         match &statement.kind {
@@ -502,7 +505,8 @@ fn collect_promotions(
                     && destination_scope != scope
                     && (source.is_none() || source_is_shorter)
                 {
-                    promotions.push(PromotionDecision {
+                    operations.push(MemoryOperation {
+                        kind: MemoryOperationKind::Promote,
                         destination: *binding,
                         source,
                         produced_in: scope,
@@ -515,12 +519,12 @@ fn collect_promotions(
                     });
                 }
             }
-            StmtKind::Block { scope: child, statements } => collect_promotions(statements, *child, program, bindings, promotions),
+            StmtKind::Block { scope: child, statements } => collect_operations(statements, *child, program, bindings, operations),
             StmtKind::If { then_scope, then_body, else_scope, else_body, .. } => {
-                collect_promotions(then_body, *then_scope, program, bindings, promotions);
-                if let Some(child) = else_scope { collect_promotions(else_body, *child, program, bindings, promotions); }
+                collect_operations(then_body, *then_scope, program, bindings, operations);
+                if let Some(child) = else_scope { collect_operations(else_body, *child, program, bindings, operations); }
             }
-            StmtKind::While { scope: child, body, .. } => collect_promotions(body, *child, program, bindings, promotions),
+            StmtKind::While { scope: child, body, .. } => collect_operations(body, *child, program, bindings, operations),
             StmtKind::Let { .. } | StmtKind::Print(_) | StmtKind::Break | StmtKind::Continue => {}
         }
     }
@@ -563,9 +567,9 @@ pub fn plan(program: &Program) -> MemoryPlan {
     let interference = build_interference(&cfg, &bindings, program, &scope_stacks);
     let (binding_slots, stack_slot_counts) =
         assign_binding_slots(&interference, &bindings, program, &scope_stacks);
-    let mut promotions = Vec::new();
-    collect_promotions(&program.statements, ScopeId(0), program, &bindings, &mut promotions);
-    MemoryPlan { bindings, scope_stacks, usage, cfg, interference, binding_slots, stack_slot_counts, promotions }
+    let mut operations = Vec::new();
+    collect_operations(&program.statements, ScopeId(0), program, &bindings, &mut operations);
+    MemoryPlan { bindings, scope_stacks, usage, cfg, interference, binding_slots, stack_slot_counts, operations }
 }
 
 #[cfg(test)]
@@ -704,11 +708,12 @@ mod tests {
             })]),
         ]);
         let memory = plan(&p);
-        assert_eq!(memory.promotions.len(), 1);
-        let decision = memory.promotions[0];
+        assert_eq!(memory.operations.len(), 1);
+        let decision = memory.operations[0];
         assert_eq!(decision.destination, BindingId(0));
         assert_eq!(decision.source, None);
         assert_eq!(decision.destination_scope, ScopeId(0));
+        assert_eq!(decision.kind, MemoryOperationKind::Promote);
         assert_eq!(decision.reason, PromotionReason::AssignedToLongerLivedBinding);
         assert_eq!(memory.bindings[&BindingId(0)], StorageClass::OwnedRegion);
     }
@@ -725,8 +730,8 @@ mod tests {
             ]),
         ]);
         let memory = plan(&p);
-        assert_eq!(memory.promotions.len(), 1);
-        let decision = memory.promotions[0];
+        assert_eq!(memory.operations.len(), 1);
+        let decision = memory.operations[0];
         assert_eq!(decision.destination, BindingId(0));
         assert_eq!(decision.source, Some(BindingId(1)));
         assert_eq!(decision.reason, PromotionReason::ReadFromShorterLivedBinding);
@@ -741,7 +746,7 @@ mod tests {
                 name: "outer".into(), value: A::Identifier("outer".into()),
             })]),
         ]);
-        assert!(plan(&p).promotions.is_empty());
+        assert!(plan(&p).operations.is_empty());
     }
 
     #[test]
@@ -750,7 +755,7 @@ mod tests {
             S::Let(LetStatement { name: "value".into(), value: A::StringLiteral("initial".into()) }),
             S::Assign(crate::ast::AssignStatement { name: "value".into(), value: A::StringLiteral("next".into()) }),
         ]);
-        assert!(plan(&p).promotions.is_empty());
+        assert!(plan(&p).operations.is_empty());
     }
 
     #[test]

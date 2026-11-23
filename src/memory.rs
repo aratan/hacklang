@@ -1218,4 +1218,62 @@ mod tests {
         assert_eq!(memory.bindings[&BindingId(1)], StorageClass::ScopeRegion(ScopeId(0)));
     }
 
+
+    #[test]
+    fn ownership_cleanup_drains_in_lifo_order() {
+        let owner = StorageOwner::Scope(ScopeId(7));
+        let mut ledger = OwnershipLedger::default();
+        let first = ledger.acquire(owner).unwrap();
+        let second = ledger.acquire(owner).unwrap();
+        let third = ledger.acquire(owner).unwrap();
+
+        assert_eq!(
+            ledger.drain_owner(owner).unwrap(),
+            vec![
+                OwnershipAction::Drop { token: third, owner },
+                OwnershipAction::Drop { token: second, owner },
+                OwnershipAction::Drop { token: first, owner },
+            ]
+        );
+        assert_eq!(ledger.owner(first), Err(OwnershipError::AlreadyDropped));
+        assert_eq!(ledger.drain_owner(owner), Ok(vec![]));
+    }
+
+    #[test]
+    fn ownership_cleanup_moves_registration_with_token() {
+        let local = StorageOwner::Scope(ScopeId(8));
+        let outer = StorageOwner::Binding(BindingId(4));
+        let mut ledger = OwnershipLedger::default();
+        let retained = ledger.acquire(outer).unwrap();
+        let escaping = ledger.acquire(local).unwrap();
+
+        assert_eq!(
+            ledger.promote_to(escaping, local, outer),
+            Ok(OwnershipAction::Promote { token: escaping, from: local, to: outer })
+        );
+        assert_eq!(
+            ledger.drain_owner(local),
+            Ok(vec![])
+        );
+        assert_eq!(
+            ledger.drain_owner(outer).unwrap(),
+            vec![
+                OwnershipAction::Drop { token: escaping, owner: outer },
+                OwnershipAction::Drop { token: retained, owner: outer },
+            ]
+        );
+    }
+
+    #[test]
+    fn explicit_drop_removes_cleanup_registration() {
+        let owner = StorageOwner::Scope(ScopeId(9));
+        let mut ledger = OwnershipLedger::default();
+        let token = ledger.acquire(owner).unwrap();
+        assert_eq!(
+            ledger.drop_token(token, owner),
+            Ok(OwnershipAction::Drop { token, owner })
+        );
+        assert_eq!(ledger.drain_owner(owner), Ok(vec![]));
+    }
+
 }

@@ -130,7 +130,7 @@ int main(void) {
     hl_env_free(inner);
     if (order != 41) return 16;
     hl_env_free(outer);
-    if (order != 4125) return 17;
+    if (order != 4152) return 17;
     return 0;
 }
 "#

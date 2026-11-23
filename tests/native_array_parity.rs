@@ -325,7 +325,7 @@ fn map_copies_are_independent_and_keys_use_value_equality() {
     assert_interpreter_native_parity(
         "map_copy_key_equality",
         r#"
-let original = @("key": [1, 2], 7: "number", true: "boolean", [3, 4]: "array-key");
+let original = @("key": [1, 2], 7: "number", true: "boolean", [3, 4]: "array-key", @("inner": 1): "map-key");
 let copied = original;
 copied["key"] = [8, 9];
 print original["key"][0];
@@ -333,6 +333,7 @@ print copied["key"][0];
 print original[7];
 print original[true];
 print original[[3, 4]];
+print original[@("inner": 1)];
 "#,
     );
 }

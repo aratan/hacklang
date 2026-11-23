@@ -64,6 +64,11 @@ typedef struct HlArenaBlock {
     unsigned char data[];
 } HlArenaBlock;
 
+typedef struct HlArenaLane {
+    HlArenaBlock *blocks;
+    HlArenaBlock *current;
+} HlArenaLane;
+
 typedef struct HlAllocation {
     HlCleanupFn cleanup;
     void *context;
@@ -81,7 +86,10 @@ struct HlEnv {
     HlEnv *parent;
     HlBinding *bindings;
     HlAllocation *allocations;
-    HlArenaBlock *arena;
+    HlArenaLane *lane;
+    HlArenaBlock *lane_mark_block;
+    size_t lane_mark_used;
+    int owns_lane;
     int closing;
 };
 
@@ -157,31 +165,45 @@ int hl_env_cancel(HlEnv *environment, HlAllocation *entry) {
     return 1;
 }
 
-/* Bump allocation from the current lexical region. Every returned address
- * is max_align_t-aligned; the whole block is reclaimed with its HlEnv. */
+static void hl_lane_init(HlArenaLane *lane) {
+    lane->blocks = NULL; lane->current = NULL;
+}
+static void hl_lane_destroy(HlArenaLane *lane) {
+    if (!lane) return;
+    HlArenaBlock *block = lane->blocks;
+    while (block) { HlArenaBlock *next = block->next; free(block); block = next; }
+    lane->blocks = NULL; lane->current = NULL;
+}
+static void hl_lane_rewind(HlArenaLane *lane, HlArenaBlock *mark, size_t used) {
+    if (!lane) return;
+    HlArenaBlock *block = mark ? mark->next : lane->blocks;
+    while (block) { block->used = 0; block = block->next; }
+    if (mark) { mark->used = used; lane->current = mark; }
+    else { lane->current = lane->blocks; }
+}
 static void *hl_alloc(HlEnv *environment, size_t size) {
-    if (!environment || environment->closing)
+    if (!environment || environment->closing || !environment->lane)
         hl_fail(environment, "región de memoria no disponible");
     const size_t alignment = _Alignof(max_align_t);
     if (size == 0) size = 1;
     if (size > SIZE_MAX - (alignment - 1))
         hl_fail(environment, "tamaño de asignación fuera de rango");
     size_t required = (size + alignment - 1) & ~(alignment - 1);
-
-    HlArenaBlock *block = environment ? environment->arena : NULL;
-    if (!block || required > block->capacity - block->used) {
+    HlArenaLane *lane = environment->lane;
+    HlArenaBlock *block = lane->current ? lane->current : lane->blocks;
+    while (block && required > block->capacity - block->used) block = block->next;
+    if (!block) {
         const size_t default_capacity = 4096;
         size_t capacity = required > default_capacity ? required : default_capacity;
         if (capacity > SIZE_MAX - sizeof(HlArenaBlock))
             hl_fail(environment, "tamaño de región fuera de rango");
         block = (HlArenaBlock *)malloc(sizeof(HlArenaBlock) + capacity);
         if (!block) hl_fail(environment, "memoria agotada");
-        block->next = environment->arena;
-        block->capacity = capacity;
-        block->used = 0;
-        environment->arena = block;
+        block->next = NULL; block->capacity = capacity; block->used = 0;
+        if (!lane->blocks) lane->blocks = block;
+        else { HlArenaBlock *tail = lane->blocks; while (tail->next) tail = tail->next; tail->next = block; }
     }
-
+    lane->current = block;
     void *memory = block->data + block->used;
     block->used += required;
     return memory;
@@ -205,11 +227,11 @@ static void hl_env_free(HlEnv *environment) {
         binding->string_storage = NULL;
         binding->string_capacity = 0;
     }
-    HlArenaBlock *block = environment->arena;
-    while (block) {
-        HlArenaBlock *next = block->next;
-        free(block);
-        block = next;
+    if (environment->owns_lane) {
+        hl_lane_destroy(environment->lane);
+        free(environment->lane);
+    } else {
+        hl_lane_rewind(environment->lane, environment->lane_mark_block, environment->lane_mark_used);
     }
     free(environment);
 }
@@ -229,14 +251,26 @@ static HlValue hl_bool(int value) {
 static HlValue hl_string(HlEnv *environment, const char *value) {
     HlValue result; result.tag = HL_STRING; result.as.string = hl_copy_string(environment, value); return result;
 }
-static HlEnv *hl_env_new(HlEnv *parent) {
+static HlEnv *hl_env_new_in_lane(HlEnv *parent, HlArenaLane *lane) {
+    if (!lane) hl_fail(parent, "lane de memoria nula");
     HlEnv *environment = (HlEnv *)malloc(sizeof(HlEnv));
     if (!environment) hl_fail(parent, "memoria agotada");
     environment->parent = parent;
     environment->bindings = NULL;
     environment->allocations = NULL;
-    environment->arena = NULL;
+    environment->lane = lane;
+    environment->lane_mark_block = lane->current ? lane->current : lane->blocks;
+    environment->lane_mark_used = environment->lane_mark_block ? environment->lane_mark_block->used : 0;
+    environment->owns_lane = 0;
     environment->closing = 0;
+    return environment;
+}
+static HlEnv *hl_env_new(HlEnv *parent) {
+    HlArenaLane *lane = (HlArenaLane *)malloc(sizeof(HlArenaLane));
+    if (!lane) hl_fail(parent, "memoria agotada");
+    hl_lane_init(lane);
+    HlEnv *environment = hl_env_new_in_lane(parent, lane);
+    environment->owns_lane = 1;
     return environment;
 }
 

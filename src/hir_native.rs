@@ -71,7 +71,7 @@ impl Generator {
                 format!("hl_length(env, {value})")
             },
             ExprKind::Closure(_) => return Err("Las closures ya están representadas en HIR, pero el runtime nativo aún no implementa entornos capturados".into()),
-            ExprKind::Call { .. } => return Err("Las llamadas ya están representadas en HIR, pero el runtime nativo aún no implementa invocación de funciones".into())
+            ExprKind::Call { .. } => return Err("Las llamadas ya están representadas en HIR, pero el runtime nativo aún no implementa invocación de funciones".into()),
             ExprKind::Map(items) => {
                 let mut entries = Vec::with_capacity(items.len());
                 for (key, value) in items {

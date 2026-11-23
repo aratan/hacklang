@@ -539,13 +539,21 @@ int main(void) {
         fs::write(&c_file, source).expect("write binding string storage test");
         let compiler = select_c_compiler().expect("C compiler");
         let build = Command::new(&compiler)
-            .arg("-std=c11").arg("-O2").arg(&c_file)
-            .arg("-o").arg(&executable).arg("-lm")
-            .output().expect("compile binding string storage test");
-        assert!(build.status.success(), "string storage test compilation failed: {}",
+            .arg("-std=c11")
+            .arg("-O1")
+            .arg("-g")
+            .arg("-fsanitize=address,undefined")
+            .arg("-fno-omit-frame-pointer")
+            .arg(&c_file)
+            .arg("-o")
+            .arg(&executable)
+            .arg("-lm")
+            .output()
+            .expect("compile binding string storage test with sanitizers");
+        assert!(build.status.success(), "sanitized string storage test compilation failed: {}",
             String::from_utf8_lossy(&build.stderr));
-        let run = Command::new(&executable).output().expect("run binding string storage test");
-        assert!(run.status.success(), "string storage test failed: {:?}", run.status.code());
+        let run = Command::new(&executable).output().expect("run sanitized binding string storage test");
+        assert!(run.status.success(), "sanitized string storage test failed: {:?}", run.status.code());
         let _ = fs::remove_dir_all(directory);
     }
 

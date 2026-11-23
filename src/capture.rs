@@ -178,6 +178,9 @@ impl Analyzer {
                 self.leave_scope();
                 result
             }
+            Expression::FunctionCall { func, args }
+                if matches!(func.as_ref(), Expression::Identifier(name) if name == "len") && args.len() == 1 =>
+                    self.expression(&args[0]),
             Expression::FunctionCall { func, args } => {
                 self.expression(func)?;
                 for arg in args {
@@ -226,6 +229,8 @@ impl Analyzer {
                 self.reference(&assignment.name, true)
             }
             Statement::IndexAssign(assignment) => {
+                // Updating an element both reads the aggregate and mutates it.
+                self.reference(&assignment.name, false)?;
                 self.reference(&assignment.name, true)?;
                 for index in &assignment.indices {
                     self.expression(index)?;
@@ -353,6 +358,27 @@ mod tests {
         let total = result.bindings.iter().find(|binding| binding.name == "total").unwrap().id;
         assert_eq!(result.functions[0].captures, vec![Capture {
             binding: total,
+            access: CaptureAccess { reads: true, writes: true },
+        }]);
+    }
+
+    
+    #[test]
+    fn builtin_len_is_not_misclassified_as_an_unresolved_capture() {
+        let result = analyze_source("let values = [1, 2]; let size = |x| len(values) + x;");
+        let values = result.bindings.iter().find(|binding| binding.name == "values").unwrap().id;
+        assert_eq!(result.functions[0].captures, vec![Capture {
+            binding: values,
+            access: CaptureAccess { reads: true, writes: false },
+        }]);
+    }
+
+    #[test]
+    fn indexed_mutation_records_both_read_and_write_access() {
+        let result = analyze_source("let values = [1]; let change = |x| (values[0] = x; return 0;);");
+        let values = result.bindings.iter().find(|binding| binding.name == "values").unwrap().id;
+        assert_eq!(result.functions[0].captures, vec![Capture {
+            binding: values,
             access: CaptureAccess { reads: true, writes: true },
         }]);
     }

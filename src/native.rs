@@ -1033,12 +1033,18 @@ int main(void) {
         ++registrations;
     if (registrations != 1) return 3;
 
+    uint64_t first_token = binding->ownership_token;
     hl_assign_planned(env, "value", hl_number(7.0), HL_STORAGE_OWNED);
-    if (binding->string_storage || binding->string_capacity != 0) return 4;
+    if (binding->string_storage || binding->string_capacity != 0
+        || binding->ownership_token != 0 || hl_ownership_is_active(env, first_token)) return 4;
     hl_assign_planned(env, "value", hl_string(env, "scoped"), HL_STORAGE_SCOPE);
-    if (binding->string_storage || record->allocation != registration) return 5;
+    if (binding->string_storage || binding->ownership_token != 0) return 5;
     hl_assign_planned(env, "value", hl_string(env, "again"), HL_STORAGE_OWNED);
-    if (!binding->string_storage || record->allocation != registration) return 6;
+    uint64_t second_token = binding->ownership_token;
+    HlOwnershipRecord *second_record = hl_ownership_find(env, second_token);
+    if (!binding->string_storage || !second_token || second_token == first_token
+        || !second_record || second_record->site_id != 77
+        || !hl_ownership_is_active(env, second_token)) return 6;
 
     hl_env_free(env);
     return 0;

@@ -1096,6 +1096,23 @@ int main(void) {
     if (copied_inner->items[0].as.number != 99) return 15;
     if (strcmp(original_inner->items[1].as.string, "owned-text") != 0) return 16;
     if (strcmp(copied_inner->items[1].as.string, "owned-text") != 0) return 17;
+
+    /* Binding storage owns its graph in the binding owner's lane. Reads from
+     * a child scope are independent and assigning them back promotes by copy. */
+    hl_define(environment, "items", original);
+    HlEnv *child = hl_env_new(environment);
+    HlValue child_read = hl_get(child, "items");
+    HlArray *child_inner = child_read.as.array->items[0].as.array;
+    child_inner->items[0] = hl_number(123);
+    HlBinding *root_binding = hl_find(environment, "items");
+    if (!root_binding || root_binding->value.as.array->items[0].as.array->items[0].as.number != 7)
+        return 18;
+    hl_assign(child, "items", child_read);
+    hl_env_free(child);
+    root_binding = hl_find(environment, "items");
+    HlArray *stored_inner = root_binding->value.as.array->items[0].as.array;
+    if (stored_inner->items[0].as.number != 123) return 19;
+    if (strcmp(stored_inner->items[1].as.string, "owned-text") != 0) return 20;
     hl_env_free(environment);
     return 0;
 }

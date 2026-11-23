@@ -897,14 +897,21 @@ mod tests {
             .filter(|block| block.defs.contains(&counter))
             .count();
         assert_eq!(definitions, 2);
-        let break_block = memory.cfg.blocks.iter()
-            .find(|block| block.successors.len() == 1
-                && block.uses.is_empty() && block.defs.is_empty()
+        let reachable_write = memory.cfg.blocks.iter()
+            .find(|block| block.defs.contains(&counter)
                 && block.successors.iter().any(|successor| {
-                    memory.cfg.blocks[*successor as usize].id == *successor
+                    let next = &memory.cfg.blocks[*successor as usize];
+                    next.uses.is_empty() && next.defs.is_empty()
+                        && next.successors.len() == 1
                 }))
-            .expect("break block must have a structured successor");
-        assert_eq!(break_block.successors.len(), 1);
+            .expect("reachable write must lead to the break terminator");
+        let break_id = reachable_write.successors.iter()
+            .find(|successor| {
+                let next = &memory.cfg.blocks[**successor as usize];
+                next.uses.is_empty() && next.defs.is_empty()
+                    && next.successors.len() == 1
+            }).copied().unwrap();
+        assert_eq!(memory.cfg.blocks[break_id as usize].successors.len(), 1);
     }
 
     #[test]

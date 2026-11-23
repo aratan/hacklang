@@ -195,6 +195,8 @@ Incluye pruebas unitarias para escalares inline, strings locales, concatenación
 
 **Slots planificados en el C generado:** el generador emite ahora, junto a la clase de almacenamiento de cada binding, su `DataStackId` y slot cuando existe una asignación en `MemoryPlan.binding_slots`. También rechaza asignaciones de slots para bindings inexistentes. Las pruebas verifican la emisión y el rechazo de metadatos huérfanos. Sigue siendo información de compilación: los slots aún no determinan direcciones ni asignaciones físicas del runtime.
 
+**Validación previa del plan:** antes de generar C, `validate_slot_plan` comprueba que cada binding interferente tenga slot, que la pila coincida con su clase de almacenamiento, que bindings interferentes no compartan slot en la misma pila y que los conteos declarados coincidan con las asignaciones. Esta validación detecta inconsistencias del planificador; no constituye todavía una asignación física en el runtime.
+
 **Conexión del planificador con generación C (incremental):** `compile_to_executable` pasa ahora el `MemoryPlan` a `hir_native::generate_c`. El generador exige una clasificación para cada binding HIR y emite metadatos diagnósticos `inline`, `scope-region` u `owned-region` en el C generado. Las pruebas verifican las clasificaciones y el rechazo de un plan incompleto. Esto conecta el análisis con la fase de generación y evita descartar el plan, pero todavía no selecciona almacenamiento físico ni cambia la estrategia de asignación del runtime.
 
 ### 7.2 Intervalos de uso conservadores (implementación inicial)

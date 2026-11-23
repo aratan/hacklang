@@ -136,19 +136,23 @@ impl Parser {
             }
             if next == Some(Token::BracketOpen) {
                 self.advance(); // consume identifier
-                self.advance(); // consume [
-                let index = self.parse_expression(Precedence::Lowest)?;
-                if *self.current_token() != Token::BracketClose {
-                    return Err("Se esperaba ']' en la asignación por índice".to_string());
+                let mut indices = Vec::new();
+                while *self.current_token() == Token::BracketOpen {
+                    self.advance(); // consume [
+                    let index = self.parse_expression(Precedence::Lowest)?;
+                    if *self.current_token() != Token::BracketClose {
+                        return Err("Se esperaba ']' en la asignación por índice".to_string());
+                    }
+                    self.advance();
+                    indices.push(index);
                 }
-                self.advance();
                 if *self.current_token() != Token::Equals {
-                    return Err("Se esperaba '=' después del índice".to_string());
+                    return Err("Se esperaba '=' después de la ruta de índices".to_string());
                 }
                 self.advance();
                 let value = self.parse_expression(Precedence::Lowest)?;
                 if *self.current_token() == Token::Semicolon { self.advance(); }
-                return Ok(Statement::IndexAssign(IndexAssignStatement { name: ident_name, index, value }));
+                return Ok(Statement::IndexAssign(IndexAssignStatement { name: ident_name, indices, value }));
             }
         }
 

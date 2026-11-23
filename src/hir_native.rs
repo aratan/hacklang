@@ -53,6 +53,7 @@ impl Generator {
                     BinaryOp::Equal=>"hl_equal", BinaryOp::NotEqual=>"hl_not_equal" };
                 format!("{f}(env, {a}, {b})")
             }
+            ExprKind::Array(_) | ExprKind::Map(_) | ExprKind::Index { .. } => return Err("arrays, mapas e indexación están representados en HIR pero aún no tienen lowering nativo".into()),
             ExprKind::Ternary { condition, when_true, when_false } => {
                 let c = self.expr(p, condition, out)?;
                 Self::line(out, format!("HlValue {v};"));
@@ -108,6 +109,7 @@ impl Generator {
                     Self::line(out, format!("hl_assign_planned(env, {}, {v}, {storage});", Self::binding(p, *binding)?));
                 }
             }
+            StmtKind::IndexAssign { .. } => return Err("la asignación por índice está representada en HIR pero aún no tiene lowering nativo".into()),
             StmtKind::Print(e) => { let v = self.expr(p, e, out)?; Self::line(out, format!("hl_print({v});")); }
             StmtKind::Block { scope, statements } => self.block(p, *scope, statements, out)?,
             StmtKind::If { condition, then_scope, then_body, else_scope, else_body } => {

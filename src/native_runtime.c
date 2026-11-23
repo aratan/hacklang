@@ -10,12 +10,17 @@
 #include <stdlib.h>
 #include <string.h>
 
-typedef enum { HL_NUMBER, HL_BOOL, HL_STRING } HlTag;
+typedef struct HlArray HlArray;
+typedef enum { HL_NUMBER, HL_BOOL, HL_STRING, HL_ARRAY } HlTag;
 typedef enum { HL_STORAGE_SCOPE, HL_STORAGE_OWNED } HlStorageClass;
 typedef struct {
     HlTag tag;
-    union { double number; int boolean; const char *string; } as;
+    union { double number; int boolean; const char *string; HlArray *array; } as;
 } HlValue;
+struct HlArray {
+    size_t length;
+    HlValue *items;
+};
 
 /* Activation-local frame storage. The compiler supplies the slot array;
  * frames are independent across recursive/nested activations. */
@@ -339,6 +344,38 @@ static HlValue hl_bool(int value) {
 static HlValue hl_string(HlEnv *environment, const char *value) {
     HlValue result; result.tag = HL_STRING; result.as.string = hl_copy_string(environment, value); return result;
 }
+
+/* Aggregate storage is lane-owned. Cloning recursively duplicates the value
+ * graph, including strings, so reads/assignments cannot create shared aliases. */
+static HlValue hl_array(HlEnv *environment, const HlValue *items, size_t length) {
+    if (length > SIZE_MAX / sizeof(HlValue))
+        hl_fail(environment, "array demasiado grande");
+    HlArray *array = (HlArray *)hl_alloc(environment, sizeof(HlArray));
+    array->length = length;
+    array->items = length
+        ? (HlValue *)hl_alloc(environment, length * sizeof(HlValue)) : NULL;
+    for (size_t i = 0; i < length; ++i) array->items[i] = items[i];
+    HlValue result; result.tag = HL_ARRAY; result.as.array = array; return result;
+}
+static HlValue hl_clone_value(HlEnv *environment, HlValue value) {
+    switch (value.tag) {
+        case HL_NUMBER: return hl_number(value.as.number);
+        case HL_BOOL: return hl_bool(value.as.boolean);
+        case HL_STRING: return hl_string(environment, value.as.string);
+        case HL_ARRAY: {
+            if (!value.as.array) hl_fail(environment, "array nulo");
+            if (value.as.array->length > SIZE_MAX / sizeof(HlValue))
+                hl_fail(environment, "array demasiado grande al copiar");
+            HlValue *items = value.as.array->length
+                ? (HlValue *)hl_alloc(environment, value.as.array->length * sizeof(HlValue)) : NULL;
+            for (size_t i = 0; i < value.as.array->length; ++i)
+                items[i] = hl_clone_value(environment, value.as.array->items[i]);
+            return hl_array(environment, items, value.as.array->length);
+        }
+    }
+    hl_fail(environment, "tipo de valor desconocido al copiar");
+    return hl_number(0);
+}
 static HlEnv *hl_env_new_in_lane(HlEnv *parent, HlArenaLane *lane) {
     if (!lane) hl_fail(parent, "lane de memoria nula");
     HlEnv *environment = (HlEnv *)malloc(sizeof(HlEnv));
@@ -483,6 +520,7 @@ static int hl_truthy(HlValue value) {
         case HL_BOOL: return value.as.boolean;
         case HL_NUMBER: return value.as.number != 0.0;
         case HL_STRING: return value.as.string[0] != '\0';
+        case HL_ARRAY: return value.as.array != NULL;
     }
     return 0;
 }
@@ -561,6 +599,7 @@ static void hl_print(HlValue value) {
         }
         case HL_BOOL: puts(value.as.boolean ? "true" : "false"); break;
         case HL_STRING: puts(value.as.string); break;
+        case HL_ARRAY: puts("<array>"); break;
     }
 }
 static int hl_is_string_number_pair(HlValue left, HlValue right) {

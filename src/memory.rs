@@ -295,24 +295,36 @@ fn assign_binding_slots(
     (assigned, counts)
 }
 
-fn is_dynamic_string(expr: &Expression) -> Option<bool> {
+/// Classifies supported HIR values using known binding storage facts.
+/// Unknown provenance remains conservative and is never treated as scalar.
+fn is_dynamic_string(expr: &Expression, bindings: &HashMap<BindingId, StorageClass>) -> Option<bool> {
     match &expr.kind {
         ExprKind::String(_) => Some(true),
         ExprKind::Number(_) | ExprKind::Bool(_) => Some(false),
-        // String concatenation can allocate. Other binary operations are scalar
-        // in the currently supported HIR subset.
+        ExprKind::Read(binding) => match bindings.get(binding) {
+            Some(StorageClass::Inline) => Some(false),
+            Some(StorageClass::ScopeRegion(_) | StorageClass::OwnedRegion) => Some(true),
+            None => None,
+        },
         ExprKind::Binary { op: BinaryOp::Add, left, right } => {
-            let left = is_dynamic_string(left)?;
-            let right = is_dynamic_string(right)?;
-            Some(left || right)
+            let left = is_dynamic_string(left, bindings);
+            let right = is_dynamic_string(right, bindings);
+            match (left, right) {
+                (Some(true), _) | (_, Some(true)) => Some(true),
+                (Some(false), Some(false)) => Some(false),
+                _ => None,
+            }
         }
         ExprKind::Binary { .. } => Some(false),
         ExprKind::Ternary { when_true, when_false, .. } => {
-            let left = is_dynamic_string(when_true)?;
-            let right = is_dynamic_string(when_false)?;
-            Some(left || right)
+            let left = is_dynamic_string(when_true, bindings);
+            let right = is_dynamic_string(when_false, bindings);
+            match (left, right) {
+                (Some(true), _) | (_, Some(true)) => Some(true),
+                (Some(false), Some(false)) => Some(false),
+                _ => None,
+            }
         }
-        ExprKind::Read(_) => None,
     }
 }
 
@@ -320,7 +332,7 @@ fn mark_assignments(statements: &[Statement], classes: &mut HashMap<BindingId, S
     for statement in statements {
         match &statement.kind {
             StmtKind::Assign { binding, value } => {
-                match is_dynamic_string(value) {
+                match is_dynamic_string(value, classes) {
                     Some(true) | None => { classes.insert(*binding, StorageClass::OwnedRegion); }
                     Some(false) => {}
                 }
@@ -495,7 +507,7 @@ fn collect_operations(
                 let source = match &value.kind { ExprKind::Read(source) => Some(*source), _ => None };
                 let dynamic = match source {
                     Some(source) => !matches!(bindings.get(&source), Some(StorageClass::Inline)),
-                    None => is_dynamic_string(value) != Some(false),
+                    None => is_dynamic_string(value, bindings) != Some(false),
                 };
                 let source_is_shorter = source.is_some_and(|id| {
                     let source_scope = program.bindings[id.0 as usize].scope;
@@ -537,7 +549,7 @@ pub fn plan(program: &Program) -> MemoryPlan {
             match &statement.kind {
                 StmtKind::Let { binding, value } => {
                     let scope = program.bindings[binding.0 as usize].scope;
-                    let class = match is_dynamic_string(value) {
+                    let class = match is_dynamic_string(value, result) {
                         Some(false) => StorageClass::Inline,
                         Some(true) => StorageClass::ScopeRegion(scope),
                         None => StorageClass::OwnedRegion,

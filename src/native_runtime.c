@@ -530,6 +530,38 @@ static HlValue hl_get(HlEnv *environment, const char *name) {
         return hl_clone_value(environment, item->value);
     return item->value;
 }
+/* Array indexing follows the interpreter's integer, non-negative
+ * index contract. Reads clone the selected value into the current lane. */
+static size_t hl_array_index(HlEnv *environment, HlValue index) {
+    if (index.tag != HL_NUMBER || !isfinite(index.as.number)
+        || index.as.number < 0.0 || floor(index.as.number) != index.as.number
+        || index.as.number > (double)SIZE_MAX)
+        hl_fail(environment, "el índice de un array debe ser entero no negativo");
+    return (size_t)index.as.number;
+}
+static HlValue hl_index(HlEnv *environment, HlValue target, HlValue index) {
+    if (target.tag != HL_ARRAY || !target.as.array)
+        hl_fail(environment, "no se puede indexar un valor que no sea array");
+    size_t position = hl_array_index(environment, index);
+    if (position >= target.as.array->length)
+        hl_fail(environment, "índice de array fuera de rango");
+    return hl_clone_value(environment, target.as.array->items[position]);
+}
+static void hl_index_assign(HlEnv *environment, const char *name, HlValue index, HlValue value) {
+    HlBinding *binding = hl_find(environment, name);
+    if (!binding) {
+        char message[512];
+        snprintf(message, sizeof(message), "Variable '%s' no definida para asignación", name);
+        hl_fail(environment, message);
+    }
+    if (binding->value.tag != HL_ARRAY || !binding->value.as.array)
+        hl_fail(environment, "no se puede asignar por índice a un valor que no sea array");
+    size_t position = hl_array_index(environment, index);
+    if (position >= binding->value.as.array->length)
+        hl_fail(environment, "índice de array fuera de rango");
+    /* The element must outlive the expression's temporary scope. */
+    binding->value.as.array->items[position] = hl_clone_value(binding->owner, value);
+}
 static int hl_truthy(HlValue value) {
     switch (value.tag) {
         case HL_BOOL: return value.as.boolean;

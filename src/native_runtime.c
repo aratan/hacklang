@@ -263,11 +263,7 @@ int hl_ownership_transfer(HlEnv *from, HlEnv *to, uint64_t id) {
 int hl_ownership_drop(HlEnv *environment, uint64_t id) {
     HlOwnershipRecord *record = hl_ownership_find(environment, id);
     if (!record || !record->active || record->owner != environment || !record->allocation) return 0;
-    HlAllocation *allocation = record->allocation;
-    /* Drop ends the resource lifetime; cancellation alone only detaches the
-     * registration and deliberately does not execute its cleanup callback. */
-    allocation->cleanup(allocation->context);
-    return hl_env_cancel(environment, allocation);
+    return hl_env_cancel(environment, record->allocation);
 }
 int hl_ownership_is_active(HlEnv *environment, uint64_t id) {
     HlOwnershipRecord *record = hl_ownership_find(environment, id);
@@ -442,11 +438,24 @@ static HlBinding *hl_find(HlEnv *environment, const char *name) {
 /* Store a value in its binding. Strings use one growable owner buffer,
  * avoiding one permanent arena allocation per reassignment. Copy through a
  * temporary first because the input may alias this binding's current buffer. */
+static void hl_release_binding_resource(HlBinding *binding, const char *error_message) {
+    if (!binding || !binding->ownership_token) return;
+    uint64_t token = binding->ownership_token;
+    HlOwnershipRecord *record = hl_ownership_find(binding->owner, token);
+    if (!record || !record->active || record->owner != binding->owner || !record->allocation)
+        hl_fail(binding->owner, error_message);
+    /* hl_ownership_drop detaches and invalidates but intentionally does not
+     * execute callbacks. A binding replacement must clean its old resource
+     * before cancelling the registration. */
+    record->allocation->cleanup(record->allocation->context);
+    if (!hl_ownership_drop(binding->owner, token))
+        hl_fail(binding->owner, error_message);
+}
+
 static HlValue hl_store_value(HlBinding *binding, HlValue value, HlStorageClass storage) {
     if (value.tag == HL_ARRAY) {
         if (binding->value.tag == HL_STRING && binding->ownership_token) {
-            if (!hl_ownership_drop(binding->owner, binding->ownership_token))
-                hl_fail(binding->owner, "no se pudo liberar la propiedad anterior de cadena");
+            hl_release_binding_resource(binding, "no se pudo liberar la propiedad anterior de cadena");
         }
 
         HlValue stored;
@@ -457,9 +466,7 @@ static HlValue hl_store_value(HlBinding *binding, HlValue value, HlStorageClass 
                 hl_lane_destroy(&binding->aggregate_lane);
                 hl_lane_init(&binding->aggregate_lane);
             } else {
-                if (binding->ownership_token
-                    && !hl_ownership_drop(binding->owner, binding->ownership_token))
-                    hl_fail(binding->owner, "no se pudo liberar la propiedad anterior del binding");
+                hl_release_binding_resource(binding, "no se pudo liberar la propiedad anterior del binding");
                 hl_lane_init(&binding->aggregate_lane);
                 if (!hl_ownership_acquire(binding->owner, binding->ownership_site,
                         &binding->ownership_token, hl_cleanup_binding_aggregate, binding))
@@ -467,9 +474,7 @@ static HlValue hl_store_value(HlBinding *binding, HlValue value, HlStorageClass 
             }
             stored = hl_clone_value_in_lane(binding->owner, &binding->aggregate_lane, value);
         } else {
-            if (binding->ownership_token
-                && !hl_ownership_drop(binding->owner, binding->ownership_token))
-                hl_fail(binding->owner, "no se pudo liberar la propiedad anterior del binding");
+            hl_release_binding_resource(binding, "no se pudo liberar la propiedad anterior del binding");
             stored = hl_clone_value(binding->owner, value);
         }
         free(binding->string_storage);
@@ -486,9 +491,7 @@ static HlValue hl_store_value(HlBinding *binding, HlValue value, HlStorageClass 
 
         /* ScopeRegion strings are copied into the lexical owner's arena. */
         if (storage == HL_STORAGE_SCOPE) {
-            if (binding->ownership_token
-                && !hl_ownership_drop(binding->owner, binding->ownership_token))
-                hl_fail(binding->owner, "no se pudo liberar la propiedad anterior de cadena");
+            hl_release_binding_resource(binding, "no se pudo liberar la propiedad anterior de cadena");
             char *scoped = hl_copy_string(binding->owner, value.as.string);
             free(binding->string_storage);
             binding->string_storage = NULL;
@@ -526,9 +529,7 @@ static HlValue hl_store_value(HlBinding *binding, HlValue value, HlStorageClass 
         return value;
     }
 
-    if (binding->ownership_token
-        && !hl_ownership_drop(binding->owner, binding->ownership_token))
-        hl_fail(binding->owner, "no se pudo liberar la propiedad anterior del binding");
+    hl_release_binding_resource(binding, "no se pudo liberar la propiedad anterior del binding");
     free(binding->string_storage);
     binding->string_storage = NULL;
     binding->string_capacity = 0;

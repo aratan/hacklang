@@ -95,7 +95,7 @@ pub enum ValueOrigin {
 
 /// Logical owner known to the planner. `Binding` denotes the conservative
 /// owned storage associated with a binding, not a runtime allocation handle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StorageOwner {
     Inline,
     Scope(ScopeId),
@@ -142,6 +142,8 @@ struct OwnershipRecord {
 pub struct OwnershipLedger {
     next_token: u64,
     records: HashMap<OwnershipTokenId, OwnershipRecord>,
+    /// Active cleanup registrations, ordered by acquisition for each owner.
+    cleanup_order: HashMap<StorageOwner, Vec<OwnershipTokenId>>,
 }
 
 impl OwnershipLedger {
@@ -152,6 +154,7 @@ impl OwnershipLedger {
         let token = OwnershipTokenId(self.next_token);
         self.next_token = self.next_token.checked_add(1).ok_or(OwnershipError::InvalidOwner)?;
         self.records.insert(token, OwnershipRecord { owner, dropped: false });
+        self.cleanup_order.entry(owner).or_default().push(token);
         Ok(token)
     }
 
@@ -194,10 +197,14 @@ impl OwnershipLedger {
         if matches!(new_owner, StorageOwner::Inline | StorageOwner::Unknown) {
             return Err(OwnershipError::InvalidOwner);
         }
-        let record = self.records.get_mut(&token).ok_or(OwnershipError::UnknownToken)?;
+        let record = self.records.get(&token).ok_or(OwnershipError::UnknownToken)?;
         if record.dropped { return Err(OwnershipError::AlreadyDropped); }
         if record.owner != expected_owner { return Err(OwnershipError::OwnerMismatch); }
-        record.owner = new_owner;
+        if let Some(entries) = self.cleanup_order.get_mut(&expected_owner) {
+            entries.retain(|entry| *entry != token);
+        }
+        self.cleanup_order.entry(new_owner).or_default().push(token);
+        self.records.get_mut(&token).expect("record validated above").owner = new_owner;
         Ok(if promotion {
             OwnershipAction::Promote { token, from: expected_owner, to: new_owner }
         } else {
@@ -214,7 +221,29 @@ impl OwnershipLedger {
         if record.dropped { return Err(OwnershipError::AlreadyDropped); }
         if record.owner != expected_owner { return Err(OwnershipError::OwnerMismatch); }
         record.dropped = true;
+        if let Some(entries) = self.cleanup_order.get_mut(&expected_owner) {
+            entries.retain(|entry| *entry != token);
+        }
         Ok(OwnershipAction::Drop { token, owner: expected_owner })
+    }
+
+    /// Consume every active cleanup registration for an owner in LIFO order.
+    /// The returned actions are the exact Drop sequence a backend must execute
+    /// before reclaiming that owner's storage.
+    pub fn drain_owner(
+        &mut self,
+        owner: StorageOwner,
+    ) -> Result<Vec<OwnershipAction>, OwnershipError> {
+        let tokens = self.cleanup_order.remove(&owner).unwrap_or_default();
+        let mut actions = Vec::with_capacity(tokens.len());
+        for token in tokens.into_iter().rev() {
+            let record = self.records.get_mut(&token).ok_or(OwnershipError::UnknownToken)?;
+            if record.dropped { return Err(OwnershipError::AlreadyDropped); }
+            if record.owner != owner { return Err(OwnershipError::OwnerMismatch); }
+            record.dropped = true;
+            actions.push(OwnershipAction::Drop { token, owner });
+        }
+        Ok(actions)
     }
 }
 

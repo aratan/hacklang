@@ -10,6 +10,7 @@ struct Generator {
     scopes: Vec<String>,
     loops: Vec<(String, String, usize)>,
     inline_slots: HashMap<crate::hir::BindingId, u32>,
+    owned_bindings: std::collections::HashSet<crate::hir::BindingId>,
 }
 
 impl Generator {
@@ -78,7 +79,8 @@ impl Generator {
                 if let Some(slot) = self.inline_slots.get(binding) {
                     Self::line(out, format!("hl_frame_write_or_fail(env, &frame, {slot}, {v});"));
                 } else {
-                    Self::line(out, format!("hl_define(env, {}, {v});", Self::binding(p, *binding)?));
+                    let storage = if self.owned_bindings.contains(binding) { "HL_STORAGE_OWNED" } else { "HL_STORAGE_SCOPE" };
+                    Self::line(out, format!("hl_define_planned(env, {}, {v}, {storage});", Self::binding(p, *binding)?));
                 }
             }
             StmtKind::Assign { binding, value } => {
@@ -86,7 +88,8 @@ impl Generator {
                 if let Some(slot) = self.inline_slots.get(binding) {
                     Self::line(out, format!("hl_frame_write_or_fail(env, &frame, {slot}, {v});"));
                 } else {
-                    Self::line(out, format!("hl_assign(env, {}, {v});", Self::binding(p, *binding)?));
+                    let storage = if self.owned_bindings.contains(binding) { "HL_STORAGE_OWNED" } else { "HL_STORAGE_SCOPE" };
+                    Self::line(out, format!("hl_assign_planned(env, {}, {v}, {storage});", Self::binding(p, *binding)?));
                 }
             }
             StmtKind::Print(e) => { let v = self.expr(p, e, out)?; Self::line(out, format!("hl_print({v});")); }
@@ -147,8 +150,11 @@ pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, Stri
         .filter(|(_, assignment)| assignment.stack == inline_stack)
         .map(|(binding, assignment)| (*binding, assignment.slot))
         .collect();
+    let owned_bindings = memory.bindings.iter()
+        .filter_map(|(binding, class)| matches!(class, StorageClass::OwnedRegion).then_some(*binding))
+        .collect();
     let mut body = String::new();
-    let mut generator = Generator { inline_slots, ..Generator::default() };
+    let mut generator = Generator { inline_slots, owned_bindings, ..Generator::default() };
     for stmt in &program.statements { generator.stmt(program, stmt, &mut body)?; }
     let mut source = include_str!("native_runtime.c").to_string();
     source.push_str("\n/* Compiler MemoryPlan (diagnostic metadata; runtime selection pending). */\n");

@@ -571,3 +571,8 @@ La implementación se hará por etapas verificables:
 - El registro `hl_env_defer` se conserva separado para recursos con finalizador; ya no se crea una entrada de limpieza por cada asignación interna de la arena.
 - La promoción entre ámbitos sigue siendo conservadora por copia al entorno propietario del binding. No se transfieren punteros entre arenas.
 - Esto implementa arenas regionales bump en el runtime C para el subconjunto actual. El `MemoryPlan` todavía no elige físicamente slots ni clases de arena; tampoco se ha implementado un frame allocator basado en esos slots.
+
+
+### Frame de activación (runtime C)
+
+El runtime incorpora una API mínima `HlFrame` con almacenamiento de slots proporcionado por el llamador. Cada activación mantiene su propio array `HlFrameSlot`, separado de los frames anidados o recursivos. Los slots registran si han sido inicializados; lectura de slots no inicializados, índices fuera de rango y escrituras inválidas fallan de forma controlada. La API no reserva memoria por sí misma: el compilador debe calcular y emitir el almacenamiento y conectar `BindingSlotPlan` antes de que el backend la use. Por tanto, esta entrega implementa el contrato/runtime de frames, no la asignación física automática desde `MemoryPlan`.

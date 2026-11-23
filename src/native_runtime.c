@@ -77,7 +77,8 @@ typedef struct HlAllocation {
     HlOwnershipRecord *ownership;
 } HlAllocation;
 struct HlOwnershipRecord {
-    uint64_t id;
+    uint64_t id; /* unique dynamic handle */
+    uint64_t site_id; /* stable compiler operation identity */
     HlEnv *owner;
     HlAllocation *allocation;
     int active;
@@ -97,6 +98,7 @@ struct HlEnv {
     HlBinding *bindings;
     HlAllocation *allocations;
     HlOwnershipRecord *ownership_records; /* root environment owns token tombstones */
+    uint64_t next_ownership_id;
     HlArenaLane *lane;
     HlArenaBlock *lane_mark_block;
     size_t lane_mark_used;
@@ -215,21 +217,23 @@ static HlOwnershipRecord *hl_ownership_find(HlEnv *environment, uint64_t id) {
         if (record->id == id) return record;
     return NULL;
 }
-int hl_ownership_acquire(HlEnv *environment, uint64_t id, HlCleanupFn cleanup, void *context) {
+int hl_ownership_acquire(HlEnv *environment, uint64_t site_id, uint64_t *token_out, HlCleanupFn cleanup, void *context) {
     HlEnv *root = hl_env_root(environment);
-    if (!root || !environment || environment->closing || !cleanup
-        || hl_ownership_find(environment, id)) return 0;
+    if (!root || !environment || environment->closing || !token_out || !cleanup
+        || root->next_ownership_id == UINT64_MAX) return 0;
     HlOwnershipRecord *record = (HlOwnershipRecord *)malloc(sizeof(HlOwnershipRecord));
     if (!record) return 0;
     HlAllocation *allocation = hl_env_defer(environment, cleanup, context);
     if (!allocation) { free(record); return 0; }
-    record->id = id;
+    record->id = ++root->next_ownership_id;
+    record->site_id = site_id;
     record->owner = environment;
     record->allocation = allocation;
     record->active = 1;
     record->next = root->ownership_records;
     root->ownership_records = record;
     allocation->ownership = record;
+    *token_out = record->id;
     return 1;
 }
 int hl_ownership_transfer(HlEnv *from, HlEnv *to, uint64_t id) {
@@ -342,6 +346,7 @@ static HlEnv *hl_env_new_in_lane(HlEnv *parent, HlArenaLane *lane) {
     environment->bindings = NULL;
     environment->allocations = NULL;
     environment->ownership_records = NULL;
+    environment->next_ownership_id = 0;
     environment->lane = lane;
     environment->lane_mark_block = lane->current ? lane->current : lane->blocks;
     environment->lane_mark_used = environment->lane_mark_block ? environment->lane_mark_block->used : 0;

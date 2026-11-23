@@ -751,23 +751,26 @@ pub fn validate_slot_plan(program: &Program, plan: &MemoryPlan) -> Result<(), St
 /// to that slot. This is a layout description, not runtime allocation.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FrameLayout {
-    pub stacks: HashMap<DataStackId, Vec<Option<BindingId>>>,
+    /// Each physical slot may serve multiple non-interfering bindings at
+    /// different points in the activation. The planner's interference graph
+    /// guarantees that these bindings are never simultaneously live.
+    pub stacks: HashMap<DataStackId, Vec<Vec<BindingId>>>,
 }
 
 pub fn frame_layout(program: &Program, plan: &MemoryPlan) -> Result<FrameLayout, String> {
     validate_slot_plan(program, plan)?;
     let mut layout = FrameLayout::default();
     for (stack, count) in &plan.stack_slot_counts {
-        layout.stacks.insert(*stack, vec![None; *count as usize]);
+        layout.stacks.insert(*stack, vec![Vec::new(); *count as usize]);
     }
     for (binding, assignment) in &plan.binding_slots {
         let slots = layout.stacks.get_mut(&assignment.stack)
             .ok_or_else(|| format!("DataStackId {} sin conteo", assignment.stack.0))?;
         let target = slots.get_mut(assignment.slot as usize)
             .ok_or_else(|| format!("Slot fuera del frame para BindingId {}", binding.0))?;
-        if target.replace(*binding).is_some() {
-            return Err(format!("Slot duplicado en DataStackId {}", assignment.stack.0));
-        }
+        // Slot reuse is intentional: non-interfering bindings may occupy
+        // the same physical slot at disjoint points in the program.
+        target.push(*binding);
     }
     Ok(layout)
 }
@@ -833,11 +836,29 @@ mod tests {
         let memory = plan(&p);
         let layout = frame_layout(&p, &memory).unwrap();
         for (binding, assignment) in &memory.binding_slots {
-            assert_eq!(layout.stacks[&assignment.stack][assignment.slot as usize], Some(*binding));
+            assert!(layout.stacks[&assignment.stack][assignment.slot as usize].contains(binding));
         }
         for (stack, slots) in &layout.stacks {
             assert_eq!(slots.len(), memory.stack_slot_counts[stack] as usize);
         }
+    }
+
+    #[test]
+    fn frame_layout_preserves_non_interfering_bindings_that_reuse_a_slot() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "first".into(), value: A::NumberLiteral(1.0) }),
+            S::Print(PrintStatement { value: A::Identifier("first".into()) }),
+            S::Let(LetStatement { name: "second".into(), value: A::NumberLiteral(2.0) }),
+            S::Print(PrintStatement { value: A::Identifier("second".into()) }),
+        ]);
+        let memory = plan(&p);
+        assert_eq!(memory.binding_slots[&BindingId(0)].slot, memory.binding_slots[&BindingId(1)].slot);
+        assert!(!memory.interference[&BindingId(0)].contains(&BindingId(1)));
+
+        let layout = frame_layout(&p, &memory).unwrap();
+        let stack = memory.binding_slots[&BindingId(0)].stack;
+        let slot = memory.binding_slots[&BindingId(0)].slot as usize;
+        assert_eq!(layout.stacks[&stack][slot], vec![BindingId(0), BindingId(1)]);
     }
 
     #[test]

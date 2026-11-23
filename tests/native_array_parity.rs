@@ -228,8 +228,8 @@ fn invalid_array_read_indices_match_interpreter_error_classification() {
         "fuera de rango",
     );
     assert_interpreter_native_failure(
-        "array_read_negative_index",
-        "let values = [1, 2];\nprint values[-1];\n",
+        "array_read_fractional_index",
+        "let values = [1, 2];\nprint values[1.5];\n",
         "entero no negativo",
     );
     assert_interpreter_native_failure(

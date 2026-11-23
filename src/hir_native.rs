@@ -221,9 +221,10 @@ mod tests {
         let c = generate_c(&lowered, &memory).unwrap();
         assert!(c.contains("binding 0 (n) => inline"));
         assert!(c.contains("binding 1 (s) => scope-region"));
-        assert!(c.contains("hl_define_planned(env, \\"s\\","));
-        assert!(c.contains("HL_STORAGE_SCOPE"));
-        assert!(c.contains("HL_STORAGE_OWNED"));
+        let generated_main = c.split("int main(void) {").last().unwrap();
+        assert!(generated_main.contains("hl_define_planned(env,"));
+        assert!(generated_main.contains("HL_STORAGE_SCOPE"));
+        assert!(!generated_main.contains("HL_STORAGE_OWNED"));
     }
 
     #[test]

@@ -321,6 +321,7 @@ fn expr_uses(expr: &Expression, uses: &mut std::collections::HashSet<BindingId>)
         ExprKind::Array(items) => for item in items { expr_uses(item, uses); },
         ExprKind::Map(items) => for (key, value) in items { expr_uses(key, uses); expr_uses(value, uses); },
         ExprKind::Index { target, index } => { expr_uses(target, uses); expr_uses(index, uses); }
+        ExprKind::Length(value) => expr_uses(value, uses),
         ExprKind::Number(_) | ExprKind::Bool(_) | ExprKind::String(_) => {}
     }
 }
@@ -540,6 +541,7 @@ fn is_dynamic_string(expr: &Expression, bindings: &HashMap<BindingId, StorageCla
             }
         }
         ExprKind::Array(_) | ExprKind::Map(_) | ExprKind::Index { .. } => Some(true),
+        ExprKind::Length(_) => Some(false),
     }
 }
 
@@ -617,6 +619,7 @@ fn collect_expr_usage(
         ExprKind::Array(items) => for item in items { collect_expr_usage(item, scope, usage, position, loop_touched); },
         ExprKind::Map(items) => for (key, value) in items { collect_expr_usage(key, scope, usage, position, loop_touched); collect_expr_usage(value, scope, usage, position, loop_touched); },
         ExprKind::Index { target, index } => { collect_expr_usage(target, scope, usage, position, loop_touched); collect_expr_usage(index, scope, usage, position, loop_touched); }
+        ExprKind::Length(value) => collect_expr_usage(value, scope, usage, position, loop_touched),
         ExprKind::Number(_) | ExprKind::Bool(_) | ExprKind::String(_) => {}
     }
 }

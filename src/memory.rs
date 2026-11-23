@@ -103,6 +103,116 @@ pub enum StorageOwner {
     Unknown,
 }
 
+/// Identity of one dynamic allocation tracked by the ownership model.
+/// It is not a pointer and is not yet emitted by either runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct OwnershipTokenId(pub u64);
+
+/// Lifecycle actions have distinct meanings: Move transfers the unique owner,
+/// Promote extends the owner's lifetime, and Drop ends the resource lifetime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnershipAction {
+    Acquire { token: OwnershipTokenId, owner: StorageOwner },
+    Move { token: OwnershipTokenId, from: StorageOwner, to: StorageOwner },
+    Promote { token: OwnershipTokenId, from: StorageOwner, to: StorageOwner },
+    Drop { token: OwnershipTokenId, owner: StorageOwner },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnershipError {
+    UnknownToken,
+    AlreadyDropped,
+    OwnerMismatch,
+    InvalidOwner,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OwnershipRecord {
+    owner: StorageOwner,
+    dropped: bool,
+}
+
+/// Small backend-neutral lifecycle state machine.
+///
+/// The ledger keeps tombstones after Drop, so a second destruction is
+/// rejected instead of silently becoming a second free. A successful Move or
+/// Promote updates the sole logical owner; it never creates another token.
+/// This is a specification/test utility, not runtime integration.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct OwnershipLedger {
+    next_token: u64,
+    records: HashMap<OwnershipTokenId, OwnershipRecord>,
+}
+
+impl OwnershipLedger {
+    pub fn acquire(&mut self, owner: StorageOwner) -> Result<OwnershipTokenId, OwnershipError> {
+        if matches!(owner, StorageOwner::Inline | StorageOwner::Unknown) {
+            return Err(OwnershipError::InvalidOwner);
+        }
+        let token = OwnershipTokenId(self.next_token);
+        self.next_token = self.next_token.checked_add(1).ok_or(OwnershipError::InvalidOwner)?;
+        self.records.insert(token, OwnershipRecord { owner, dropped: false });
+        Ok(token)
+    }
+
+    pub fn owner(&self, token: OwnershipTokenId) -> Result<StorageOwner, OwnershipError> {
+        let record = self.records.get(&token).ok_or(OwnershipError::UnknownToken)?;
+        if record.dropped { return Err(OwnershipError::AlreadyDropped); }
+        Ok(record.owner)
+    }
+
+    pub fn move_to(
+        &mut self,
+        token: OwnershipTokenId,
+        expected_owner: StorageOwner,
+        new_owner: StorageOwner,
+    ) -> Result<OwnershipAction, OwnershipError> {
+        self.reassign(token, expected_owner, new_owner, false)
+    }
+
+    pub fn promote_to(
+        &mut self,
+        token: OwnershipTokenId,
+        expected_owner: StorageOwner,
+        longer_lived_owner: StorageOwner,
+    ) -> Result<OwnershipAction, OwnershipError> {
+        self.reassign(token, expected_owner, longer_lived_owner, true)
+    }
+
+    fn reassign(
+        &mut self,
+        token: OwnershipTokenId,
+        expected_owner: StorageOwner,
+        new_owner: StorageOwner,
+        promotion: bool,
+    ) -> Result<OwnershipAction, OwnershipError> {
+        if matches!(new_owner, StorageOwner::Inline | StorageOwner::Unknown) {
+            return Err(OwnershipError::InvalidOwner);
+        }
+        let record = self.records.get_mut(&token).ok_or(OwnershipError::UnknownToken)?;
+        if record.dropped { return Err(OwnershipError::AlreadyDropped); }
+        if record.owner != expected_owner { return Err(OwnershipError::OwnerMismatch); }
+        record.owner = new_owner;
+        Ok(if promotion {
+            OwnershipAction::Promote { token, from: expected_owner, to: new_owner }
+        } else {
+            OwnershipAction::Move { token, from: expected_owner, to: new_owner }
+        })
+    }
+
+    pub fn drop_token(
+        &mut self,
+        token: OwnershipTokenId,
+        expected_owner: StorageOwner,
+    ) -> Result<OwnershipAction, OwnershipError> {
+        let record = self.records.get_mut(&token).ok_or(OwnershipError::UnknownToken)?;
+        if record.dropped { return Err(OwnershipError::AlreadyDropped); }
+        if record.owner != expected_owner { return Err(OwnershipError::OwnerMismatch); }
+        record.dropped = true;
+        Ok(OwnershipAction::Drop { token, owner: expected_owner })
+    }
+}
+
 /// Backend-neutral operation shared by the Rust and C backends.
 ///
 /// The fields distinguish value origin, current logical owner, and destination
@@ -651,6 +761,46 @@ mod tests {
         assert_ne!(memory.scope_stacks[&outer].stack, memory.scope_stacks[&inner].stack);
         assert_eq!(memory.scope_stacks[&left].depth, memory.scope_stacks[&right].depth);
         assert_eq!(memory.scope_stacks[&inner].depth, memory.scope_stacks[&outer].depth + 1);
+    }
+
+    #[test]
+    fn ownership_ledger_moves_one_token_without_creating_a_second_owner() {
+        let local = StorageOwner::Scope(ScopeId(2));
+        let outer = StorageOwner::Binding(BindingId(0));
+        let mut ledger = OwnershipLedger::default();
+        let token = ledger.acquire(local).unwrap();
+        assert_eq!(ledger.owner(token), Ok(local));
+        assert_eq!(
+            ledger.move_to(token, local, outer),
+            Ok(OwnershipAction::Move { token, from: local, to: outer })
+        );
+        assert_eq!(ledger.owner(token), Ok(outer));
+        assert_eq!(ledger.move_to(token, local, outer), Err(OwnershipError::OwnerMismatch));
+    }
+
+    #[test]
+    fn ownership_ledger_promotes_and_rejects_double_drop() {
+        let local = StorageOwner::Scope(ScopeId(2));
+        let outer = StorageOwner::Binding(BindingId(0));
+        let mut ledger = OwnershipLedger::default();
+        let token = ledger.acquire(local).unwrap();
+        assert_eq!(
+            ledger.promote_to(token, local, outer),
+            Ok(OwnershipAction::Promote { token, from: local, to: outer })
+        );
+        assert_eq!(
+            ledger.drop_token(token, outer),
+            Ok(OwnershipAction::Drop { token, owner: outer })
+        );
+        assert_eq!(ledger.drop_token(token, outer), Err(OwnershipError::AlreadyDropped));
+        assert_eq!(ledger.owner(token), Err(OwnershipError::AlreadyDropped));
+    }
+
+    #[test]
+    fn ownership_ledger_rejects_invalid_owners_and_unknown_tokens() {
+        let mut ledger = OwnershipLedger::default();
+        assert_eq!(ledger.acquire(StorageOwner::Inline), Err(OwnershipError::InvalidOwner));
+        assert_eq!(ledger.owner(OwnershipTokenId(99)), Err(OwnershipError::UnknownToken));
     }
 
     #[test]

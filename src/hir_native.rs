@@ -235,7 +235,8 @@ mod tests {
         let c = generate_c(&lowered, &memory).unwrap();
         assert!(c.contains("typedef struct HlArenaBlock"));
         assert!(c.contains("_Alignof(max_align_t)"));
-        assert!(c.contains("environment->arena = block"));
+        assert!(c.contains("typedef struct HlArenaLane"));
+        assert!(c.contains("lane->current = block"));
         assert!(c.contains("free(block);"));
         assert!(!c.contains("hl_env_defer(environment, hl_cleanup_free"));
     }

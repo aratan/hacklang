@@ -1218,6 +1218,21 @@ mod tests {
 
 
     #[test]
+    fn promotion_operations_are_validated_against_their_exact_assignment() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "outer".into(), value: A::StringLiteral("initial".into()) }),
+            S::Block(vec![S::Assign(crate::ast::AssignStatement {
+                name: "outer".into(), value: A::StringLiteral("inner".into()),
+            })]),
+        ]);
+        let mut memory = plan(&p);
+        assert_eq!(memory.operations.len(), 1);
+        assert!(validate_memory_operations(&p, &memory).is_ok());
+        memory.operations[0].statement = StmtId(u32::MAX);
+        assert!(validate_memory_operations(&p, &memory).unwrap_err().contains("promoción sin asignación"));
+    }
+
+    #[test]
     fn records_promotion_when_inner_dynamic_value_is_assigned_to_outer_binding() {
         let p = lower(vec![
             S::Let(LetStatement { name: "outer".into(), value: A::StringLiteral("initial".into()) }),

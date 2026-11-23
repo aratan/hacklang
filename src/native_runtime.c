@@ -16,6 +16,42 @@ typedef struct {
     union { double number; int boolean; const char *string; } as;
 } HlValue;
 
+/* Activation-local frame storage. The compiler supplies the slot array;
+ * frames are independent across recursive/nested activations. */
+typedef struct {
+    HlValue value;
+    unsigned char initialized;
+} HlFrameSlot;
+
+typedef struct {
+    HlFrameSlot *slots;
+    size_t slot_count;
+} HlFrame;
+
+static int hl_frame_init(HlFrame *frame, HlFrameSlot *storage, size_t slot_count) {
+    if (!frame || (!storage && slot_count != 0)) return 0;
+    frame->slots = storage;
+    frame->slot_count = slot_count;
+    for (size_t i = 0; i < slot_count; ++i) {
+        storage[i].initialized = 0;
+    }
+    return 1;
+}
+
+static int hl_frame_write(HlFrame *frame, size_t slot, HlValue value) {
+    if (!frame || !frame->slots || slot >= frame->slot_count) return 0;
+    frame->slots[slot].value = value;
+    frame->slots[slot].initialized = 1;
+    return 1;
+}
+
+static int hl_frame_read(const HlFrame *frame, size_t slot, HlValue *out) {
+    if (!frame || !frame->slots || !out || slot >= frame->slot_count
+        || !frame->slots[slot].initialized) return 0;
+    *out = frame->slots[slot].value;
+    return 1;
+}
+
 typedef struct HlEnv HlEnv;
 typedef void (*HlCleanupFn)(void *);
 

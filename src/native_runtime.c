@@ -263,7 +263,11 @@ int hl_ownership_transfer(HlEnv *from, HlEnv *to, uint64_t id) {
 int hl_ownership_drop(HlEnv *environment, uint64_t id) {
     HlOwnershipRecord *record = hl_ownership_find(environment, id);
     if (!record || !record->active || record->owner != environment || !record->allocation) return 0;
-    return hl_env_cancel(environment, record->allocation);
+    HlAllocation *allocation = record->allocation;
+    /* Drop ends the resource lifetime; cancellation alone only detaches the
+     * registration and deliberately does not execute its cleanup callback. */
+    allocation->cleanup(allocation->context);
+    return hl_env_cancel(environment, allocation);
 }
 int hl_ownership_is_active(HlEnv *environment, uint64_t id) {
     HlOwnershipRecord *record = hl_ownership_find(environment, id);

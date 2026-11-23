@@ -1,4 +1,4 @@
-use crate::ast::{Expression as AstExpr, Program as AstProgram, Statement as AstStmt};
+use crate::ast::{Expression as AstExpr, IndexAssignStatement, Program as AstProgram, Statement as AstStmt};
 use crate::lexer::Token;
 use std::collections::HashMap;
 
@@ -52,6 +52,7 @@ pub struct Statement {
 pub enum StmtKind {
     Let { binding: BindingId, value: Expression },
     Assign { binding: BindingId, value: Expression },
+    IndexAssign { binding: BindingId, index: Expression, value: Expression },
     Print(Expression),
     Block { scope: ScopeId, statements: Vec<Statement> },
     If {
@@ -84,6 +85,9 @@ pub enum ExprKind {
         when_true: Box<Expression>,
         when_false: Box<Expression>,
     },
+    Array(Vec<Expression>),
+    Map(Vec<(Expression, Expression)>),
+    Index { target: Box<Expression>, index: Box<Expression> },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -184,9 +188,9 @@ impl Lowerer {
             },
             AstExpr::Lambda { .. } => return Err(LowerError { message: "Las funciones y closures todavía no están soportadas por HIR nativa".into() }),
             AstExpr::FunctionCall { .. } => return Err(LowerError { message: "Las llamadas a funciones y builtins todavía no están soportadas por HIR nativa".into() }),
-            AstExpr::Array(_) => return Err(LowerError { message: "Los arrays todavía no están soportados por HIR nativa".into() }),
-            AstExpr::Map(_) => return Err(LowerError { message: "Los mapas todavía no están soportados por HIR nativa".into() }),
-            AstExpr::Index { .. } => return Err(LowerError { message: "La indexación todavía no está soportada por HIR nativa".into() }),
+            AstExpr::Array(items) => ExprKind::Array(items.iter().map(|item| self.expr(item)).collect::<Result<_, _>>()?),
+            AstExpr::Map(items) => ExprKind::Map(items.iter().map(|(key, value)| Ok((self.expr(key)?, self.expr(value)?))).collect::<Result<_, LowerError>>()?),
+            AstExpr::Index { target, index } => ExprKind::Index { target: Box::new(self.expr(target)?), index: Box::new(self.expr(index)?) },
             AstExpr::Block(_) => return Err(LowerError { message: "Los bloques como expresión todavía no están soportados por HIR nativa".into() }),
         };
         let id = ExprId(self.next_expr);
@@ -205,6 +209,10 @@ impl Lowerer {
                 let value = self.expr(&assignment.value)?;
                 let binding = self.resolve(&assignment.name)?;
                 StmtKind::Assign { binding, value }
+            }
+            AstStmt::IndexAssign(assignment) => {
+                let binding = self.resolve(&assignment.name)?;
+                StmtKind::IndexAssign { binding, index: self.expr(&assignment.index)?, value: self.expr(&assignment.value)? }
             }
             AstStmt::Print(print) => StmtKind::Print(self.expr(&print.value)?),
             AstStmt::Block(statements) => {

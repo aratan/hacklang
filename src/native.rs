@@ -225,6 +225,63 @@ int main(void) {
     }
 
     #[test]
+    fn c_runtime_owned_binding_survives_assignment_from_child_scope() {
+        let directory = temporary_directory().expect("temporary directory");
+        let c_file = directory.join("owned_child_scope.c");
+        let executable = directory.join("owned_child_scope");
+        let source = format!(
+            "{}\\n{}",
+            include_str!("native_runtime.c"),
+            r#"
+int main(void) {
+    HlEnv *outer = hl_env_new(NULL);
+    hl_define_planned(outer, "result",
+        hl_string(outer, "initial"), HL_STORAGE_OWNED);
+    HlBinding *binding = hl_find(outer, "result");
+    if (!binding || !binding->string_storage) return 10;
+
+    HlEnv *inner = hl_env_new(outer);
+    hl_assign_planned(inner, "result",
+        hl_string(inner, "created-in-child"), HL_STORAGE_OWNED);
+    if (strcmp(hl_get(inner, "result").as.string, "created-in-child") != 0)
+        return 11;
+
+    hl_env_free(inner);
+    if (strcmp(hl_get(outer, "result").as.string, "created-in-child") != 0)
+        return 12;
+    if (binding->owner != outer || !binding->string_storage) return 13;
+
+    hl_env_free(outer);
+    return 0;
+}
+"#
+        );
+        fs::write(&c_file, source).expect("write C runtime test");
+        let compiler = select_c_compiler().expect("C compiler");
+        let build = Command::new(&compiler)
+            .arg("-std=c11")
+            .arg("-O2")
+            .arg(&c_file)
+            .arg("-o")
+            .arg(&executable)
+            .arg("-lm")
+            .output()
+            .expect("compile C runtime test");
+        assert!(
+            build.status.success(),
+            "C runtime test compilation failed: {}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let run = Command::new(&executable).output().expect("run C runtime test");
+        assert!(
+            run.status.success(),
+            "child-scope ownership test failed with code {:?}",
+            run.status.code()
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn c_runtime_cleanup_callbacks_cannot_resurrect_closing_environments() {
         let directory = temporary_directory().expect("temporary directory");
         let c_file = directory.join("cleanup_reentrancy.c");

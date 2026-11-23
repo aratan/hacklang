@@ -238,3 +238,68 @@ fn invalid_array_read_indices_match_interpreter_error_classification() {
         "fuera de rango",
     );
 }
+
+#[test]
+fn invalid_nested_array_intermediate_matches_interpreter_error_classification() {
+    assert_interpreter_native_failure(
+        "nested_array_write_non_array_intermediate",
+        "let matrix = [1, 2];\\nmatrix[0][1] = 7;\\n",
+        "no se puede",
+    );
+}
+
+#[test]
+fn nested_array_replacement_repeatedly_matches_interpreter() {
+    assert_interpreter_native_parity(
+        "nested_array_repeated_replacement",
+        r#"
+let matrix = [[0, 0]];
+let index = 0;
+while (index < 40) (
+    matrix[0] = [index, index + 1];
+    index = index + 1;
+)
+print matrix[0][0];
+print matrix[0][1];
+"#,
+    );
+}
+
+#[test]
+fn owned_arrays_survive_break_and_continue_scope_exits() {
+    assert_interpreter_native_parity(
+        "array_loop_control_scope_cleanup",
+        r#"
+let result = [[0]];
+let index = 0;
+while (index < 5) (
+    let temporary = [[index, index + 1]];
+    if (index == 1) (
+        index = index + 1;
+        continue;
+    )
+    result = temporary;
+    if (index == 3) (
+        break;
+    )
+    index = index + 1;
+)
+print result[0][0];
+print result[0][1];
+"#,
+    );
+}
+
+#[test]
+fn owned_array_binding_can_change_type_and_acquire_again() {
+    assert_interpreter_native_parity(
+        "array_binding_resource_reacquire",
+        r#"
+let value = [[1, 2]];
+value = 7;
+value = [[3, 4]];
+print value[0][0];
+print value[0][1];
+"#,
+    );
+}

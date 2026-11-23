@@ -1,4 +1,4 @@
-use crate::hir::{BinaryOp, ExprKind, Expression, Program, ScopeId, StmtKind, Statement};
+use crate::hir::{BinaryOp, ExprKind, Expression, Program, ScopeId, StmtId, StmtKind, Statement};
 use crate::memory::{MemoryPlan, StorageClass};
 use std::collections::HashMap;
 
@@ -12,6 +12,7 @@ struct Generator {
     inline_slots: HashMap<crate::hir::BindingId, u32>,
     owned_bindings: std::collections::HashSet<crate::hir::BindingId>,
     scope_lanes: HashMap<ScopeId, u32>,
+    promotion_statements: std::collections::HashSet<StmtId>,
 }
 
 impl Generator {
@@ -93,7 +94,9 @@ impl Generator {
             }
             StmtKind::Assign { binding, value } => {
                 let v = self.expr(p, value, out)?;
-                if let Some(slot) = self.inline_slots.get(binding) {
+                if self.promotion_statements.contains(&s.id) {
+                    Self::line(out, format!("hl_assign_promoted_copy(env, {}, {v});", Self::binding(p, *binding)?));
+                } else if let Some(slot) = self.inline_slots.get(binding) {
                     Self::line(out, format!("hl_frame_write_or_fail(env, &frame, {slot}, {v});"));
                 } else {
                     let storage = if self.owned_bindings.contains(binding) { "HL_STORAGE_OWNED" } else { "HL_STORAGE_SCOPE" };
@@ -155,6 +158,7 @@ pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, Stri
     }
     // Validate stack counts, stack ownership, and interference constraints before codegen.
     crate::memory::validate_slot_plan(program, memory)?;
+    crate::memory::validate_memory_operations(program, memory)?;
     let layout = crate::memory::frame_layout(program, memory)?;
     let inline_stack = crate::memory::DataStackId(u32::MAX);
     let inline_count = layout.stacks.get(&inline_stack).map_or(0, |slots| slots.len());
@@ -169,8 +173,9 @@ pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, Stri
         .map(|(scope, plan)| (*scope, plan.stack.0))
         .collect();
     let lane_count = scope_lanes.values().copied().max().map_or(0, |max| max + 1);
+    let promotion_statements = memory.operations.iter().map(|operation| operation.statement).collect();
     let mut body = String::new();
-    let mut generator = Generator { inline_slots, owned_bindings, scope_lanes: scope_lanes.clone(), ..Generator::default() };
+    let mut generator = Generator { inline_slots, owned_bindings, scope_lanes: scope_lanes.clone(), promotion_statements, ..Generator::default() };
     for stmt in &program.statements { generator.stmt(program, stmt, &mut body)?; }
     let mut source = include_str!("native_runtime.c").to_string();
     source.push_str("\n/* Compiler MemoryPlan: physical scope lanes. */\n");

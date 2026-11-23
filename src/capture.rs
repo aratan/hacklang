@@ -19,6 +19,29 @@ impl std::fmt::Display for CaptureError {
 
 impl std::error::Error for CaptureError {}
 
+/// Storage required by a binding referenced from a closure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureStorageKind {
+    /// Module-owned binding; its cell belongs to the root environment.
+    ModuleCell,
+    /// Function-local binding; its cell must have stable identity independent
+    /// of the activation's stack/region lifetime.
+    ActivationCell(crate::hir::FunctionId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapturedBinding {
+    pub binding: BindingId,
+    pub storage: CaptureStorageKind,
+    pub captured_by: Vec<crate::hir::FunctionId>,
+    pub mutable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CaptureStoragePlan {
+    pub bindings: Vec<CapturedBinding>,
+}
+
 #[derive(Default)]
 struct Access {
     reads: bool,
@@ -119,6 +142,38 @@ fn statements(
     Ok(())
 }
 
+/// Derive stable-cell requirements from the resolved function capture sets.
+/// This is a logical plan only; it does not allocate cells or alter runtime storage.
+pub fn plan_storage(program: &Program) -> Result<CaptureStoragePlan, CaptureError> {
+    let mut users = HashMap::<BindingId, Vec<crate::hir::FunctionId>>::new();
+    for function in &program.functions {
+        for capture in &function.captures {
+            users.entry(capture.binding).or_default().push(function.id);
+        }
+    }
+
+    let mut bindings = Vec::with_capacity(users.len());
+    for (binding, mut captured_by) in users {
+        captured_by.sort_unstable();
+        captured_by.dedup();
+        let metadata = program.bindings.get(binding.0 as usize).ok_or_else(|| CaptureError {
+            message: format!("BindingId inválido en CaptureStoragePlan: {}", binding.0),
+        })?;
+        let storage = match metadata.function_owner {
+            None => CaptureStorageKind::ModuleCell,
+            Some(owner) => CaptureStorageKind::ActivationCell(owner),
+        };
+        bindings.push(CapturedBinding {
+            binding,
+            storage,
+            captured_by,
+            mutable: metadata.mutable,
+        });
+    }
+    bindings.sort_by_key(|entry| entry.binding);
+    Ok(CaptureStoragePlan { bindings })
+}
+
 /// Fill each HIR function's direct free-variable set, sorted by BindingId.
 pub fn analyze(program: &Program) -> Result<Vec<Function>, CaptureError> {
     let mut functions = program.functions.clone();
@@ -189,6 +244,19 @@ mod tests {
         assert!(matches!(p.functions[0].body.statements.last().unwrap().kind, StmtKind::Return(_)));
         let x = p.bindings.iter().find(|binding| binding.name == "x").unwrap().id;
         assert_eq!(p.functions[1].captures, vec![Capture { binding: x, reads: true, writes: false }]);
+    }
+
+
+    #[test]
+    fn capture_storage_plan_separates_module_cells_from_activation_cells() {
+        let p = lower("let global = 1; let factory = |x| |y| x + global + y;");
+        let global = p.bindings.iter().find(|binding| binding.name == "global").unwrap().id;
+        let x = p.bindings.iter().find(|binding| binding.name == "x").unwrap().id;
+        let plan = plan_storage(&p).unwrap();
+        assert_eq!(plan.bindings.iter().find(|entry| entry.binding == global).unwrap().storage,
+            CaptureStorageKind::ModuleCell);
+        assert_eq!(plan.bindings.iter().find(|entry| entry.binding == x).unwrap().storage,
+            CaptureStorageKind::ActivationCell(p.functions[0].id));
     }
 
     #[test]

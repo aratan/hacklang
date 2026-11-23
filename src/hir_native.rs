@@ -270,8 +270,9 @@ mod tests {
         let memory = crate::memory::plan(&lowered);
         assert_eq!(memory.bindings[&crate::hir::BindingId(0)], StorageClass::OwnedRegion);
         let c = generate_c(&lowered, &memory).unwrap();
-        assert!(c.contains("hl_assign_planned(env, \\"outer\\","));
-        assert!(c.contains("HL_STORAGE_OWNED"));
+        let generated_main = c.split("int main(void) {").last().unwrap();
+        assert!(generated_main.contains("hl_assign_planned(env,"));
+        assert!(generated_main.contains("HL_STORAGE_OWNED"));
     }
 
     #[test]

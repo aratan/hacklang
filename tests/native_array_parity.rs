@@ -336,3 +336,19 @@ print original[[3, 4]];
 "#,
     );
 }
+
+#[test]
+fn nested_maps_and_map_inside_array_match_interpreter() {
+    assert_interpreter_native_parity(
+        "nested_map_and_array_map",
+        r#"
+let catalog = @("items": @("first": 1));
+catalog["items"]["second"] = 2;
+let rows = [@("name": "alpha")];
+rows[0]["name"] = "beta";
+print catalog["items"]["first"];
+print catalog["items"]["second"];
+print rows[0]["name"];
+"#,
+    );
+}

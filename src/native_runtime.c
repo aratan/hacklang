@@ -573,9 +573,6 @@ static void hl_index_assign_path(HlEnv *environment, const char *name,
     *slot = hl_clone_value(binding->owner, value);
 }
 
-static void hl_index_assign(HlEnv *environment, const char *name, HlValue index, HlValue value) {
-    hl_index_assign_path(environment, name, &index, 1, value);
-}
 static int hl_truthy(HlValue value) {
     switch (value.tag) {
         case HL_BOOL: return value.as.boolean;

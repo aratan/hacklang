@@ -140,7 +140,7 @@ pub fn analyze(program: &Program) -> Result<Vec<Function>, CaptureError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ast::{Program as AstProgram, Statement as AstStatement}, hir};
+    use crate::hir;
 
     fn lower(source: &str) -> Program {
         let mut lexer = crate::lexer::Lexer::new(source.to_string());

@@ -260,7 +260,7 @@ int main(void) {
         let c_file = directory.join("binding_string_storage.c");
         let executable = directory.join("binding_string_storage");
         let source = format!(
-            "{}\\n{}",
+            "{}\n{}",
             include_str!("native_runtime.c"),
             r#"
 int main(void) {

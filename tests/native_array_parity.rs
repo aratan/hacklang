@@ -274,12 +274,12 @@ let result = [[0]];
 let index = 0;
 while (index < 5) (
     let temporary = [[index, index + 1]];
-    if (index == 1) (
+    if (index < 2) (
         index = index + 1;
         continue;
     )
     result = temporary;
-    if (index == 3) (
+    if (index > 3) (
         break;
     )
     index = index + 1;

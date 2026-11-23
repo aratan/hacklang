@@ -255,6 +255,24 @@ También se corrige la reutilización de memoria: cada rango reservado se pone a
 
 **Límite:** la tabla es todavía un modelo Rust de propiedad y ciclo de vida. No contiene referencias entre objetos HackLang, no realiza promoción entre regiones y no cambia el ABI ni el runtime C. El siguiente paso será definir y probar la promoción de valores entre regiones antes de conectar los descriptores al planificador HIR.
 
+### 7.7 Promoción transitiva de objetos (prototipo Rust)
+
+La tabla de regiones incorpora un registro de objetos lógicos con handles estables (`RegionObjectId`), payload y referencias a otros objetos. Los handles son índices; no son punteros a memoria móvil.
+
+`RegionTable::promote(root, destination)`:
+- exige que el destino esté activo y sea la misma región propietaria o un ancestro del propietario del objeto raíz;
+- recorre transitivamente el grafo y copia payloads;
+- conserva referencias compartidas y ciclos mediante una tabla de correspondencias;
+- asigna todos los objetos promovidos al destino;
+- mantiene intacto el grafo original hasta que se cierre su región;
+- al cerrar una región, invalida sus handles sin reciclar identificadores.
+
+La creación de objetos impide que un objeto de vida larga retenga una referencia a un objeto de una región descendiente de vida más corta. Así, cerrar una región hija no deja referencias colgantes desde objetos del padre.
+
+Se añaden pruebas para promoción transitiva, ciclos, destinos inválidos, invalidación al cerrar y rechazo de referencias con vida incompatible.
+
+**Límite importante:** el registro es un modelo de objetos independiente de los bytes reservados por `Region::alloc_bytes`. La promoción copia `Vec<u8>` y la lista de handles en Rust; no mueve ni reescribe objetos del runtime C, no conecta todavía el HIR y no resuelve los grupos de closures capturadas. Es una prueba del contrato de vida/propiedad, no la implementación final de promoción sin copias.
+
 ## 8. Diferencias entre runtime actual y arquitectura objetivo
 
 | Área | Estado actual | Objetivo |

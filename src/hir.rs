@@ -364,7 +364,7 @@ mod tests {
             }),
             AstStmt::IndexAssign(crate::ast::IndexAssignStatement {
                 name: "items".into(),
-                index: AstExpr::NumberLiteral(0.0),
+                indices: vec![AstExpr::NumberLiteral(0.0)],
                 value: AstExpr::NumberLiteral(2.0),
             }),
         ]);
@@ -374,7 +374,7 @@ mod tests {
             if matches!(&items[1].kind, ExprKind::Map(entries) if entries.len() == 1)));
         assert!(matches!(&hir.statements[1].kind, StmtKind::IndexAssign {
             binding: BindingId(0),
-            index: Expression { kind: ExprKind::Number(0.0), .. },
+            indices: vec![Expression { kind: ExprKind::Number(0.0), .. }],
             value: Expression { kind: ExprKind::Number(2.0), .. },
         }));
     }

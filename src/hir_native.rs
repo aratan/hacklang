@@ -66,7 +66,19 @@ impl Generator {
                     format!("hl_array(env, (HlValue[]){{ {} }}, {})", values.join(", "), values.len())
                 }
             }
-            ExprKind::Map(_) => return Err("los literales de mapas aún no tienen lowering nativo".into()),
+            ExprKind::Map(items) => {
+                let mut entries = Vec::with_capacity(items.len());
+                for (key, value) in items {
+                    let key = self.expr(p, key, out)?;
+                    let value = self.expr(p, value, out)?;
+                    entries.push(format!("{{ {key}, {value} }}"));
+                }
+                if entries.is_empty() {
+                    "hl_map(env, NULL, 0)".to_string()
+                } else {
+                    format!("hl_map(env, (HlMapEntry[]){{ {} }}, {})", entries.join(", "), entries.len())
+                }
+            },
             ExprKind::Ternary { condition, when_true, when_false } => {
                 let c = self.expr(p, condition, out)?;
                 Self::line(out, format!("HlValue {v};"));

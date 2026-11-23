@@ -398,7 +398,18 @@ Cada pila de datos tendrá un descriptor interno:
 
 El descriptor es un concepto de diseño, no una estructura implementada. Los punteros y generaciones no serán visibles en HackLang.
 
-#### 2.6 Hechos de uso disponibles en HIR (implementación inicial)
+#### 2.6.1 Decisiones explícitas de promoción (primera implementación)
+
+El planificador ahora emite `PromotionDecision` para asignaciones dinámicas cuyo destino tiene una vida léxica mayor que el ámbito donde se produce el valor. Cada decisión registra el binding destino, el binding fuente cuando la expresión es una lectura, el ámbito de producción, el ámbito destino y el motivo:
+
+- `AssignedToLongerLivedBinding`: un valor dinámico producido dentro de un ámbito se asigna a un binding de un ámbito ancestro.
+- `ReadFromShorterLivedBinding`: un valor leído desde un binding de un ámbito descendiente se asigna a un binding de vida mayor.
+
+El análisis evita emitir promoción cuando el valor leído ya pertenece a un ámbito que vive al menos tanto como el destino. Se añaden pruebas para ambos escapes, asignaciones dentro del mismo ámbito y lecturas desde un ámbito exterior.
+
+**Límite:** estas decisiones son metadata explicable de `MemoryPlan`; el backend C todavía no las consume. El subconjunto HIR actual solo representa escalares, strings, lecturas, operaciones binarias y ternarios. No es aún un análisis de escape transitivo para arrays, mapas, closures, retornos o llamadas. Las asignaciones dinámicas siguen clasificándose conservadoramente en `OwnedRegion`; la promoción no cambia todavía el runtime ni implica transferencia física sin copia.
+
+### 2.6 Hechos de uso disponibles en HIR (implementación inicial)
 
 El planificador recoge ahora, por cada binding:
 

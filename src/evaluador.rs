@@ -974,4 +974,21 @@ mod tests {
         assert_eq!(ev.get_var("result"), Some(&Value::Number(1.0)));
     }
 
+
+    #[test]
+    fn mem_028_nested_array_reads_are_independent_values() {
+        let ev = eval_program(
+            "let source = [[1]]; let copy = source[0]; copy[0] = 2; let result = source[0][0];"
+        ).unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(1.0)));
+    }
+
+    #[test]
+    fn mem_029_nested_map_array_reads_are_independent_values() {
+        let ev = eval_program(
+            "let source = @(\\"items\\":[1]); let copy = source[\\"items\\"]; copy[0] = 2; let result = source[\\"items\\"][0];"
+        ).unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(1.0)));
+    }
+
 }

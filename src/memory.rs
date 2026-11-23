@@ -867,6 +867,47 @@ mod tests {
     fn lower(statements: Vec<S>) -> Program { hir::lower(&AP { statements }).unwrap() }
 
     #[test]
+    fn cfg_does_not_create_fallthrough_after_break_inside_nested_block() {
+        use crate::ast::{AssignStatement, BlockStatement, WhileStatement};
+        let p = lower(vec![
+            S::Let(LetStatement {
+                name: "counter".into(),
+                value: A::NumberLiteral(0.0),
+            }),
+            S::While(WhileStatement {
+                condition: A::BoolLiteral(true),
+                body: vec![S::Block(vec![
+                    S::Assign(AssignStatement {
+                        name: "counter".into(),
+                        value: A::NumberLiteral(1.0),
+                    }),
+                    S::Break,
+                    S::Assign(AssignStatement {
+                        name: "counter".into(),
+                        value: A::NumberLiteral(2.0),
+                    }),
+                ])],
+            }),
+        ]);
+        let memory = plan(&p);
+        let counter = p.bindings.iter().find(|binding| binding.name == "counter").unwrap().id;
+        // One definition is the declaration and one is the reachable write
+        // before break. The dead write after break must not enter the CFG.
+        let definitions = memory.cfg.blocks.iter()
+            .filter(|block| block.defs.contains(&counter))
+            .count();
+        assert_eq!(definitions, 2);
+        let break_block = memory.cfg.blocks.iter()
+            .find(|block| block.successors.len() == 1
+                && block.uses.is_empty() && block.defs.is_empty()
+                && block.successors.iter().any(|successor| {
+                    memory.cfg.blocks[*successor as usize].id == *successor
+                }))
+            .expect("break block must have a structured successor");
+        assert_eq!(break_block.successors.len(), 1);
+    }
+
+    #[test]
     fn frame_layout_materializes_dense_stack_slots() {
         let p = lower(vec![S::Block(vec![S::Let(LetStatement {
             name: "payload".into(), value: A::StringLiteral("value".into()),

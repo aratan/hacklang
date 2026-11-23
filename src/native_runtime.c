@@ -74,9 +74,18 @@ static int hl_cleanup_detach(HlEnv *environment, HlAllocation *entry) {
     return 1;
 }
 
+/* A transfer may only extend a registration to the source environment's
+ * lexical ancestor. This runtime cannot prove arbitrary owner lifetimes. */
+static int hl_env_is_ancestor(HlEnv *ancestor, HlEnv *environment) {
+    for (HlEnv *scope = environment; scope; scope = scope->parent)
+        if (scope == ancestor) return 1;
+    return 0;
+}
+
 /* Transfer an existing registration; never clone the cleanup action. */
 int hl_env_transfer(HlEnv *from, HlEnv *to, HlAllocation *entry) {
-    if (!from || !to || from == to || to->closing || !hl_cleanup_detach(from, entry)) return 0;
+    if (!from || !to || from == to || from->closing || to->closing
+        || !hl_env_is_ancestor(to, from) || !hl_cleanup_detach(from, entry)) return 0;
     entry->next = to->allocations;
     to->allocations = entry;
     return 1;

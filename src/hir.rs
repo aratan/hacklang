@@ -207,7 +207,7 @@ impl Lowerer {
                 if !seen.insert(binding.name.clone()) {
                     continue;
                 }
-                if matches!(binding.value, AstExpr::Lambda { .. }) {
+                if matches!(&binding.value, AstExpr::Lambda { .. }) {
                     let id = self.declare(&binding.name);
                     self.predeclared_functions.insert(id);
                 }
@@ -272,7 +272,7 @@ impl Lowerer {
         let kind = match ast {
             AstStmt::Let(binding) => {
                 let value = self.expr(&binding.value)?;
-                let binding = if matches!(value.kind, ExprKind::Closure(_)) {
+                let binding = if matches!(&value.kind, ExprKind::Closure(_)) {
                     self.symbols.last().and_then(|scope| scope.get(&binding.name)).copied()
                         .filter(|id| self.predeclared_functions.remove(id))
                         .unwrap_or_else(|| self.declare(&binding.name))

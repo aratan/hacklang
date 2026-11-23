@@ -6,7 +6,7 @@
 //! stable identities without re-resolving names.
 
 use crate::ast::{Expression, Program, Statement};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CaptureBindingId(pub u32);

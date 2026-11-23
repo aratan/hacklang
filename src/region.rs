@@ -323,32 +323,52 @@ impl RegionTable {
             return Err(RegionError::InvalidMark);
         }
 
+        // Validate and snapshot the complete reachable graph before mutating
+        // the object table. A stale edge must not leave half a promoted graph
+        // behind when promotion fails.
         let mut pending = vec![root];
-        let mut copies: std::collections::HashMap<RegionObjectId, RegionObjectId> =
-            std::collections::HashMap::new();
+        let mut originals = std::collections::HashMap::<RegionObjectId, RegionObject>::new();
+        let mut order = Vec::new();
         while let Some(old_id) = pending.pop() {
-            if copies.contains_key(&old_id) { continue; }
+            if originals.contains_key(&old_id) { continue; }
             let old = self.object(old_id).cloned().ok_or(RegionError::InvalidMark)?;
-            let new_id = RegionObjectId(u32::try_from(self.objects.len())
-                .map_err(|_| RegionError::CapacityOverflow)?);
-            copies.insert(old_id, new_id);
-            self.objects.push(Some(RegionObject {
-                owner: destination,
-                payload: old.payload,
-                references: Vec::new(),
-            }));
-            pending.extend(old.references);
+            pending.extend(old.references.iter().copied());
+            order.push(old_id);
+            originals.insert(old_id, old);
         }
 
-        for (old_id, new_id) in &copies {
-            let old = self.object(*old_id).cloned().ok_or(RegionError::InvalidMark)?;
-            let new_refs = old.references.iter()
+        let base = self.objects.len();
+        let final_len = base.checked_add(order.len()).ok_or(RegionError::CapacityOverflow)?;
+        u32::try_from(final_len).map_err(|_| RegionError::CapacityOverflow)?;
+
+        let mut copies = std::collections::HashMap::<RegionObjectId, RegionObjectId>::new();
+        copies.try_reserve(order.len()).map_err(|_| RegionError::AllocationFailed)?;
+        for (offset, old_id) in order.iter().enumerate() {
+            let index = base.checked_add(offset).ok_or(RegionError::CapacityOverflow)?;
+            copies.insert(
+                *old_id,
+                RegionObjectId(u32::try_from(index).map_err(|_| RegionError::CapacityOverflow)?),
+            );
+        }
+
+        // Build every new object off-table. All references must resolve through
+        // the completed graph map before a single object becomes observable.
+        let mut staged = Vec::new();
+        staged.try_reserve(order.len()).map_err(|_| RegionError::AllocationFailed)?;
+        for old_id in &order {
+            let old = originals.get(old_id).ok_or(RegionError::InvalidMark)?;
+            let references = old.references.iter()
                 .map(|id| copies.get(id).copied().ok_or(RegionError::InvalidMark))
                 .collect::<Result<Vec<_>, _>>()?;
-            let target = self.objects.get_mut(new_id.0 as usize)
-                .and_then(Option::as_mut).ok_or(RegionError::InvalidMark)?;
-            target.references = new_refs;
+            staged.push(Some(RegionObject {
+                owner: destination,
+                payload: old.payload.clone(),
+                references,
+            }));
         }
+
+        self.objects.try_reserve(staged.len()).map_err(|_| RegionError::AllocationFailed)?;
+        self.objects.extend(staged);
         copies.get(&root).copied().ok_or(RegionError::InvalidMark)
     }
 
@@ -537,6 +557,21 @@ mod tests {
         table.close(child).unwrap();
         assert_eq!(table.object(root), None);
         assert_eq!(table.object(promoted).unwrap().payload, vec![1, 2]);
+    }
+
+    #[test]
+    fn failed_promotion_does_not_leave_partial_objects() {
+        let mut table = RegionTable::new();
+        let parent = table.create(None).unwrap();
+        let child = table.create(Some(parent)).unwrap();
+        let root = table.create_object(child, vec![1, 2], vec![]).unwrap();
+        table.objects[root.0 as usize].as_mut().unwrap().references
+            .push(RegionObjectId(u32::MAX));
+
+        let original_len = table.objects.len();
+        assert_eq!(table.promote(root, parent), Err(RegionError::InvalidMark));
+        assert_eq!(table.objects.len(), original_len);
+        assert_eq!(table.object(root).unwrap().payload, vec![1, 2]);
     }
 
     #[test]

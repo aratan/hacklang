@@ -170,6 +170,11 @@ impl OwnershipLedger {
         self.reassign(token, expected_owner, new_owner, false)
     }
 
+    /// Reassigns a token to a caller-proven longer-lived owner.
+    ///
+    /// The ledger checks token identity and the expected current owner, but
+    /// cannot prove lexical lifetime ordering from StorageOwner alone. The
+    /// caller must establish that precondition before requesting promotion.
     pub fn promote_to(
         &mut self,
         token: OwnershipTokenId,

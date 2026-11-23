@@ -1067,4 +1067,67 @@ int main(void) {
         let _ = fs::remove_dir_all(directory);
     }
 
+
+    #[test]
+    fn c_runtime_deep_clones_nested_arrays_and_strings() {
+        let directory = temporary_directory().expect("temporary directory");
+        let c_file = directory.join("array_clone.c");
+        let executable = directory.join("array_clone");
+        let source = format!(
+            "{}\\n{}",
+            include_str!("native_runtime.c"),
+            r#"
+int main(void) {
+    HlEnv *environment = hl_env_new(NULL);
+    HlValue inner_items[2] = { hl_number(7), hl_string(environment, "owned-text") };
+    HlValue inner = hl_array(environment, inner_items, 2);
+    HlValue outer_items[1] = { inner };
+    HlValue original = hl_array(environment, outer_items, 1);
+    HlValue copy = hl_clone_value(environment, original);
+
+    if (original.tag != HL_ARRAY || copy.tag != HL_ARRAY) return 10;
+    if (original.as.array == copy.as.array) return 11;
+    HlArray *original_inner = original.as.array->items[0].as.array;
+    HlArray *copied_inner = copy.as.array->items[0].as.array;
+    if (original_inner == copied_inner) return 12;
+    if (original_inner->items[1].as.string == copied_inner->items[1].as.string) return 13;
+    copied_inner->items[0] = hl_number(99);
+    if (original_inner->items[0].as.number != 7) return 14;
+    if (copied_inner->items[0].as.number != 99) return 15;
+    if (strcmp(original_inner->items[1].as.string, "owned-text") != 0) return 16;
+    if (strcmp(copied_inner->items[1].as.string, "owned-text") != 0) return 17;
+    hl_env_free(environment);
+    return 0;
+}
+"#
+        );
+        fs::write(&c_file, source).expect("write C runtime test");
+        let compiler = select_c_compiler().expect("C compiler");
+        let build = Command::new(&compiler)
+            .arg("-std=c11")
+            .arg("-O1")
+            .arg("-g")
+            .arg("-fsanitize=address,undefined")
+            .arg("-fno-omit-frame-pointer")
+            .arg(&c_file)
+            .arg("-o")
+            .arg(&executable)
+            .arg("-lm")
+            .output()
+            .expect("compile array clone test with sanitizers");
+        assert!(
+            build.status.success(),
+            "sanitized array clone compilation failed: {}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let run = Command::new(&executable).output().expect("run sanitized array clone test");
+        assert!(
+            run.status.success(),
+            "array clone test failed with code {:?}: {}",
+            run.status.code(),
+            String::from_utf8_lossy(&run.stderr)
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
+
 }

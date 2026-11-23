@@ -322,7 +322,11 @@ fn expr_uses(expr: &Expression, uses: &mut std::collections::HashSet<BindingId>)
         ExprKind::Map(items) => for (key, value) in items { expr_uses(key, uses); expr_uses(value, uses); },
         ExprKind::Index { target, index } => { expr_uses(target, uses); expr_uses(index, uses); }
         ExprKind::Length(value) => expr_uses(value, uses),
-        ExprKind::Number(_) | ExprKind::Bool(_) | ExprKind::String(_) => {}
+        ExprKind::Call { callee, args } => {
+            expr_uses(callee, uses);
+            for arg in args { expr_uses(arg, uses); }
+        }
+        ExprKind::Closure(_) | ExprKind::Number(_) | ExprKind::Bool(_) | ExprKind::String(_) => {}
     }
 }
 fn build_cfg_sequence(
@@ -391,6 +395,12 @@ fn build_cfg_sequence(
                 breaks.pop(); continues.pop();
                 for exit in body_exits { add_edge(cfg, exit, header); }
                 current.push(after);
+            }
+            StmtKind::Return(value) => {
+                let id = new_cfg_block(cfg);
+                for prev in current.drain(..) { add_edge(cfg, prev, id); }
+                expr_uses(value, &mut cfg.blocks[id as usize].uses);
+                current.clear();
             }
             StmtKind::Break | StmtKind::Continue => {
                 let id = new_cfg_block(cfg);
@@ -542,6 +552,8 @@ fn is_dynamic_string(expr: &Expression, bindings: &HashMap<BindingId, StorageCla
         }
         ExprKind::Array(_) | ExprKind::Map(_) | ExprKind::Index { .. } => Some(true),
         ExprKind::Length(_) => Some(false),
+        ExprKind::Closure(_) => Some(true),
+        ExprKind::Call { .. } => None,
     }
 }
 
@@ -620,7 +632,11 @@ fn collect_expr_usage(
         ExprKind::Map(items) => for (key, value) in items { collect_expr_usage(key, scope, usage, position, loop_touched); collect_expr_usage(value, scope, usage, position, loop_touched); },
         ExprKind::Index { target, index } => { collect_expr_usage(target, scope, usage, position, loop_touched); collect_expr_usage(index, scope, usage, position, loop_touched); }
         ExprKind::Length(value) => collect_expr_usage(value, scope, usage, position, loop_touched),
-        ExprKind::Number(_) | ExprKind::Bool(_) | ExprKind::String(_) => {}
+        ExprKind::Call { callee, args } => {
+            collect_expr_usage(callee, scope, usage, position, loop_touched);
+            for arg in args { collect_expr_usage(arg, scope, usage, position, loop_touched); }
+        }
+        ExprKind::Closure(_) | ExprKind::Number(_) | ExprKind::Bool(_) | ExprKind::String(_) => {}
     }
 }
 
@@ -638,7 +654,7 @@ fn collect_usage(
                 usage.entry(*binding).or_default().declaration_position = Some(*position);
                 collect_expr_usage(value, scope, usage, position, loop_touched);
             }
-            StmtKind::Print(value) => {
+            StmtKind::Print(value) | StmtKind::Return(value) => {
                 collect_expr_usage(value, scope, usage, position, loop_touched);
             }
             StmtKind::IndexAssign { binding, indices, value } => {
@@ -772,7 +788,7 @@ fn collect_operations(
                 if let Some(child) = else_scope { collect_operations(else_body, *child, program, bindings, ownership_tokens, operations); }
             }
             StmtKind::While { scope: child, body, .. } => collect_operations(body, *child, program, bindings, ownership_tokens, operations),
-            StmtKind::Let { .. } | StmtKind::IndexAssign { .. } | StmtKind::Print(_) | StmtKind::Break | StmtKind::Continue => {}
+            StmtKind::Let { .. } | StmtKind::IndexAssign { .. } | StmtKind::Print(_) | StmtKind::Return(_) | StmtKind::Break | StmtKind::Continue => {}
         }
     }
 }
@@ -979,7 +995,7 @@ pub fn plan(program: &Program) -> MemoryPlan {
                     }
                 }
                 StmtKind::IndexAssign { binding, .. } => { result.insert(*binding, StorageClass::OwnedRegion); }
-                StmtKind::Print(_) | StmtKind::Break | StmtKind::Continue => {}
+                StmtKind::Print(_) | StmtKind::Return(_) | StmtKind::Break | StmtKind::Continue => {}
             }
         }
     }

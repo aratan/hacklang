@@ -90,7 +90,6 @@ typedef struct HlBinding {
     HlEnv *owner;
     char *string_storage;
     size_t string_capacity;
-    HlAllocation *string_cleanup;
     uint64_t ownership_site;
     uint64_t ownership_token;
     struct HlBinding *next;
@@ -117,7 +116,6 @@ static void hl_cleanup_binding_string(void *context) {
     free(binding->string_storage);
     binding->string_storage = NULL;
     binding->string_capacity = 0;
-    binding->string_cleanup = NULL;
     binding->ownership_token = 0;
 }
 
@@ -407,7 +405,6 @@ static HlValue hl_store_value(HlBinding *binding, HlValue value, HlStorageClass 
         HlOwnershipRecord *record = hl_ownership_find(binding->owner, binding->ownership_token);
         if (!record || !record->allocation)
             hl_fail(binding->owner, "registro de propiedad de cadena inconsistente");
-        binding->string_cleanup = record->allocation;
     }
 
     const size_t size = strlen(value.as.string) + 1;
@@ -441,7 +438,6 @@ static void hl_define_planned_site(HlEnv *environment, const char *name, HlValue
     item->owner = environment;
     item->string_storage = NULL;
     item->string_capacity = 0;
-    item->string_cleanup = NULL;
     item->ownership_site = ownership_site;
     item->ownership_token = 0;
     item->value = hl_store_value(item, value, storage);

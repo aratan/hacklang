@@ -318,6 +318,9 @@ fn expr_uses(expr: &Expression, uses: &mut std::collections::HashSet<BindingId>)
         ExprKind::Read(id) => { uses.insert(*id); }
         ExprKind::Binary { left, right, .. } => { expr_uses(left, uses); expr_uses(right, uses); }
         ExprKind::Ternary { condition, when_true, when_false } => { expr_uses(condition, uses); expr_uses(when_true, uses); expr_uses(when_false, uses); }
+        ExprKind::Array(items) => for item in items { expr_uses(item, uses); },
+        ExprKind::Map(items) => for (key, value) in items { expr_uses(key, uses); expr_uses(value, uses); },
+        ExprKind::Index { target, index } => { expr_uses(target, uses); expr_uses(index, uses); }
         ExprKind::Number(_) | ExprKind::Bool(_) | ExprKind::String(_) => {}
     }
 }
@@ -339,6 +342,15 @@ fn build_cfg_sequence(
                 let id = new_cfg_block(cfg);
                 for prev in current.drain(..) { add_edge(cfg, prev, id); }
                 expr_uses(value, &mut cfg.blocks[id as usize].uses);
+                cfg.blocks[id as usize].defs.insert(*binding);
+                current.push(id);
+            }
+            StmtKind::IndexAssign { binding, index, value } => {
+                let id = new_cfg_block(cfg);
+                for prev in current.drain(..) { add_edge(cfg, prev, id); }
+                expr_uses(index, &mut cfg.blocks[id as usize].uses);
+                expr_uses(value, &mut cfg.blocks[id as usize].uses);
+                cfg.blocks[id as usize].uses.insert(*binding);
                 cfg.blocks[id as usize].defs.insert(*binding);
                 current.push(id);
             }
@@ -525,6 +537,7 @@ fn is_dynamic_string(expr: &Expression, bindings: &HashMap<BindingId, StorageCla
                 _ => None,
             }
         }
+        ExprKind::Array(_) | ExprKind::Map(_) | ExprKind::Index { .. } => Some(true),
     }
 }
 
@@ -599,6 +612,9 @@ fn collect_expr_usage(
             collect_expr_usage(when_true, scope, usage, position, loop_touched);
             collect_expr_usage(when_false, scope, usage, position, loop_touched);
         }
+        ExprKind::Array(items) => for item in items { collect_expr_usage(item, scope, usage, position, loop_touched); },
+        ExprKind::Map(items) => for (key, value) in items { collect_expr_usage(key, scope, usage, position, loop_touched); collect_expr_usage(value, scope, usage, position, loop_touched); },
+        ExprKind::Index { target, index } => { collect_expr_usage(target, scope, usage, position, loop_touched); collect_expr_usage(index, scope, usage, position, loop_touched); }
         ExprKind::Number(_) | ExprKind::Bool(_) | ExprKind::String(_) => {}
     }
 }
@@ -619,6 +635,17 @@ fn collect_usage(
             }
             StmtKind::Print(value) => {
                 collect_expr_usage(value, scope, usage, position, loop_touched);
+            }
+            StmtKind::IndexAssign { binding, index, value } => {
+                collect_expr_usage(index, scope, usage, position, loop_touched);
+                collect_expr_usage(value, scope, usage, position, loop_touched);
+                *position += 1;
+                let facts = usage.entry(*binding).or_default();
+                facts.read_count += 1;
+                facts.assignment_count += 1;
+                facts.read_scopes.push(scope);
+                facts.last_write_position = Some(*position);
+                touch_binding(*binding, *position, usage, loop_touched);
             }
             StmtKind::Assign { binding, value } => {
                 collect_expr_usage(value, scope, usage, position, loop_touched);
@@ -738,7 +765,7 @@ fn collect_operations(
                 if let Some(child) = else_scope { collect_operations(else_body, *child, program, bindings, ownership_tokens, operations); }
             }
             StmtKind::While { scope: child, body, .. } => collect_operations(body, *child, program, bindings, ownership_tokens, operations),
-            StmtKind::Let { .. } | StmtKind::Print(_) | StmtKind::Break | StmtKind::Continue => {}
+            StmtKind::Let { .. } | StmtKind::IndexAssign { .. } | StmtKind::Print(_) | StmtKind::Break | StmtKind::Continue => {}
         }
     }
 }
@@ -944,6 +971,7 @@ pub fn plan(program: &Program) -> MemoryPlan {
                         result.insert(*binding, StorageClass::OwnedRegion);
                     }
                 }
+                StmtKind::IndexAssign { binding, .. } => { result.insert(*binding, StorageClass::OwnedRegion); }
                 StmtKind::Print(_) | StmtKind::Break | StmtKind::Continue => {}
             }
         }

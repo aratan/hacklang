@@ -352,3 +352,17 @@ print rows[0]["name"];
 "#,
     );
 }
+
+#[test]
+fn missing_map_keys_and_nested_paths_match_interpreter_errors() {
+    assert_interpreter_native_failure(
+        "map_missing_key_read",
+        "let values = @(\"present\": 1);\\nprint values[\"missing\"];\\n",
+        "clave no encontrada",
+    );
+    assert_interpreter_native_failure(
+        "map_missing_intermediate_write",
+        "let values = @();\\nvalues[\"missing\"][\"child\"] = 2;\\n",
+        "clave no encontrada",
+    );
+}

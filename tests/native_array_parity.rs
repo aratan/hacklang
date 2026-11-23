@@ -76,6 +76,50 @@ fn assert_interpreter_native_parity(name: &str, source_text: &str) {
     fs::remove_dir_all(directory).expect("remove isolated test directory");
 }
 
+fn assert_interpreter_native_failure(name: &str, source_text: &str, error_fragment: &str) {
+    let directory = case_directory();
+    let source = directory.join(format!("{name}.hl"));
+    let executable = directory.join(name);
+    fs::write(&source, source_text).expect("write HackLang failure fixture");
+
+    let interpreter = Command::new(env!("CARGO_BIN_EXE_hl"))
+        .arg("run")
+        .arg(&source)
+        .output()
+        .expect("execute interpreter failure fixture");
+    assert!(!interpreter.status.success(), "{name}: interpreter unexpectedly succeeded");
+    let interpreter_error = String::from_utf8_lossy(&interpreter.stderr).to_lowercase();
+    assert!(
+        interpreter_error.contains(error_fragment),
+        "{name}: interpreter error did not contain '{error_fragment}': {interpreter_error}"
+    );
+
+    let build = Command::new(env!("CARGO_BIN_EXE_hl"))
+        .arg("build")
+        .arg(&source)
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("build native failure fixture");
+    assert!(
+        build.status.success(),
+        "{name}: native build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let native = Command::new(&executable)
+        .output()
+        .expect("execute native failure fixture");
+    assert!(!native.status.success(), "{name}: native executable unexpectedly succeeded");
+    let native_error = String::from_utf8_lossy(&native.stderr).to_lowercase();
+    assert!(
+        native_error.contains(error_fragment),
+        "{name}: native error did not contain '{error_fragment}': {native_error}"
+    );
+
+    fs::remove_dir_all(directory).expect("remove isolated failure test directory");
+}
+
 #[test]
 fn arrays_match_interpreter_for_literals_reads_and_direct_mutation() {
     assert_interpreter_native_parity(
@@ -173,5 +217,24 @@ print cube[1][0][0];
 print cube[1][0][1];
 print cube[1][1][1];
 "#,
+    );
+}
+
+#[test]
+fn invalid_array_read_indices_match_interpreter_error_classification() {
+    assert_interpreter_native_failure(
+        "array_read_out_of_range",
+        "let values = [1, 2];\nprint values[9];\n",
+        "fuera de rango",
+    );
+    assert_interpreter_native_failure(
+        "array_read_negative_index",
+        "let values = [1, 2];\nprint values[-1];\n",
+        "entero no negativo",
+    );
+    assert_interpreter_native_failure(
+        "nested_array_write_out_of_range",
+        "let matrix = [[1, 2]];\nmatrix[0][9] = 7;\n",
+        "fuera de rango",
     );
 }

@@ -489,18 +489,19 @@ fn collect_promotions(
         match &statement.kind {
             StmtKind::Assign { binding, value } => {
                 let destination_scope = program.bindings[binding.0 as usize].scope;
-                let source = match value.kind { ExprKind::Read(source) => Some(source), _ => None };
+                let source = match &value.kind { ExprKind::Read(source) => Some(*source), _ => None };
                 let dynamic = match source {
                     Some(source) => !matches!(bindings.get(&source), Some(StorageClass::Inline)),
                     None => is_dynamic_string(value) == Some(true),
                 };
+                let source_is_shorter = source.is_some_and(|id| {
+                    let source_scope = program.bindings[id.0 as usize].scope;
+                    !is_scope_ancestor(program, source_scope, destination_scope)
+                });
                 if dynamic && is_scope_ancestor(program, destination_scope, scope)
                     && destination_scope != scope
+                    && (source.is_none() || source_is_shorter)
                 {
-                    let source_is_shorter = source.is_some_and(|id| {
-                        let source_scope = program.bindings[id.0 as usize].scope;
-                        !is_scope_ancestor(program, source_scope, destination_scope)
-                    });
                     promotions.push(PromotionDecision {
                         destination: *binding,
                         source,
@@ -729,6 +730,18 @@ mod tests {
         assert_eq!(decision.destination, BindingId(0));
         assert_eq!(decision.source, Some(BindingId(1)));
         assert_eq!(decision.reason, PromotionReason::ReadFromShorterLivedBinding);
+    }
+
+
+    #[test]
+    fn does_not_promote_value_read_from_an_outer_scope() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "outer".into(), value: A::StringLiteral("stable".into()) }),
+            S::Block(vec![S::Assign(crate::ast::AssignStatement {
+                name: "outer".into(), value: A::Identifier("outer".into()),
+            })]),
+        ]);
+        assert!(plan(&p).promotions.is_empty());
     }
 
     #[test]

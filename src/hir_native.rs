@@ -129,6 +129,18 @@ mod tests {
     use crate::hir;
     use crate::ast::{Program as AstProgram, Statement as AstStmt, LetStatement, PrintStatement};
     #[test]
+    fn generated_runtime_exposes_single_lifo_cleanup_registry() {
+        let ast = AstProgram { statements: vec![] };
+        let lowered = hir::lower(&ast).unwrap();
+        let c = generate_c(&lowered).unwrap();
+        assert!(c.contains("HlAllocation *hl_env_defer("));
+        assert!(c.contains("int hl_env_transfer("));
+        assert!(c.contains("int hl_env_cancel("));
+        assert!(c.contains("allocation->cleanup(allocation->context);"));
+        assert!(c.contains("allocation->next = environment->allocations;"));
+    }
+
+    #[test]
     fn emits_c_from_resolved_hir_bindings() {
         let ast = AstProgram { statements: vec![
             AstStmt::Let(LetStatement { name:"x".into(), value:crate::ast::Expression::NumberLiteral(7.0) }),

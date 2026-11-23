@@ -190,7 +190,8 @@ mod tests {
             AstStmt::Print(PrintStatement { value:crate::ast::Expression::Identifier("x".into()) })
         ]};
         let lowered = hir::lower(&ast).unwrap();
-        let c = generate_c(&lowered).unwrap();
+        let memory = crate::memory::plan(&lowered);
+        let c = generate_c(&lowered, &memory).unwrap();
         assert!(c.contains("hl_define(env, \"x\""));
         assert!(c.contains("hl_get(env, \"x\""));
     }

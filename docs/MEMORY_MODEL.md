@@ -581,3 +581,8 @@ El runtime incorpora una API mínima `HlFrame` con almacenamiento de slots propo
 ### Materialización del layout de frames
 
 `frame_layout(program, memory_plan)` valida el plan y lo convierte en vectores densos por `DataStackId`. Cada posición contiene el `BindingId` asignado o queda vacía; el tamaño de cada vector coincide con `stack_slot_counts`. Esto proporciona una representación backend-neutral para emitir arrays C o almacenamiento equivalente en Rust. No conecta todavía esos vectores con las lecturas/escrituras de variables del generador, que siguen usando el entorno dinámico por nombre.
+
+ 
+### Integración inicial del FrameLayout en C
+
+El backend C materializa un `HlFrame` por activación de `main` y enruta los bindings clasificados como `Inline` a los slots físicos de `MemoryPlan`. Las lecturas y escrituras usan accesores comprobados (`hl_frame_read_or_fail` / `hl_frame_write_or_fail`). Los bindings dinámicos `ScopeRegion` y `OwnedRegion` continúan usando `HlEnv` y sus arenas/promoción conservadora, evitando almacenar punteros de ámbito corto en un frame cuya vida se extiende más allá de la región. Esta es una integración parcial deliberada: las funciones HackLang y los frames recursivos se conectarán cuando exista lowering de funciones; no se debe inferir que ya hay asignación de slots para todos los valores.

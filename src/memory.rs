@@ -868,7 +868,7 @@ mod tests {
 
     #[test]
     fn cfg_does_not_create_fallthrough_after_break_inside_nested_block() {
-        use crate::ast::{AssignStatement, BlockStatement, WhileStatement};
+        use crate::ast::{AssignStatement, WhileStatement};
         let p = lower(vec![
             S::Let(LetStatement {
                 name: "counter".into(),

@@ -351,6 +351,12 @@ static void hl_assign_planned(HlEnv *environment, const char *name, HlValue valu
     }
     item->value = hl_store_value(item, value, storage);
 }
+
+/* A planned lifetime extension is copy-based for strings: the destination
+ * owns independent storage before the source region can be rewound. */
+static void hl_assign_promoted_copy(HlEnv *environment, const char *name, HlValue value) {
+    hl_assign_planned(environment, name, value, HL_STORAGE_OWNED);
+}
 /* Compatibility defaults for runtime-only fixtures that do not carry HIR. */
 static void hl_define(HlEnv *environment, const char *name, HlValue value) {
     hl_define_planned(environment, name, value, HL_STORAGE_OWNED);

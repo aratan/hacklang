@@ -140,9 +140,22 @@ pub struct RegionCheckpoint {
 
 /// Per-activation descriptor table. The table owns all regions and enforces
 /// parent/child lifetime ordering.
+/// Stable handle for an object owned by a region. Handles are table indices,
+/// never raw pointers into a region's backing storage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RegionObjectId(pub u32);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegionObject {
+    pub owner: RegionId,
+    pub payload: Vec<u8>,
+    pub references: Vec<RegionObjectId>,
+}
+
 #[derive(Default)]
 pub struct RegionTable {
     descriptors: Vec<RegionDescriptor>,
+    objects: Vec<Option<RegionObject>>,
 }
 
 impl RegionTable {
@@ -207,6 +220,7 @@ impl RegionTable {
         let descriptor = self.active_mut(id)?;
         descriptor.region.restore(descriptor.initial_mark)?;
         descriptor.state = RegionState::Closed;
+        self.remove_owned_objects(id);
         Ok(())
     }
 
@@ -214,6 +228,87 @@ impl RegionTable {
         self.descriptors.get(id.0 as usize)
             .filter(|descriptor| descriptor.id == id && descriptor.state == RegionState::Active)
             .map(|descriptor| descriptor.region.used())
+    }
+
+    fn is_ancestor(&self, ancestor: RegionId, mut child: RegionId) -> bool {
+        loop {
+            if ancestor == child { return true; }
+            let Some(descriptor) = self.descriptors.get(child.0 as usize) else { return false; };
+            let Some(parent) = descriptor.parent else { return false; };
+            child = parent;
+        }
+    }
+
+    /// Create a logical object owned by an active region. References are handles
+    /// and are validated before insertion, so no dangling edge can be created.
+    pub fn create_object(
+        &mut self, owner: RegionId, payload: Vec<u8>, references: Vec<RegionObjectId>,
+    ) -> Result<RegionObjectId, RegionError> {
+        self.active_mut(owner)?;
+        for reference in &references {
+            if self.objects.get(reference.0 as usize).and_then(Option::as_ref).is_none() {
+                return Err(RegionError::InvalidMark);
+            }
+        }
+        let id = RegionObjectId(u32::try_from(self.objects.len())
+            .map_err(|_| RegionError::CapacityOverflow)?);
+        self.objects.push(Some(RegionObject { owner, payload, references }));
+        Ok(id)
+    }
+
+    pub fn object(&self, id: RegionObjectId) -> Option<&RegionObject> {
+        self.objects.get(id.0 as usize).and_then(Option::as_ref)
+    }
+
+    /// Promote an object graph into an ancestor region. The graph is deep-copied
+    /// transitively, cycles and shared subgraphs are preserved through a memo
+    /// table, and the original graph remains owned by its original regions.
+    pub fn promote(
+        &mut self, root: RegionObjectId, destination: RegionId,
+    ) -> Result<RegionObjectId, RegionError> {
+        self.active_mut(destination)?;
+        let root_object = self.object(root).ok_or(RegionError::InvalidMark)?;
+        if !self.is_ancestor(destination, root_object.owner) {
+            return Err(RegionError::InvalidMark);
+        }
+
+        let mut pending = vec![root];
+        let mut copies: std::collections::HashMap<RegionObjectId, RegionObjectId> =
+            std::collections::HashMap::new();
+        while let Some(old_id) = pending.pop() {
+            if copies.contains_key(&old_id) { continue; }
+            let old = self.object(old_id).cloned().ok_or(RegionError::InvalidMark)?;
+            let new_id = RegionObjectId(u32::try_from(self.objects.len())
+                .map_err(|_| RegionError::CapacityOverflow)?);
+            copies.insert(old_id, new_id);
+            self.objects.push(Some(RegionObject {
+                owner: destination,
+                payload: old.payload,
+                references: Vec::new(),
+            }));
+            pending.extend(old.references);
+        }
+
+        for (old_id, new_id) in &copies {
+            let old = self.object(*old_id).cloned().ok_or(RegionError::InvalidMark)?;
+            let new_refs = old.references.iter()
+                .map(|id| copies.get(id).copied().ok_or(RegionError::InvalidMark))
+                .collect::<Result<Vec<_>, _>>()?;
+            let target = self.objects.get_mut(new_id.0 as usize)
+                .and_then(Option::as_mut).ok_or(RegionError::InvalidMark)?;
+            target.references = new_refs;
+        }
+        copies.get(&root).copied().ok_or(RegionError::InvalidMark)
+    }
+
+    /// Remove objects owned by a region when it closes. Object IDs are never
+    /// recycled, so stale handles cannot accidentally refer to a new object.
+    fn remove_owned_objects(&mut self, owner: RegionId) {
+        for object in &mut self.objects {
+            if object.as_ref().is_some_and(|value| value.owner == owner) {
+                *object = None;
+            }
+        }
     }
 }
 
@@ -328,6 +423,62 @@ mod tests {
         let checkpoint = table.checkpoint(region).unwrap();
         table.close(region).unwrap();
         assert_eq!(table.restore(checkpoint), Err(RegionError::InvalidMark));
+    }
+
+
+    #[test]
+    fn promotion_copies_transitive_graph_to_ancestor_region() {
+        let mut table = RegionTable::new();
+        let parent = table.create(None).unwrap();
+        let child = table.create(Some(parent)).unwrap();
+        let leaf = table.create_object(child, vec![7, 8], vec![]).unwrap();
+        let root = table.create_object(child, vec![1, 2], vec![leaf]).unwrap();
+
+        let promoted = table.promote(root, parent).unwrap();
+        assert_ne!(promoted, root);
+        let promoted_root = table.object(promoted).unwrap();
+        assert_eq!(promoted_root.owner, parent);
+        assert_eq!(promoted_root.payload, vec![1, 2]);
+        let promoted_leaf = table.object(promoted_root.references[0]).unwrap();
+        assert_eq!(promoted_leaf.owner, parent);
+        assert_eq!(promoted_leaf.payload, vec![7, 8]);
+
+        table.close(child).unwrap();
+        assert_eq!(table.object(root), None);
+        assert_eq!(table.object(promoted).unwrap().payload, vec![1, 2]);
+    }
+
+    #[test]
+    fn promotion_preserves_shared_references_and_cycles() {
+        let mut table = RegionTable::new();
+        let parent = table.create(None).unwrap();
+        let child = table.create(Some(parent)).unwrap();
+        let a = table.create_object(child, vec![1], vec![]).unwrap();
+        let b = table.create_object(child, vec![2], vec![a]).unwrap();
+        table.objects[a.0 as usize].as_mut().unwrap().references.push(b);
+        let promoted_a = table.promote(a, parent).unwrap();
+        let promoted_b = table.object(promoted_a).unwrap().references[0];
+        assert_eq!(table.object(promoted_b).unwrap().references, vec![promoted_a]);
+    }
+
+    #[test]
+    fn promotion_rejects_destination_that_does_not_outlive_source() {
+        let mut table = RegionTable::new();
+        let parent = table.create(None).unwrap();
+        let child = table.create(Some(parent)).unwrap();
+        let sibling = table.create(Some(parent)).unwrap();
+        let object = table.create_object(parent, vec![3], vec![]).unwrap();
+        assert_eq!(table.promote(object, child), Err(RegionError::InvalidMark));
+        assert_eq!(table.promote(object, sibling), Err(RegionError::InvalidMark));
+    }
+
+    #[test]
+    fn closing_region_invalidates_its_object_handles() {
+        let mut table = RegionTable::new();
+        let region = table.create(None).unwrap();
+        let object = table.create_object(region, vec![42], vec![]).unwrap();
+        table.close(region).unwrap();
+        assert_eq!(table.object(object), None);
     }
 
 

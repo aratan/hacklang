@@ -11,15 +11,25 @@
 #include <string.h>
 
 typedef struct HlArray HlArray;
-typedef enum { HL_NUMBER, HL_BOOL, HL_STRING, HL_ARRAY } HlTag;
+typedef struct HlMap HlMap;
+typedef struct HlMapEntry HlMapEntry;
+typedef enum { HL_NUMBER, HL_BOOL, HL_STRING, HL_ARRAY, HL_MAP } HlTag;
 typedef enum { HL_STORAGE_SCOPE, HL_STORAGE_OWNED } HlStorageClass;
 typedef struct {
     HlTag tag;
-    union { double number; int boolean; const char *string; HlArray *array; } as;
+    union { double number; int boolean; const char *string; HlArray *array; HlMap *map; } as;
 } HlValue;
 struct HlArray {
     size_t length;
     HlValue *items;
+};
+struct HlMapEntry {
+    HlValue key;
+    HlValue value;
+};
+struct HlMap {
+    size_t length;
+    HlMapEntry *entries;
 };
 
 /* Activation-local frame storage. The compiler supplies the slot array;
@@ -360,6 +370,46 @@ static HlValue hl_string(HlEnv *environment, const char *value) {
 
 /* Aggregate storage is lane-owned. Cloning recursively duplicates the value
  * graph, including strings, so reads/assignments cannot create shared aliases. */
+static int hl_map_key_equal(HlValue left, HlValue right) {
+    if (left.tag != right.tag) return 0;
+    switch (left.tag) {
+        case HL_NUMBER: return left.as.number == right.as.number;
+        case HL_BOOL: return left.as.boolean == right.as.boolean;
+        case HL_STRING:
+            return left.as.string && right.as.string
+                && strcmp(left.as.string, right.as.string) == 0;
+        case HL_ARRAY:
+            if (!left.as.array || !right.as.array
+                || left.as.array->length != right.as.array->length) return 0;
+            for (size_t i = 0; i < left.as.array->length; ++i)
+                if (!hl_map_key_equal(left.as.array->items[i], right.as.array->items[i])) return 0;
+            return 1;
+        case HL_MAP:
+            if (!left.as.map || !right.as.map
+                || left.as.map->length != right.as.map->length) return 0;
+            for (size_t i = 0; i < left.as.map->length; ++i) {
+                if (!hl_map_key_equal(left.as.map->entries[i].key, right.as.map->entries[i].key)
+                    || !hl_map_key_equal(left.as.map->entries[i].value, right.as.map->entries[i].value)) return 0;
+            }
+            return 1;
+    }
+    return 0;
+}
+static size_t hl_map_find_key(const HlMap *map, HlValue key) {
+    if (!map) return SIZE_MAX;
+    for (size_t i = 0; i < map->length; ++i)
+        if (hl_map_key_equal(map->entries[i].key, key)) return i;
+    return SIZE_MAX;
+}
+static HlValue hl_map(HlEnv *environment, const HlMapEntry *entries, size_t length) {
+    if (length > SIZE_MAX / sizeof(HlMapEntry))
+        hl_fail(environment, "mapa demasiado grande");
+    HlMap *map = (HlMap *)hl_alloc(environment, sizeof(HlMap));
+    map->length = length;
+    map->entries = length ? (HlMapEntry *)hl_alloc(environment, length * sizeof(HlMapEntry)) : NULL;
+    if (length) memcpy(map->entries, entries, length * sizeof(HlMapEntry));
+    HlValue result; result.tag = HL_MAP; result.as.map = map; return result;
+}
 static HlValue hl_array(HlEnv *environment, const HlValue *items, size_t length) {
     if (length > SIZE_MAX / sizeof(HlValue))
         hl_fail(environment, "array demasiado grande");
@@ -386,6 +436,20 @@ static HlValue hl_clone_value(HlEnv *environment, HlValue value) {
             for (size_t i = 0; i < copy->length; ++i)
                 copy->items[i] = hl_clone_value(environment, value.as.array->items[i]);
             HlValue result; result.tag = HL_ARRAY; result.as.array = copy; return result;
+        }
+        case HL_MAP: {
+            if (!value.as.map) hl_fail(environment, "mapa nulo");
+            if (value.as.map->length > SIZE_MAX / sizeof(HlMapEntry))
+                hl_fail(environment, "mapa demasiado grande al copiar");
+            HlMap *copy = (HlMap *)hl_alloc(environment, sizeof(HlMap));
+            copy->length = value.as.map->length;
+            copy->entries = copy->length
+                ? (HlMapEntry *)hl_alloc(environment, copy->length * sizeof(HlMapEntry)) : NULL;
+            for (size_t i = 0; i < copy->length; ++i) {
+                copy->entries[i].key = hl_clone_value(environment, value.as.map->entries[i].key);
+                copy->entries[i].value = hl_clone_value(environment, value.as.map->entries[i].value);
+            }
+            HlValue result; result.tag = HL_MAP; result.as.map = copy; return result;
         }
     }
     hl_fail(environment, "tipo de valor desconocido al copiar");
@@ -603,12 +667,42 @@ static size_t hl_array_index(HlEnv *environment, HlValue index) {
     return (size_t)index.as.number;
 }
 static HlValue hl_index(HlEnv *environment, HlValue target, HlValue index) {
-    if (target.tag != HL_ARRAY || !target.as.array)
-        hl_fail(environment, "no se puede indexar un valor que no sea array");
-    size_t position = hl_array_index(environment, index);
-    if (position >= target.as.array->length)
-        hl_fail(environment, "índice de array fuera de rango");
-    return hl_clone_value(environment, target.as.array->items[position]);
+    if (target.tag == HL_ARRAY && target.as.array) {
+        size_t position = hl_array_index(environment, index);
+        if (position >= target.as.array->length)
+            hl_fail(environment, "índice de array fuera de rango");
+        return hl_clone_value(environment, target.as.array->items[position]);
+    }
+    if (target.tag == HL_MAP && target.as.map) {
+        size_t position = hl_map_find_key(target.as.map, index);
+        if (position == SIZE_MAX) hl_fail(environment, "Clave no encontrada en mapa");
+        return hl_clone_value(environment, target.as.map->entries[position].value);
+    }
+    hl_fail(environment, "no se puede indexar el valor indicado");
+    return hl_number(0);
+}
+static HlValue hl_clone_for_binding(HlBinding *binding, HlValue value) {
+    return binding->ownership_token
+        ? hl_clone_value_in_lane(binding->owner, &binding->aggregate_lane, value)
+        : hl_clone_value(binding->owner, value);
+}
+static void hl_map_set(HlBinding *binding, HlMap *map, HlValue key, HlValue value) {
+    size_t position = hl_map_find_key(map, key);
+    HlValue stored_key = hl_clone_for_binding(binding, key);
+    HlValue stored_value = hl_clone_for_binding(binding, value);
+    if (position != SIZE_MAX) {
+        map->entries[position].value = stored_value;
+        return;
+    }
+    if (map->length >= SIZE_MAX / sizeof(HlMapEntry))
+        hl_fail(binding->owner, "mapa demasiado grande al insertar clave");
+    HlMapEntry *grown = (HlMapEntry *)hl_alloc(binding->owner,
+        (map->length + 1) * sizeof(HlMapEntry));
+    if (map->length) memcpy(grown, map->entries, map->length * sizeof(HlMapEntry));
+    grown[map->length].key = stored_key;
+    grown[map->length].value = stored_value;
+    map->entries = grown;
+    map->length += 1;
 }
 static void hl_index_assign_path(HlEnv *environment, const char *name,
                                  const HlValue *indices, size_t index_count,
@@ -624,18 +718,27 @@ static void hl_index_assign_path(HlEnv *environment, const char *name,
 
     HlValue *slot = &binding->value;
     for (size_t depth = 0; depth < index_count; ++depth) {
-        if (slot->tag != HL_ARRAY || !slot->as.array)
-            hl_fail(environment, "no se puede asignar por índice a un valor que no sea array");
-        size_t position = hl_array_index(environment, indices[depth]);
-        if (position >= slot->as.array->length)
-            hl_fail(environment, "índice de array fuera de rango");
-        slot = &slot->as.array->items[position];
+        const int is_last = depth + 1 == index_count;
+        if (slot->tag == HL_ARRAY && slot->as.array) {
+            size_t position = hl_array_index(environment, indices[depth]);
+            if (position >= slot->as.array->length)
+                hl_fail(environment, "índice de array fuera de rango");
+            slot = &slot->as.array->items[position];
+            if (is_last) *slot = hl_clone_for_binding(binding, value);
+            continue;
+        }
+        if (slot->tag == HL_MAP && slot->as.map) {
+            size_t position = hl_map_find_key(slot->as.map, indices[depth]);
+            if (is_last) {
+                hl_map_set(binding, slot->as.map, indices[depth], value);
+                return;
+            }
+            if (position == SIZE_MAX) hl_fail(environment, "Clave no encontrada en mapa");
+            slot = &slot->as.map->entries[position].value;
+            continue;
+        }
+        hl_fail(environment, "no se puede asignar por índice a un valor que no sea colección");
     }
-
-    /* Keep replacement aggregates in the binding's token-owned arena. */
-    *slot = binding->ownership_token
-        ? hl_clone_value_in_lane(binding->owner, &binding->aggregate_lane, value)
-        : hl_clone_value(binding->owner, value);
 }
 
 static void hl_index_assign(HlEnv *environment, const char *name, HlValue index, HlValue value) {
@@ -648,6 +751,7 @@ static int hl_truthy(HlValue value) {
         case HL_NUMBER: return value.as.number != 0.0;
         case HL_STRING: return value.as.string[0] != '\0';
         case HL_ARRAY: return value.as.array != NULL;
+        case HL_MAP: return value.as.map != NULL;
     }
     return 0;
 }
@@ -727,6 +831,7 @@ static void hl_print(HlValue value) {
         case HL_BOOL: puts(value.as.boolean ? "true" : "false"); break;
         case HL_STRING: puts(value.as.string); break;
         case HL_ARRAY: puts("<array>"); break;
+        case HL_MAP: puts("<map>"); break;
     }
 }
 static int hl_is_string_number_pair(HlValue left, HlValue right) {

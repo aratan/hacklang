@@ -308,27 +308,38 @@ static void ownership_cleanup(void *context) {
 }
 int main(void) {
     int calls = 0;
+    uint64_t token = 0, repeated_token = 0, cleanup_token = 0;
     HlEnv *root = hl_env_new(NULL);
     HlEnv *child = hl_env_new(root);
-    OwnershipProbe probe = { child, 41, &calls, 0 };
-    if (!hl_ownership_acquire(child, 41, ownership_cleanup, &probe)) return 10;
-    if (!hl_ownership_is_active(child, 41)) return 11;
-    if (hl_ownership_acquire(child, 41, ownership_cleanup, &probe)) return 12;
-    if (!hl_ownership_transfer(child, root, 41)) return 13;
-    if (hl_ownership_transfer(child, root, 41)) return 14;
-    if (hl_ownership_drop(child, 41)) return 15;
-    if (!hl_ownership_is_active(root, 41)) return 16;
-    if (!hl_ownership_drop(root, 41)) return 17;
-    if (hl_ownership_drop(root, 41)) return 18;
-    if (calls != 0 || hl_ownership_is_active(root, 41)) return 19;
+    OwnershipProbe probe = { child, 0, &calls, 0 };
+    if (!hl_ownership_acquire(child, 41, &token, ownership_cleanup, &probe)) return 10;
+    probe.token = token;
+    if (!hl_ownership_is_active(child, token)) return 11;
+    if (!hl_ownership_transfer(child, root, token)) return 12;
+    if (hl_ownership_transfer(child, root, token)) return 13;
+    if (hl_ownership_drop(child, token)) return 14;
+    if (!hl_ownership_is_active(root, token)) return 15;
+    if (!hl_ownership_drop(root, token)) return 16;
+    if (hl_ownership_drop(root, token)) return 17;
+    if (calls != 0 || hl_ownership_is_active(root, token)) return 18;
 
-    OwnershipProbe cleanup_probe = { child, 42, &calls, 0 };
-    if (!hl_ownership_acquire(child, 42, ownership_cleanup, &cleanup_probe)) return 20;
+    /* The same static compiler site can execute repeatedly (loop iterations
+       or recursion), while each dynamic resource receives a fresh handle. */
+    OwnershipProbe repeated = { child, 0, &calls, 0 };
+    if (!hl_ownership_acquire(child, 41, &repeated_token, ownership_cleanup, &repeated)) return 19;
+    repeated.token = repeated_token;
+    if (repeated_token == token || !hl_ownership_is_active(child, repeated_token)) return 20;
+    if (!hl_ownership_drop(child, repeated_token)) return 21;
+    if (hl_ownership_is_active(child, token) || hl_ownership_is_active(child, repeated_token)) return 22;
+
+    OwnershipProbe cleanup_probe = { child, 0, &calls, 0 };
+    if (!hl_ownership_acquire(child, 42, &cleanup_token, ownership_cleanup, &cleanup_probe)) return 23;
+    cleanup_probe.token = cleanup_token;
     hl_env_free(child);
-    if (calls != 1 || !cleanup_probe.saw_inactive) return 21;
-    if (hl_ownership_is_active(root, 42)) return 22;
+    if (calls != 2 || !cleanup_probe.saw_inactive || !repeated.saw_inactive) return 24;
+    if (hl_ownership_is_active(root, cleanup_token)) return 25;
     hl_env_free(root);
-    if (calls != 1) return 23;
+    if (calls != 2) return 26;
     return 0;
 }
 "#

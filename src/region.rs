@@ -246,7 +246,11 @@ impl RegionTable {
     ) -> Result<RegionObjectId, RegionError> {
         self.active_mut(owner)?;
         for reference in &references {
-            if self.objects.get(reference.0 as usize).and_then(Option::as_ref).is_none() {
+            let target = self.objects.get(reference.0 as usize)
+                .and_then(Option::as_ref).ok_or(RegionError::InvalidMark)?;
+            // A longer-lived owner may not retain an object from a shorter-lived
+            // descendant region. This prevents dangling edges on child close.
+            if !self.is_ancestor(target.owner, owner) {
                 return Err(RegionError::InvalidMark);
             }
         }
@@ -479,6 +483,19 @@ mod tests {
         let object = table.create_object(region, vec![42], vec![]).unwrap();
         table.close(region).unwrap();
         assert_eq!(table.object(object), None);
+    }
+
+
+    #[test]
+    fn longer_lived_object_cannot_reference_shorter_lived_object() {
+        let mut table = RegionTable::new();
+        let parent = table.create(None).unwrap();
+        let child = table.create(Some(parent)).unwrap();
+        let child_object = table.create_object(child, vec![1], vec![]).unwrap();
+        assert_eq!(
+            table.create_object(parent, vec![2], vec![child_object]),
+            Err(RegionError::InvalidMark)
+        );
     }
 
 

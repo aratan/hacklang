@@ -941,7 +941,7 @@ int main(void) {
     }
 
     #[test]
-    fn rejects_unsupported_closures_during_ast_to_hir_lowering() {
+    fn rejects_function_hir_until_native_closure_runtime_exists() {
         let program = Program {
             statements: vec![Statement::Let(LetStatement {
                 name: "identity".into(),
@@ -951,8 +951,12 @@ int main(void) {
                 },
             })],
         };
-        let error = crate::hir::lower(&program).unwrap_err();
-        assert!(error.message.contains("closures"));
+        let directory = temporary_directory().expect("temporary directory");
+        let source = directory.join("closure.hl");
+        fs::write(&source, "let identity = |x| x;").unwrap();
+        let error = compile_to_executable(&program, &source, None).unwrap_err();
+        assert!(error.contains("backend C aún genera") || error.contains("backend C aún no genera"));
+        let _ = fs::remove_dir_all(directory);
     }
 
     #[test]

@@ -449,7 +449,7 @@ mod tests {
         assert_eq!(hir.functions.len(), 1);
         let StmtKind::Let { value, .. } = &hir.statements[1].kind else { panic!("expected let"); };
         assert!(matches!(&value.kind, ExprKind::Call { callee, args }
-            if matches!(callee.kind, ExprKind::Read(BindingId(1)))
+            if matches!(callee.kind, ExprKind::Read(BindingId(0)))
                 && args.len() == 1
                 && matches!(args[0].kind, ExprKind::Number(41.0))));
     }

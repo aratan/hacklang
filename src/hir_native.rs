@@ -58,7 +58,15 @@ impl Generator {
                 let index = self.expr(p, index, out)?;
                 format!("hl_index(env, {target}, {index})")
             }
-            ExprKind::Array(_) | ExprKind::Map(_) => return Err("arrays y mapas literales aún no tienen lowering nativo".into()),
+            ExprKind::Array(items) => {
+                let values = items.iter().map(|item| self.expr(p, item, out)).collect::<Result<Vec<_>, _>>()?;
+                if values.is_empty() {
+                    "hl_array(env, NULL, 0)".to_string()
+                } else {
+                    format!("hl_array(env, (HlValue[]){{ {} }}, {})", values.join(", "), values.len())
+                }
+            }
+            ExprKind::Map(_) => return Err("los literales de mapas aún no tienen lowering nativo".into()),
             ExprKind::Ternary { condition, when_true, when_false } => {
                 let c = self.expr(p, condition, out)?;
                 Self::line(out, format!("HlValue {v};"));
@@ -444,4 +452,35 @@ mod tests {
         assert!(c.contains("hl_frame_write_or_fail(env, &frame,"));
         assert!(c.contains("hl_frame_read_or_fail(env, &frame,"));
     }
+
+    #[test]
+    fn generated_c_lowers_array_literals_index_reads_and_index_assignments() {
+        use crate::ast::{Expression as A, IndexAssignStatement, LetStatement, PrintStatement, Program as AstProgram, Statement as AstStmt};
+        let ast = AstProgram { statements: vec![
+            AstStmt::Let(LetStatement {
+                name: "items".into(),
+                value: A::Array(vec![A::NumberLiteral(1.0), A::NumberLiteral(2.0)]),
+            }),
+            AstStmt::IndexAssign(IndexAssignStatement {
+                name: "items".into(),
+                index: A::NumberLiteral(0.0),
+                value: A::NumberLiteral(9.0),
+            }),
+            AstStmt::Print(PrintStatement {
+                value: A::Index {
+                    target: Box::new(A::Identifier("items".into())),
+                    index: Box::new(A::NumberLiteral(0.0)),
+                },
+            }),
+        ]};
+        let lowered = crate::hir::lower(&ast).unwrap();
+        let memory = crate::memory::plan(&lowered);
+        let c = generate_c(&lowered, &memory).unwrap();
+        let main = c.split("int main(void) {").last().unwrap();
+        assert!(main.contains("hl_array(env, (HlValue[]){"));
+        assert!(main.contains("hl_index_assign(env, \\"items\\""));
+        assert!(main.contains("hl_index(env,"));
+        assert!(!main.contains("la asignación por índice está representada"));
+    }
+
 }

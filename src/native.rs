@@ -852,7 +852,7 @@ int main(void) {
         let c_file = directory.join("promoted_string_copy.c");
         let executable = directory.join("promoted_string_copy");
         let source = format!(
-            "{}\\n{}",
+            "{}\n{}",
             include_str!("native_runtime.c"),
             r#"
 int main(void) {

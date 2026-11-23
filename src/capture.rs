@@ -22,13 +22,27 @@ pub struct CaptureBinding {
     pub function_owner: Option<FunctionId>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CaptureAccess {
+    /// The closure reads the binding's current value.
+    pub reads: bool,
+    /// The closure writes or mutates the binding.
+    pub writes: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Capture {
+    pub binding: CaptureBindingId,
+    pub access: CaptureAccess,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionCaptures {
     pub id: FunctionId,
     pub parent: Option<FunctionId>,
     pub params: Vec<CaptureBindingId>,
     /// Direct free-variable references, sorted by stable binding ID.
-    pub captures: Vec<CaptureBindingId>,
+    pub captures: Vec<Capture>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -55,7 +69,7 @@ struct FunctionBuilder {
     id: FunctionId,
     parent: Option<FunctionId>,
     params: Vec<CaptureBindingId>,
-    captures: HashSet<CaptureBindingId>,
+    captures: HashMap<CaptureBindingId, CaptureAccess>,
 }
 
 struct Analyzer {
@@ -108,12 +122,14 @@ impl Analyzer {
             })
     }
 
-    fn reference(&mut self, name: &str) -> Result<(), CaptureError> {
+    fn reference(&mut self, name: &str, write: bool) -> Result<(), CaptureError> {
         let binding = self.resolve(name)?;
         if let Some(function) = self.current_function() {
             let owner = self.bindings[binding.0 as usize].function_owner;
             if owner != Some(function) {
-                self.functions[function.0 as usize].captures.insert(binding);
+                let access = self.functions[function.0 as usize].captures.entry(binding)
+                    .or_insert(CaptureAccess { reads: false, writes: false });
+                if write { access.writes = true; } else { access.reads = true; }
             }
         }
         Ok(())
@@ -126,7 +142,7 @@ impl Analyzer {
             id,
             parent,
             params: Vec::with_capacity(params.len()),
-            captures: HashSet::new(),
+            captures: HashMap::new(),
         });
 
         self.function_stack.push(id);
@@ -144,7 +160,7 @@ impl Analyzer {
 
     fn expression(&mut self, expression: &Expression) -> Result<(), CaptureError> {
         match expression {
-            Expression::Identifier(name) => self.reference(name),
+            Expression::Identifier(name) => self.reference(name, false),
             Expression::NumberLiteral(_) | Expression::BoolLiteral(_) | Expression::StringLiteral(_) => Ok(()),
             Expression::Infix { left, right, .. } => {
                 self.expression(left)?;
@@ -207,10 +223,10 @@ impl Analyzer {
             }
             Statement::Assign(assignment) => {
                 self.expression(&assignment.value)?;
-                self.reference(&assignment.name)
+                self.reference(&assignment.name, true)
             }
             Statement::IndexAssign(assignment) => {
-                self.reference(&assignment.name)?;
+                self.reference(&assignment.name, true)?;
                 for index in &assignment.indices {
                     self.expression(index)?;
                 }
@@ -253,8 +269,10 @@ impl Analyzer {
 
     fn finish(self) -> CaptureAnalysis {
         let functions = self.functions.into_iter().map(|function| {
-            let mut captures: Vec<_> = function.captures.into_iter().collect();
-            captures.sort_unstable();
+            let mut captures: Vec<_> = function.captures.into_iter()
+                .map(|(binding, access)| Capture { binding, access })
+                .collect();
+            captures.sort_by_key(|capture| capture.binding);
             FunctionCaptures {
                 id: function.id,
                 parent: function.parent,
@@ -290,7 +308,10 @@ mod tests {
         let result = analyze_source("let outside = 7; let add = |x| x + outside;");
         assert_eq!(result.functions.len(), 1);
         let outside = result.bindings.iter().find(|binding| binding.name == "outside").unwrap().id;
-        assert_eq!(result.functions[0].captures, vec![outside]);
+        assert_eq!(result.functions[0].captures, vec![Capture {
+            binding: outside,
+            access: CaptureAccess { reads: true, writes: false },
+        }]);
         assert_eq!(result.functions[0].params.len(), 1);
     }
 
@@ -300,9 +321,12 @@ mod tests {
         assert_eq!(result.functions.len(), 2);
         let x = result.bindings.iter().find(|binding| binding.name == "x").unwrap().id;
         assert_eq!(result.functions[0].parent, None);
-        assert_eq!(result.functions[0].captures, Vec::<CaptureBindingId>::new());
+        assert!(result.functions[0].captures.is_empty());
         assert_eq!(result.functions[1].parent, Some(FunctionId(0)));
-        assert_eq!(result.functions[1].captures, vec![x]);
+        assert_eq!(result.functions[1].captures, vec![Capture {
+            binding: x,
+            access: CaptureAccess { reads: true, writes: false },
+        }]);
     }
 
     #[test]
@@ -317,14 +341,20 @@ mod tests {
         let result = analyze_source("let factory = |x| (let inner = |y| x + y; return inner;);");
         assert_eq!(result.functions.len(), 2);
         let x = result.bindings.iter().find(|binding| binding.name == "x").unwrap().id;
-        assert_eq!(result.functions[1].captures, vec![x]);
+        assert_eq!(result.functions[1].captures, vec![Capture {
+            binding: x,
+            access: CaptureAccess { reads: true, writes: false },
+        }]);
     }
 
     #[test]
     fn captured_assignment_is_a_capture_too() {
         let result = analyze_source("let total = 0; let update = |x| (total = total + x; return total;);");
         let total = result.bindings.iter().find(|binding| binding.name == "total").unwrap().id;
-        assert_eq!(result.functions[0].captures, vec![total]);
+        assert_eq!(result.functions[0].captures, vec![Capture {
+            binding: total,
+            access: CaptureAccess { reads: true, writes: true },
+        }]);
     }
 
     #[test]

@@ -747,8 +747,9 @@ pub fn validate_slot_plan(program: &Program, plan: &MemoryPlan) -> Result<(), St
 }
 
 /// Concrete, backend-neutral slot layout derived from a validated MemoryPlan.
-/// Each stack owns a dense slot vector; entries identify the binding assigned
-/// to that slot. This is a layout description, not runtime allocation.
+/// Each stack owns a dense slot vector; each slot lists every non-interfering
+/// binding assigned to it across the activation. This is a layout description,
+/// not runtime allocation.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FrameLayout {
     /// Each physical slot may serve multiple non-interfering bindings at

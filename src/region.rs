@@ -230,7 +230,7 @@ impl RegionTable {
         }
         let id = RegionId(u32::try_from(self.descriptors.len())
             .map_err(|_| RegionError::CapacityOverflow)?);
-        let region = Region::new();
+        let mut region = Region::new();
         let initial_mark = region.mark();
         self.descriptors.push(RegionDescriptor {
             id, parent, state: RegionState::Active, region, initial_mark,

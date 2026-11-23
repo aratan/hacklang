@@ -1,6 +1,6 @@
 use crate::ast::{Expression as AstExpr, Program as AstProgram, Statement as AstStmt};
 use crate::lexer::Token;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ScopeId(pub u32);
@@ -147,6 +147,7 @@ struct Lowerer {
     loop_depth: usize,
     functions: Vec<Function>,
     function_stack: Vec<FunctionId>,
+    predeclared_functions: HashSet<BindingId>,
 }
 
 impl Lowerer {
@@ -161,6 +162,7 @@ impl Lowerer {
             loop_depth: 0,
             functions: Vec::new(),
             function_stack: Vec::new(),
+            predeclared_functions: HashSet::new(),
         }
     }
 
@@ -193,6 +195,24 @@ impl Lowerer {
         });
         self.symbols.last_mut().expect("module scope exists").insert(name.to_string(), id);
         id
+    }
+
+    /// Reserve names of lambda declarations in this lexical scope so
+    /// self-recursive and mutually recursive closures resolve to stable IDs.
+    /// The reservation is limited to direct declarations in this scope.
+    fn predeclare_functions(&mut self, ast: &[AstStmt]) {
+        let mut seen = HashSet::new();
+        for statement in ast {
+            if let AstStmt::Let(binding) = statement {
+                if !seen.insert(binding.name.clone()) {
+                    continue;
+                }
+                if matches!(binding.value, AstExpr::Lambda { .. }) {
+                    let id = self.declare(&binding.name);
+                    self.predeclared_functions.insert(id);
+                }
+            }
+        }
     }
 
     fn resolve(&self, name: &str) -> Result<BindingId, LowerError> {
@@ -252,7 +272,13 @@ impl Lowerer {
         let kind = match ast {
             AstStmt::Let(binding) => {
                 let value = self.expr(&binding.value)?;
-                let binding = self.declare(&binding.name);
+                let binding = if matches!(value.kind, ExprKind::Closure(_)) {
+                    self.symbols.last().and_then(|scope| scope.get(&binding.name)).copied()
+                        .filter(|id| self.predeclared_functions.remove(id))
+                        .unwrap_or_else(|| self.declare(&binding.name))
+                } else {
+                    self.declare(&binding.name)
+                };
                 StmtKind::Let { binding, value }
             }
             AstStmt::Assign(assignment) => {
@@ -276,6 +302,7 @@ impl Lowerer {
             },
             AstStmt::Block(statements) => {
                 let scope = self.enter_scope(ScopeKind::Block);
+                self.predeclare_functions(statements);
                 let result = self.statements(statements);
                 self.leave_scope();
                 StmtKind::Block { scope, statements: result? }
@@ -283,11 +310,13 @@ impl Lowerer {
             AstStmt::If(branch) => {
                 let condition = self.expr(&branch.condition)?;
                 let then_scope = self.enter_scope(ScopeKind::Branch);
+                self.predeclare_functions(&branch.true_body);
                 let then_result = self.statements(&branch.true_body);
                 self.leave_scope();
                 let then_body = then_result?;
                 let (else_scope, else_body) = if let Some(body) = &branch.false_body {
                     let scope = self.enter_scope(ScopeKind::Branch);
+                    self.predeclare_functions(body);
                     let result = self.statements(body);
                     self.leave_scope();
                     (Some(scope), result?)
@@ -298,6 +327,7 @@ impl Lowerer {
                 let scope = self.enter_scope(ScopeKind::Loop);
                 self.loop_depth += 1;
                 let condition = self.expr(&loop_stmt.condition)?;
+                self.predeclare_functions(&loop_stmt.body);
                 let body_result = self.statements(&loop_stmt.body);
                 self.loop_depth -= 1;
                 self.leave_scope();
@@ -343,10 +373,13 @@ impl Lowerer {
                 self.functions[id.0 as usize].params.push(binding);
             }
             match body {
-                AstExpr::Block(statements) => Ok(FunctionBody {
-                    expression: None,
-                    statements: self.statements(statements)?,
-                }),
+                AstExpr::Block(statements) => {
+                    self.predeclare_functions(statements);
+                    Ok(FunctionBody {
+                        expression: None,
+                        statements: self.statements(statements)?,
+                    })
+                },
                 expression => Ok(FunctionBody {
                     expression: Some(self.expr(expression)?),
                     statements: Vec::new(),
@@ -364,6 +397,7 @@ impl Lowerer {
 
 pub fn lower(program: &AstProgram) -> Result<Program, LowerError> {
     let mut lowerer = Lowerer::new();
+    lowerer.predeclare_functions(&program.statements);
     let statements = lowerer.statements(&program.statements)?;
     let mut program = Program {
         statements,
@@ -383,6 +417,24 @@ mod tests {
 
     fn ast(statements: Vec<AstStmt>) -> AstProgram { AstProgram { statements } }
 
+
+
+    #[test]
+    fn predeclares_mutually_recursive_lambdas_in_the_same_lexical_scope() {
+        let mut lexer = crate::lexer::Lexer::new(
+            "let even = |n| odd(n); let odd = |n| even(n);".to_string()
+        );
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = crate::parser::Parser::new(tokens);
+        let ast = parser.parse_program().unwrap();
+        let hir = lower(&ast).unwrap();
+
+        assert_eq!(hir.functions.len(), 2);
+        let even = hir.bindings.iter().find(|binding| binding.name == "even").unwrap().id;
+        let odd = hir.bindings.iter().find(|binding| binding.name == "odd").unwrap().id;
+        assert_eq!(hir.functions[0].captures, vec![Capture { binding: odd, reads: true, writes: false }]);
+        assert_eq!(hir.functions[1].captures, vec![Capture { binding: even, reads: true, writes: false }]);
+    }
 
     #[test]
     fn lowers_function_calls_to_hir_nodes_with_resolved_callee_and_arguments() {

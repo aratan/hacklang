@@ -522,11 +522,11 @@ El planificador deberá poder explicar, para cada binding y temporal, su clase d
 
 La inspección del código existente identifica dos mecanismos parciales que deben converger conceptualmente, sin crear un tercer subsistema:
 
-- `Region::track<T>` registra valores Rust en un vector; `Region::restore` extrae y destruye los registros posteriores a la marca en orden LIFO.
-- `HlEnv` mantiene una lista enlazada de asignaciones C insertadas al principio; `hl_env_free` recorre esa lista y libera las asignaciones en orden LIFO. Actualmente solo ejecuta `free`: no hay callbacks de destrucción tipada ni transferencia de registros entre entornos.
-- El generador C crea y libera entornos en bloques, y emite limpieza explícita antes de los saltos `break` y `continue`. La salida normal del bloque también libera el entorno. El backend no dispone de una ruta de limpieza para errores: `hl_fail` termina el proceso con `exit(1)`.
+- `Region::track<T>` registra valores Rust en un vector; `Region::restore` extrae y destruye los registros posteriores a la marca en orden LIFO. Este prototipo todavía no ofrece handles estables, cancelación ni transferencia de registros.
+- `HlEnv` mantiene una lista enlazada de registros C con callback y contexto. `hl_env_free` ejecuta los callbacks en orden LIFO; las asignaciones ordinarias usan el mismo mecanismo mediante un callback que llama a `free`.
+- El generador C crea y libera entornos en bloques, y emite limpieza explícita antes de los saltos `break` y `continue`. La salida normal del bloque también libera el entorno. `hl_fail` limpia la cadena de entornos activos antes de terminar con `exit(1)`; sigue siendo un error fatal, no una excepción recuperable.
 
-Por tanto, no debe confundirse el orden LIFO de liberación de bloques C con un sistema de destructores, ni el prototipo `Region` con el runtime de HackLang. Ninguno de los dos está conectado todavía al `OwnershipLedger`.
+Por tanto, el runtime C ya tiene un registro genérico de callbacks, pero el prototipo `Region` y el `OwnershipLedger` no están conectados a él ni existe todavía paridad de ciclo de vida entre backends.
 
 #### Contrato común propuesto
 
@@ -547,10 +547,10 @@ El ledger seguirá siendo el verificador del estado lógico; no será por sí mi
 La implementación se hará por etapas verificables:
 
 - Primero, definir un registro/stack de limpieza con identidad estable, desactivación y transferencia, y probar orden LIFO, transferencia y doble consumo en Rust.
-- Después, conectar ese contrato al runtime C. Los callbacks deberán ejecutarse antes de liberar los bloques que puedan necesitar.
+- El runtime C ya implementa el registro genérico. Su transferencia solo permite mover un registro desde un entorno a uno de sus ancestros: el runtime puede demostrar esa relación léxica, pero no vidas arbitrarias. La prueba verifica también que una transferencia inversa hacia un ámbito más corto se rechaza sin perder el registro.
 - Sustituir la terminación directa de `hl_fail` por propagación estructurada del error y limpieza de los entornos activos. No se añadirá un `longjmp` improvisado: debe preservarse el estado de los saltos generados y evitar saltarse destructores.
 - Finalmente, generar y probar los mismos casos de salida en ambos backends: salida normal, anidamiento, `return`, `break`, `continue`, error y transferencia/promoción.
 
-**Avance parcial en runtime C:** `HlAllocation` se ha convertido en un registro genérico de limpieza con callback y contexto. Las asignaciones ordinarias se registran mediante `hl_env_defer` usando un callback que libera su bloque; por tanto, la liberación de memoria y los futuros destructores comparten una sola pila LIFO. Se exponen además `hl_env_transfer`, que mueve un registro existente entre entornos, y `hl_env_cancel`, que lo retira sin ejecutar el callback cuando el llamador ya ha resuelto la propiedad. `hl_env_free` consume la pila y ejecuta cada callback antes de liberar su nodo. El generador incluye una prueba estructural de que esta API forma parte del runtime emitido. Además, una prueba nativa compila y ejecuta el runtime C aislado: verifica el orden LIFO, la transferencia del mismo registro entre dos entornos y la cancelación sin ejecutar el callback.
+**Avance parcial en runtime C:** `HlAllocation` se ha convertido en un registro genérico de limpieza con callback y contexto. Las asignaciones ordinarias se registran mediante `hl_env_defer` usando un callback que libera su bloque; por tanto, la liberación de memoria y los futuros destructores comparten una sola pila LIFO. Se exponen además `hl_env_transfer`, que mueve un registro existente desde un entorno a un ancestro (y rechaza transferencias a vidas más cortas), y `hl_env_cancel`, que lo retira sin ejecutar el callback cuando el llamador ya ha resuelto la propiedad. `hl_env_free` consume la pila y ejecuta cada callback antes de liberar su nodo. El generador incluye una prueba estructural de que esta API forma parte del runtime emitido. Además, una prueba nativa compila y ejecuta el runtime C aislado: verifica el orden LIFO, la transferencia del mismo registro entre dos entornos y la cancelación sin ejecutar el callback.
 
 **Avance en errores del runtime C:** `hl_fail` recibe ahora el entorno activo y recorre su cadena de padres, liberando cada entorno y ejecutando sus callbacks LIFO antes de terminar el proceso con código 1. La prueba nativa fuerza un error en un entorno hijo y utiliza un handler de salida para verificar que se limpiaron hijo y padre, en el orden esperado, antes de finalizar. Esto resuelve la limpieza de errores fatales del subconjunto C actual; no introduce excepciones recuperables ni propagación de errores al lenguaje.

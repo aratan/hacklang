@@ -549,10 +549,10 @@ pub fn plan(program: &Program) -> MemoryPlan {
             match &statement.kind {
                 StmtKind::Let { binding, value } => {
                     let scope = program.bindings[binding.0 as usize].scope;
-                    let class = match is_dynamic_string(value, result) {
-                        Some(false) => StorageClass::Inline,
-                        Some(true) => StorageClass::ScopeRegion(scope),
-                        None => StorageClass::OwnedRegion,
+                    let class = match (&value.kind, is_dynamic_string(value, result)) {
+                        (_, Some(false)) => StorageClass::Inline,
+                        (ExprKind::Read(_), Some(true)) | (_, None) => StorageClass::OwnedRegion,
+                        (_, Some(true)) => StorageClass::ScopeRegion(scope),
                     };
                     result.insert(*binding, class);
                 }
@@ -938,6 +938,46 @@ mod tests {
         let memory = plan(&p);
         assert_eq!(memory.binding_slots[&BindingId(0)].slot, memory.binding_slots[&BindingId(1)].slot);
         assert!(!memory.interference[&BindingId(0)].contains(&BindingId(1)));
+    }
+
+    #[test]
+    fn binary_concatenation_propagates_dynamic_source_binding() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "source".into(), value: A::StringLiteral("prefix".into()) }),
+            S::Let(LetStatement { name: "result".into(), value: A::Infix {
+                left: Box::new(A::Identifier("source".into())),
+                operator: crate::lexer::Token::Plus,
+                right: Box::new(A::StringLiteral("suffix".into())),
+            }}),
+        ]);
+        let memory = plan(&p);
+        assert_eq!(memory.bindings[&BindingId(1)], StorageClass::ScopeRegion(ScopeId(0)));
+    }
+
+    #[test]
+    fn ternary_propagates_dynamic_and_scalar_binding_facts() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "text".into(), value: A::StringLiteral("dynamic".into()) }),
+            S::Let(LetStatement { name: "number".into(), value: A::NumberLiteral(1.0) }),
+            S::Let(LetStatement { name: "choice".into(), value: A::Ternary {
+                condition: Box::new(A::BoolLiteral(true)),
+                true_branch: Box::new(A::Identifier("text".into())),
+                false_branch: Box::new(A::Identifier("number".into())),
+            }}),
+        ]);
+        let memory = plan(&p);
+        assert_eq!(memory.bindings[&BindingId(1)], StorageClass::Inline);
+        assert_eq!(memory.bindings[&BindingId(2)], StorageClass::ScopeRegion(ScopeId(0)));
+    }
+
+    #[test]
+    fn scalar_read_does_not_force_owned_storage() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "source".into(), value: A::NumberLiteral(4.0) }),
+            S::Let(LetStatement { name: "copy".into(), value: A::Identifier("source".into()) }),
+        ]);
+        let memory = plan(&p);
+        assert_eq!(memory.bindings[&BindingId(1)], StorageClass::Inline);
     }
 
 }

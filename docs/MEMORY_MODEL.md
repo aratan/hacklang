@@ -561,3 +561,13 @@ La implementación se hará por etapas verificables:
 **Avance parcial en runtime C:** `HlAllocation` se ha convertido en un registro genérico de limpieza con callback y contexto. Las asignaciones ordinarias se registran mediante `hl_env_defer` usando un callback que libera su bloque; por tanto, la liberación de memoria y los futuros destructores comparten una sola pila LIFO. Se exponen además `hl_env_transfer`, que mueve un registro existente desde un entorno a un ancestro (y rechaza transferencias a vidas más cortas), y `hl_env_cancel`, que lo retira sin ejecutar el callback cuando el llamador ya ha resuelto la propiedad. `hl_env_free` consume la pila y ejecuta cada callback antes de liberar su nodo. El generador incluye una prueba estructural de que esta API forma parte del runtime emitido. Además, una prueba nativa compila y ejecuta el runtime C aislado: verifica el orden LIFO, la transferencia del mismo registro entre dos entornos y la cancelación sin ejecutar el callback.
 
 **Avance en errores del runtime C:** `hl_fail` recibe ahora el entorno activo y recorre su cadena de padres, liberando cada entorno y ejecutando sus callbacks LIFO antes de terminar el proceso con código 1. La prueba nativa fuerza un error en un entorno hijo y utiliza un handler de salida para verificar que se limpiaron hijo y padre, en el orden esperado, antes de finalizar. Esto resuelve la limpieza de errores fatales del subconjunto C actual; no introduce excepciones recuperables ni propagación de errores al lenguaje.
+
+
+### Arenas bump por entorno léxico (runtime C)
+
+- El runtime C incorpora bloques `HlArenaBlock` por `HlEnv` y asignación bump alineada a `max_align_t`.
+- Las asignaciones ordinarias de strings y bindings consumen el bloque actual; si no cabe el objeto, se reserva otro bloque (mínimo 4096 bytes o el tamaño solicitado).
+- Al cerrar el entorno se ejecutan primero los finalizadores explícitos LIFO y después se liberan todos sus bloques de arena.
+- El registro `hl_env_defer` se conserva separado para recursos con finalizador; ya no se crea una entrada de limpieza por cada asignación interna de la arena.
+- La promoción entre ámbitos sigue siendo conservadora por copia al entorno propietario del binding. No se transfieren punteros entre arenas.
+- Esto implementa arenas regionales bump en el runtime C para el subconjunto actual. El `MemoryPlan` todavía no elige físicamente slots ni clases de arena; tampoco se ha implementado un frame allocator basado en esos slots.

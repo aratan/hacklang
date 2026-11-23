@@ -38,7 +38,7 @@ pub fn compile_to_executable(
     let hir = crate::hir::lower(program)
         .map_err(|error| format!("No se pudo construir HIR: {error}"))?;
     // Plan conservador: ningún valor se acorta de vida si el análisis no lo demuestra.
-    let _memory_plan = crate::memory::plan(&hir);
+    let memory_plan = crate::memory::plan(&hir);
     let source_absolute = source_path.canonicalize()
         .map_err(|error| format!("No se pudo resolver el archivo fuente: {error}"))?;
     let output = requested_output
@@ -56,7 +56,7 @@ pub fn compile_to_executable(
         return Err(format!("El destino '{}' ya existe; no se sobrescribirá", output.display()));
     }
 
-    let c_source = crate::hir_native::generate_c(&hir)?;
+    let c_source = crate::hir_native::generate_c(&hir, &memory_plan)?;
     let compiler = select_c_compiler()?;
     let temporary = temporary_directory()?;
     let c_file = temporary.join("program.c");

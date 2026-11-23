@@ -1074,7 +1074,7 @@ int main(void) {
         let c_file = directory.join("array_clone.c");
         let executable = directory.join("array_clone");
         let source = format!(
-            "{}\\n{}",
+            "{}\n{}",
             include_str!("native_runtime.c"),
             r#"
 int main(void) {

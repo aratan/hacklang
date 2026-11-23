@@ -112,10 +112,10 @@ fn arrays_promoted_from_child_scopes_match_interpreter() {
         "array_scope_promotion",
         r#"
 let result = [[0, 0]];
-if (true) {
+if (true) (
     let temporary = [[7, 8], [9, 10]];
     result = temporary;
-}
+)
 print result[0][0];
 print result[0][1];
 print result[1][0];
@@ -131,10 +131,10 @@ fn array_reads_inside_loop_match_interpreter() {
         r#"
 let values = [4, 5, 6];
 let index = 0;
-while (index < 3) {
+while (index < 3) (
     print values[index];
     index = index + 1;
-}
+)
 "#,
     );
 }

@@ -243,7 +243,7 @@ fn invalid_array_read_indices_match_interpreter_error_classification() {
 fn invalid_nested_array_intermediate_matches_interpreter_error_classification() {
     assert_interpreter_native_failure(
         "nested_array_write_non_array_intermediate",
-        "let matrix = [1, 2];\\nmatrix[0][1] = 7;\\n",
+        "let matrix = [1, 2];\nmatrix[0][1] = 7;\n",
         "no se puede",
     );
 }

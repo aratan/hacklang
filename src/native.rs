@@ -543,6 +543,52 @@ int main(void) {
     }
 
     #[test]
+    fn c_runtime_failure_rewinds_active_physical_lanes() {
+        let directory = temporary_directory().expect("temporary directory");
+        let c_file = directory.join("lane_failure.c");
+        let executable = directory.join("lane_failure");
+        let source = format!(
+            "{}\n{}",
+            include_str!("native_runtime.c"),
+            r#"
+static HlArenaLane failed_outer_lane = {0};
+static HlArenaLane failed_inner_lane = {0};
+static void verify_failed_lane_rewind(void) {
+    int outer_ok = failed_outer_lane.blocks
+        && failed_outer_lane.current == failed_outer_lane.blocks
+        && failed_outer_lane.blocks->used == 0;
+    int inner_ok = failed_inner_lane.blocks
+        && failed_inner_lane.current == failed_inner_lane.blocks
+        && failed_inner_lane.blocks->used == 0;
+    _Exit(outer_ok && inner_ok ? 0 : 90);
+}
+int main(void) {
+    atexit(verify_failed_lane_rewind);
+    HlEnv *root = hl_env_new(NULL);
+    HlEnv *outer = hl_env_new_in_lane(root, &failed_outer_lane);
+    (void)hl_copy_string(outer, "outer");
+    HlEnv *inner = hl_env_new_in_lane(outer, &failed_inner_lane);
+    (void)hl_copy_string(inner, "inner");
+    hl_fail(inner, "forced physical lane failure");
+    return 99;
+}
+"#
+        );
+        fs::write(&c_file, source).expect("write lane failure test");
+        let compiler = select_c_compiler().expect("C compiler");
+        let build = Command::new(&compiler).arg("-std=c11").arg("-O2")
+            .arg(&c_file).arg("-o").arg(&executable).arg("-lm")
+            .output().expect("compile lane failure test");
+        assert!(build.status.success(), "lane failure test compilation failed: {}",
+            String::from_utf8_lossy(&build.stderr));
+        let run = Command::new(&executable).output().expect("run lane failure test");
+        assert!(run.status.success(), "runtime error did not rewind active lanes: {:?}, stderr: {}",
+            run.status.code(), String::from_utf8_lossy(&run.stderr));
+        assert!(String::from_utf8_lossy(&run.stderr).contains("forced physical lane failure"));
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn c_runtime_failure_cleans_the_entire_active_environment_chain() {
         let directory = temporary_directory().expect("temporary directory");
         let c_file = directory.join("cleanup_failure.c");

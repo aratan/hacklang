@@ -714,6 +714,15 @@ fn collect_operations(
 /// Validate physical slot metadata before a backend consumes it.
 /// This proves planner consistency only; it does not allocate runtime memory.
 pub fn validate_slot_plan(program: &Program, plan: &MemoryPlan) -> Result<(), String> {
+    // The interference graph is the safety proof behind physical slot reuse.
+    // Reject incomplete or asymmetric metadata instead of silently treating a
+    // missing neighbor as non-interfering.
+    if plan.binding_slots.len() != plan.interference.len()
+        || plan.binding_slots.keys().any(|binding| !plan.interference.contains_key(binding))
+    {
+        return Err("Asignaciones de slots inconsistentes con el grafo de interferencias".into());
+    }
+
     for (binding, neighbors) in &plan.interference {
         let slot = plan.binding_slots.get(binding)
             .ok_or_else(|| format!("MemoryPlan sin slot para BindingId {}", binding.0))?;
@@ -725,10 +734,18 @@ pub fn validate_slot_plan(program: &Program, plan: &MemoryPlan) -> Result<(), St
             return Err(format!("Pila incorrecta para BindingId {}", binding.0));
         }
         for neighbor in neighbors {
-            if let Some(other) = plan.binding_slots.get(neighbor) {
-                if slot.stack == other.stack && slot.slot == other.slot {
-                    return Err(format!("Slots solapados para bindings {} y {}", binding.0, neighbor.0));
-                }
+            if neighbor == binding {
+                return Err(format!("Auto-interferencia inválida para BindingId {}", binding.0));
+            }
+            let other_neighbors = plan.interference.get(neighbor)
+                .ok_or_else(|| format!("Vecino desconocido {} en el grafo de interferencias", neighbor.0))?;
+            if !other_neighbors.contains(binding) {
+                return Err(format!("Arista de interferencia asimétrica entre {} y {}", binding.0, neighbor.0));
+            }
+            let other = plan.binding_slots.get(neighbor)
+                .ok_or_else(|| format!("MemoryPlan sin slot para vecino BindingId {}", neighbor.0))?;
+            if slot.stack == other.stack && slot.slot == other.slot {
+                return Err(format!("Slots solapados para bindings {} y {}", binding.0, neighbor.0));
             }
         }
     }
@@ -878,6 +895,35 @@ mod tests {
         *corrupted.stack_slot_counts.get_mut(&stack).unwrap() += 1;
         assert!(validate_slot_plan(&p, &corrupted)
             .unwrap_err().contains("Conteos de slots inconsistentes"));
+    }
+
+    #[test]
+    fn slot_plan_validator_rejects_missing_slot_for_interference_neighbor() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "left".into(), value: A::NumberLiteral(1.0) }),
+            S::Let(LetStatement { name: "right".into(), value: A::NumberLiteral(2.0) }),
+            S::Print(PrintStatement { value: A::Identifier("left".into()) }),
+            S::Print(PrintStatement { value: A::Identifier("right".into()) }),
+        ]);
+        let mut memory = plan(&p);
+        assert!(memory.interference[&BindingId(0)].contains(&BindingId(1)));
+        memory.binding_slots.remove(&BindingId(1));
+        assert!(validate_slot_plan(&p, &memory)
+            .unwrap_err().contains("Asignaciones de slots inconsistentes"));
+    }
+
+    #[test]
+    fn slot_plan_validator_rejects_asymmetric_interference_edges() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "left".into(), value: A::NumberLiteral(1.0) }),
+            S::Let(LetStatement { name: "right".into(), value: A::NumberLiteral(2.0) }),
+            S::Print(PrintStatement { value: A::Identifier("left".into()) }),
+            S::Print(PrintStatement { value: A::Identifier("right".into()) }),
+        ]);
+        let mut memory = plan(&p);
+        memory.interference.get_mut(&BindingId(1)).unwrap().remove(&BindingId(0));
+        assert!(validate_slot_plan(&p, &memory)
+            .unwrap_err().contains("Arista de interferencia asimétrica"));
     }
 
     #[test]

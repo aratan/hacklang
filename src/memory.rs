@@ -792,6 +792,20 @@ pub fn validate_memory_operations(program: &Program, plan: &MemoryPlan) -> Resul
         if operation.source_owner != expected_source_owner {
             return Err(format!("propietario origen incoherente en promoción StmtId {}", operation.statement.0));
         }
+        match (operation.source, operation.origin) {
+            (Some(source), ValueOrigin::Binding(origin)) if source == origin => {}
+            (Some(_), _) => return Err(format!("origen de valor incoherente en promoción StmtId {}", operation.statement.0)),
+            (None, ValueOrigin::Binding(_)) => return Err(format!("origen de binding inesperado en promoción StmtId {}", operation.statement.0)),
+            (None, _) => {}
+        }
+        let expected_reason = if operation.source.is_some() {
+            PromotionReason::ReadFromShorterLivedBinding
+        } else {
+            PromotionReason::AssignedToLongerLivedBinding
+        };
+        if operation.reason != expected_reason {
+            return Err(format!("motivo de promoción incoherente en StmtId {}", operation.statement.0));
+        }
     }
     Ok(())
 }
@@ -1340,6 +1354,20 @@ mod tests {
         memory.operations[0].source_owner = StorageOwner::Unknown;
         assert!(validate_memory_operations(&p, &memory)
             .unwrap_err().contains("propietario origen incoherente"));
+    }
+
+    #[test]
+    fn promotion_validation_rejects_origin_that_disagrees_with_source_binding() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "outer".into(), value: A::StringLiteral("initial".into()) }),
+            S::Block(vec![S::Assign(crate::ast::AssignStatement {
+                name: "outer".into(), value: A::StringLiteral("inner".into()),
+            })]),
+        ]);
+        let mut memory = plan(&p);
+        memory.operations[0].origin = ValueOrigin::Binding(BindingId(999));
+        assert!(validate_memory_operations(&p, &memory)
+            .unwrap_err().contains("origen de binding inesperado"));
     }
 
     #[test]

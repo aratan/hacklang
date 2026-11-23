@@ -94,6 +94,18 @@ static void hl_fail(HlEnv *environment, const char *message) {
     exit(1);
 }
 
+static HlValue hl_frame_read_or_fail(HlEnv *env, const HlFrame *frame, size_t slot) {
+    HlValue value;
+    if (!hl_frame_read(frame, slot, &value))
+        hl_fail(env, "lectura de slot de frame no inicializado o fuera de rango");
+    return value;
+}
+
+static void hl_frame_write_or_fail(HlEnv *env, HlFrame *frame, size_t slot, HlValue value) {
+    if (!hl_frame_write(frame, slot, value))
+        hl_fail(env, "escritura de slot de frame fuera de rango");
+}
+
 /* Register one cleanup action. The returned handle remains stable until
  * cancellation, transfer, or execution by hl_env_free. */
 HlAllocation *hl_env_defer(HlEnv *environment, HlCleanupFn cleanup, void *context) {

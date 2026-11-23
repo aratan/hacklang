@@ -374,9 +374,9 @@ mod tests {
             if matches!(&items[1].kind, ExprKind::Map(entries) if entries.len() == 1)));
         assert!(matches!(&hir.statements[1].kind, StmtKind::IndexAssign {
             binding: BindingId(0),
-            indices: vec![Expression { kind: ExprKind::Number(0.0), .. }],
+            indices,
             value: Expression { kind: ExprKind::Number(2.0), .. },
-        }));
+        } if indices.len() == 1 && matches!(&indices[0].kind, ExprKind::Number(0.0))));
     }
 
     #[test]

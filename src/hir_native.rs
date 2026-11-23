@@ -166,6 +166,19 @@ mod tests {
     }
 
     #[test]
+    fn generated_runtime_uses_aligned_bump_arenas_per_environment() {
+        let ast = AstProgram { statements: vec![] };
+        let lowered = hir::lower(&ast).unwrap();
+        let memory = crate::memory::plan(&lowered);
+        let c = generate_c(&lowered, &memory).unwrap();
+        assert!(c.contains("typedef struct HlArenaBlock"));
+        assert!(c.contains("_Alignof(max_align_t)"));
+        assert!(c.contains("environment->arena = block"));
+        assert!(c.contains("free(block);"));
+        assert!(!c.contains("hl_env_defer(environment, hl_cleanup_free"));
+    }
+
+    #[test]
     fn generated_c_consumes_memory_plan_binding_classes() {
         let ast = AstProgram { statements: vec![
             AstStmt::Let(LetStatement { name: "n".into(), value: crate::ast::Expression::NumberLiteral(2.0) }),

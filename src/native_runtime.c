@@ -15,6 +15,7 @@ typedef struct HlMap HlMap;
 typedef struct HlMapEntry HlMapEntry;
 typedef enum { HL_NUMBER, HL_BOOL, HL_STRING, HL_ARRAY, HL_MAP } HlTag;
 typedef enum { HL_STORAGE_SCOPE, HL_STORAGE_OWNED } HlStorageClass;
+static int hl_is_aggregate_tag(HlTag tag) { return tag == HL_ARRAY || tag == HL_MAP; }
 typedef struct {
     HlTag tag;
     union { double number; int boolean; const char *string; HlArray *array; HlMap *map; } as;
@@ -524,14 +525,14 @@ static void hl_release_binding_resource(HlBinding *binding, const char *error_me
 }
 
 static HlValue hl_store_value(HlBinding *binding, HlValue value, HlStorageClass storage) {
-    if (value.tag == HL_ARRAY) {
+    if (hl_is_aggregate_tag(value.tag)) {
         if (binding->value.tag == HL_STRING && binding->ownership_token) {
             hl_release_binding_resource(binding, "no se pudo liberar la propiedad anterior de cadena");
         }
 
         HlValue stored;
         if (storage == HL_STORAGE_OWNED) {
-            if (binding->value.tag == HL_ARRAY && binding->ownership_token) {
+            if (hl_is_aggregate_tag(binding->value.tag) && binding->ownership_token) {
                 binding->value.tag = HL_NUMBER;
                 binding->value.as.number = 0.0;
                 hl_lane_destroy(&binding->aggregate_lane);

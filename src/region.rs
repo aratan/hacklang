@@ -85,10 +85,9 @@ impl Region {
         Ok(start..end)
     }
 
-    /// Store an owned value whose destructor must run when this region is
-    /// restored or dropped. This models deterministic finalizer ordering.
     /// Register an owned value with a stable identity. Its destructor runs
-    /// exactly once when canceled ownership is returned, restored, or dropped.
+    /// exactly once when the owning region is restored or dropped, unless the
+    /// registration is transferred to another region.
     pub fn track<T: Any>(&mut self, value: T) -> RegionFinalizerId {
         let id = RegionFinalizerId(NEXT_FINALIZER_ID.fetch_add(1, Ordering::Relaxed));
         self.track_box(id, Box::new(value));

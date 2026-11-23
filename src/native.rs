@@ -869,8 +869,10 @@ int main(void) {
 
     hl_assign_planned(env, "value", hl_number(7.0), HL_STORAGE_OWNED);
     if (binding->string_storage || binding->string_capacity != 0) return 4;
+    hl_assign_planned(env, "value", hl_string(env, "scoped"), HL_STORAGE_SCOPE);
+    if (binding->string_storage || binding->string_cleanup != registration) return 5;
     hl_assign_planned(env, "value", hl_string(env, "again"), HL_STORAGE_OWNED);
-    if (!binding->string_storage || binding->string_cleanup != registration) return 5;
+    if (!binding->string_storage || binding->string_cleanup != registration) return 6;
 
     hl_env_free(env);
     return 0;

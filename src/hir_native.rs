@@ -218,6 +218,22 @@ mod tests {
     }
 
     #[test]
+    fn generated_c_uses_memory_plan_slots_for_inline_bindings() {
+        let ast = AstProgram { statements: vec![
+            AstStmt::Let(LetStatement { name: "x".into(), value: crate::ast::Expression::NumberLiteral(7.0) }),
+            AstStmt::Print(PrintStatement { value: crate::ast::Expression::Identifier("x".into()) }),
+        ]};
+        let lowered = hir::lower(&ast).unwrap();
+        let memory = crate::memory::plan(&lowered);
+        let c = generate_c(&lowered, &memory).unwrap();
+        assert!(c.contains("HlFrameSlot frame_slots["));
+        assert!(c.contains("hl_frame_write_or_fail(env, &frame,"));
+        assert!(c.contains("hl_frame_read_or_fail(env, &frame,"));
+        assert!(!c.contains("hl_define(env, \"x\""));
+        assert!(!c.contains("hl_get(env, \"x\""));
+    }
+
+    #[test]
     fn generated_c_emits_physical_slot_assignments() {
         let ast = AstProgram { statements: vec![
             AstStmt::Let(LetStatement { name: "n".into(), value: crate::ast::Expression::NumberLiteral(2.0) }),
@@ -264,7 +280,7 @@ mod tests {
         let lowered = hir::lower(&ast).unwrap();
         let memory = crate::memory::plan(&lowered);
         let c = generate_c(&lowered, &memory).unwrap();
-        assert!(c.contains("hl_define(env, \"x\""));
-        assert!(c.contains("hl_get(env, \"x\""));
+        assert!(c.contains("hl_frame_write_or_fail(env, &frame,"));
+        assert!(c.contains("hl_frame_read_or_fail(env, &frame,"));
     }
 }

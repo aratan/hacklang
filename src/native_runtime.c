@@ -417,6 +417,15 @@ static HlBinding *hl_find(HlEnv *environment, const char *name) {
  * avoiding one permanent arena allocation per reassignment. Copy through a
  * temporary first because the input may alias this binding's current buffer. */
 static HlValue hl_store_value(HlBinding *binding, HlValue value, HlStorageClass storage) {
+    if (value.tag == HL_ARRAY) {
+        /* Aggregate graphs live in the binding owner's lane. A value read in
+         * a child scope is therefore copied before that scope can rewind. */
+        HlValue stored = hl_clone_value(binding->owner, value);
+        free(binding->string_storage);
+        binding->string_storage = NULL;
+        binding->string_capacity = 0;
+        return stored;
+    }
     if (value.tag != HL_STRING) {
         free(binding->string_storage);
         binding->string_storage = NULL;
@@ -513,6 +522,10 @@ static HlValue hl_get(HlEnv *environment, const char *name) {
         snprintf(message, sizeof(message), "Variable '%s' no definida", name);
         hl_fail(environment, message);
     }
+    /* Arrays have value semantics: each read receives an independent
+     * graph allocated in the current activation's lane. */
+    if (item->value.tag == HL_ARRAY)
+        return hl_clone_value(environment, item->value);
     return item->value;
 }
 static int hl_truthy(HlValue value) {

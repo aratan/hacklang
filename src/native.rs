@@ -847,6 +847,55 @@ int main(void) {
     }
 
     #[test]
+    fn promoted_string_copy_survives_source_region_release() {
+        let directory = temporary_directory().expect("temporary directory");
+        let c_file = directory.join("promoted_string_copy.c");
+        let executable = directory.join("promoted_string_copy");
+        let source = format!(
+            "{}\\n{}",
+            include_str!("native_runtime.c"),
+            r#"
+int main(void) {
+    HlEnv *outer = hl_env_new(NULL);
+    hl_define_planned(outer, "destination", hl_string(outer, "initial"), HL_STORAGE_OWNED);
+    HlEnv *inner = hl_env_new(outer);
+    hl_define_planned(inner, "source", hl_string(inner, "survives-region"), HL_STORAGE_SCOPE);
+
+    hl_assign_promoted_copy(outer, "destination", hl_get(inner, "source"));
+    if (strcmp(hl_get(outer, "destination").as.string, "survives-region") != 0) return 1;
+    hl_env_free(inner);
+
+    if (strcmp(hl_get(outer, "destination").as.string, "survives-region") != 0) return 2;
+    hl_assign_planned(outer, "destination", hl_string(outer, "replacement"), HL_STORAGE_OWNED);
+    if (strcmp(hl_get(outer, "destination").as.string, "replacement") != 0) return 3;
+    hl_env_free(outer);
+    return 0;
+}
+"#
+        );
+        fs::write(&c_file, source).expect("write promoted string copy test");
+        let compiler = select_c_compiler().expect("C compiler");
+        let build = Command::new(&compiler)
+            .arg("-std=c11")
+            .arg("-O1")
+            .arg("-g")
+            .arg("-fsanitize=address,undefined")
+            .arg("-fno-omit-frame-pointer")
+            .arg(&c_file)
+            .arg("-o")
+            .arg(&executable)
+            .arg("-lm")
+            .output()
+            .expect("compile promoted string copy test with sanitizers");
+        assert!(build.status.success(), "sanitized promotion test compilation failed: {}",
+            String::from_utf8_lossy(&build.stderr));
+        let run = Command::new(&executable).output().expect("run sanitized promotion test");
+        assert!(run.status.success(), "promotion test failed: {}",
+            String::from_utf8_lossy(&run.stderr));
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn owned_binding_strings_register_one_environment_cleanup() {
         let directory = temporary_directory().expect("temporary directory");
         let c_file = directory.join("owned_binding_cleanup.c");

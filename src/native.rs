@@ -255,6 +255,67 @@ int main(void) {
     }
 
     #[test]
+    fn c_runtime_reuses_binding_string_storage_across_reassignment_and_self_assignment() {
+        let directory = temporary_directory().expect("temporary directory");
+        let c_file = directory.join("binding_string_storage.c");
+        let executable = directory.join("binding_string_storage");
+        let source = format!(
+            "{}\\n{}",
+            include_str!("native_runtime.c"),
+            r#"
+int main(void) {
+    HlEnv *outer = hl_env_new(NULL);
+    hl_define(outer, "value", hl_string(outer, "initial"));
+    HlBinding *binding = hl_find(outer, "value");
+    if (!binding || !binding->string_storage) return 10;
+
+    char *storage = NULL;
+    size_t capacity = 0;
+    for (int i = 0; i < 10000; ++i) {
+        char text[64];
+        snprintf(text, sizeof(text), "value-%08d", i);
+        HlEnv *iteration = hl_env_new(outer);
+        HlValue next = hl_string(iteration, text);
+        hl_assign(iteration, "value", next);
+        hl_env_free(iteration);
+
+        if (strcmp(hl_get(outer, "value").as.string, text) != 0) return 11;
+        if (i == 0) {
+            storage = binding->string_storage;
+            capacity = binding->string_capacity;
+        } else if (binding->string_storage != storage || binding->string_capacity != capacity) {
+            return 12;
+        }
+    }
+
+    HlValue current = hl_get(outer, "value");
+    hl_assign(outer, "value", current);
+    if (strcmp(hl_get(outer, "value").as.string, "value-00009999") != 0) return 13;
+    if (binding->string_storage != storage || binding->string_capacity != capacity) return 14;
+
+    hl_assign(outer, "value", hl_string(outer, "short"));
+    if (strcmp(hl_get(outer, "value").as.string, "short") != 0) return 15;
+    if (binding->string_storage != storage || binding->string_capacity != capacity) return 16;
+
+    hl_env_free(outer);
+    return 0;
+}
+"#
+        );
+        fs::write(&c_file, source).expect("write binding string storage test");
+        let compiler = select_c_compiler().expect("C compiler");
+        let build = Command::new(&compiler)
+            .arg("-std=c11").arg("-O2").arg(&c_file)
+            .arg("-o").arg(&executable).arg("-lm")
+            .output().expect("compile binding string storage test");
+        assert!(build.status.success(), "string storage test compilation failed: {}",
+            String::from_utf8_lossy(&build.stderr));
+        let run = Command::new(&executable).output().expect("run binding string storage test");
+        assert!(run.status.success(), "string storage test failed: {:?}", run.status.code());
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn c_runtime_failure_cleans_the_entire_active_environment_chain() {
         let directory = temporary_directory().expect("temporary directory");
         let c_file = directory.join("cleanup_failure.c");

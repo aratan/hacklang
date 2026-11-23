@@ -131,7 +131,7 @@ fn array_reads_inside_loop_match_interpreter() {
         r#"
 let values = [4, 5, 6];
 let index = 0;
-while index < 3 {
+while (index < 3) {
     print values[index];
     index = index + 1;
 }

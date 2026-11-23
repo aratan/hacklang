@@ -1333,9 +1333,11 @@ mod tests {
             S::Print(PrintStatement { value: A::Identifier("x".into()) }),
         ]);
         let cfg = &plan(&after_break).cfg;
-        let dead_write = cfg.blocks.iter().find(|block| block.defs.contains(&BindingId(0))
-            && !block.uses.contains(&BindingId(0)));
-        assert!(dead_write.is_none(), "statement after break must not create a reachable CFG block");
+        assert_eq!(
+            cfg.blocks.iter().filter(|block| block.defs.contains(&BindingId(0))).count(),
+            1,
+            "statement after break must not create a CFG definition"
+        );
 
         let after_continue = lower(vec![
             S::Let(LetStatement { name: "x".into(), value: A::NumberLiteral(1.0) }),
@@ -1349,9 +1351,11 @@ mod tests {
             S::Print(PrintStatement { value: A::Identifier("x".into()) }),
         ]);
         let cfg = &plan(&after_continue).cfg;
-        assert!(!cfg.blocks.iter().any(|block| block.defs.contains(&BindingId(0))
-            && !block.uses.contains(&BindingId(0))),
-            "statement after continue must not create a reachable CFG block");
+        assert_eq!(
+            cfg.blocks.iter().filter(|block| block.defs.contains(&BindingId(0))).count(),
+            1,
+            "statement after continue must not create a CFG definition"
+        );
     }
 
     #[test]

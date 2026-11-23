@@ -166,7 +166,7 @@ int main(void) {
         let c_file = directory.join("arena_runtime.c");
         let executable = directory.join("arena_runtime");
         let source = format!(
-            "{}\\n{}",
+            "{}\n{}",
             include_str!("native_runtime.c"),
             r#"
 int main(void) {

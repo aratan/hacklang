@@ -82,6 +82,8 @@ pub struct Evaluator {
     free_env_ids: Vec<usize>,
     current_env: usize,
     eval_depth: usize,
+    // Values held only by an in-progress call must remain visible to mark-and-sweep.
+    temporary_roots: Vec<Value>,
 }
 
 impl Evaluator {
@@ -91,6 +93,7 @@ impl Evaluator {
             free_env_ids: Vec::new(),
             current_env: 0,
             eval_depth: 0,
+            temporary_roots: Vec::new(),
         }
     }
 
@@ -126,6 +129,9 @@ impl Evaluator {
         let mut marked = vec![false; self.environments.len()];
         let mut pending = vec![0, self.current_env];
         if let Some(value) = temporary_root {
+            Self::mark_value(value, &mut pending);
+        }
+        for value in &self.temporary_roots {
             Self::mark_value(value, &mut pending);
         }
 
@@ -379,21 +385,31 @@ impl Evaluator {
                     }
                 }
                 let function = self.eval_expression(func)?;
-                let (params, body, captured_env) = match function {
-                    Value::Function { params, body, captured_env } => (params, body, captured_env),
-                    other => return Err(format!("El valor {:?} no es una función", other)),
-                };
-                if params.len() != args.len() {
-                    return Err(format!("La función esperaba {} argumentos y recibió {}", params.len(), args.len()));
-                }
-                let mut values = Vec::with_capacity(args.len());
-                for arg in args { values.push(self.eval_expression(arg)?); }
-                self.with_environment(captured_env, |this| {
-                    for (name, value) in params.iter().cloned().zip(values) {
-                        this.environments[this.current_env].values.insert(name, value);
+                let root_depth = self.temporary_roots.len();
+                self.temporary_roots.push(function.clone());
+                let result = (|| {
+                    let (params, body, captured_env) = match function {
+                        Value::Function { params, body, captured_env } => (params, body, captured_env),
+                        other => return Err(format!("El valor {:?} no es una función", other)),
+                    };
+                    if params.len() != args.len() {
+                        return Err(format!("La función esperaba {} argumentos y recibió {}", params.len(), args.len()));
                     }
-                    this.eval_expression(&body)
-                })
+                    let mut values = Vec::with_capacity(args.len());
+                    for arg in args {
+                        let value = self.eval_expression(arg)?;
+                        self.temporary_roots.push(value.clone());
+                        values.push(value);
+                    }
+                    self.with_environment(captured_env, |this| {
+                        for (name, value) in params.iter().cloned().zip(values) {
+                            this.environments[this.current_env].values.insert(name, value);
+                        }
+                        this.eval_expression(&body)
+                    })
+                })();
+                self.temporary_roots.truncate(root_depth);
+                result
             }
             Expression::Array(items) => {
                 let mut values = Vec::with_capacity(items.len());

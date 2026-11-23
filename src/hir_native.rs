@@ -496,7 +496,7 @@ mod tests {
         let c = generate_c(&lowered, &memory).unwrap();
         let main = c.split("int main(void) {").last().unwrap();
         assert!(main.contains("hl_array(env, (HlValue[]){"));
-        assert!(main.contains(r#"hl_index_assign_path(env, "items""#));
+        assert!(main.contains(r#"hl_index_assign(env, "items""#));
         assert!(main.contains("hl_index(env,"));
         assert!(!main.contains("la asignación por índice está representada"));
     }

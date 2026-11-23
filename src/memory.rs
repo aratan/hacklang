@@ -800,6 +800,33 @@ mod tests {
     fn lower(statements: Vec<S>) -> Program { hir::lower(&AP { statements }).unwrap() }
 
     #[test]
+    fn slot_plan_validator_accepts_planner_output_and_rejects_bad_counts() {
+        let p = lower(vec![S::Block(vec![S::Let(LetStatement {
+            name: "payload".into(), value: A::StringLiteral("value".into()),
+        })])]);
+        let memory = plan(&p);
+        assert_eq!(validate_slot_plan(&p, &memory), Ok(()));
+
+        let mut corrupted = memory.clone();
+        let stack = *corrupted.stack_slot_counts.keys().next().unwrap();
+        *corrupted.stack_slot_counts.get_mut(&stack).unwrap() += 1;
+        assert!(validate_slot_plan(&p, &corrupted)
+            .unwrap_err().contains("Conteos de slots inconsistentes"));
+    }
+
+    #[test]
+    fn slot_plan_validator_rejects_missing_interference_slot() {
+        let p = lower(vec![S::Block(vec![S::Let(LetStatement {
+            name: "payload".into(), value: A::StringLiteral("value".into()),
+        })])]);
+        let mut memory = plan(&p);
+        let binding = *memory.interference.keys().next().unwrap();
+        memory.binding_slots.remove(&binding);
+        assert!(validate_slot_plan(&p, &memory)
+            .unwrap_err().contains("sin slot para BindingId"));
+    }
+
+    #[test]
     fn sibling_scopes_reuse_a_stack_lane_but_nested_scopes_do_not() {
         let p = lower(vec![
             S::Block(vec![S::Let(LetStatement {

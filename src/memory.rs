@@ -1097,6 +1097,30 @@ mod tests {
 
     fn lower(statements: Vec<S>) -> Program { hir::lower(&AP { statements }).unwrap() }
 
+
+    #[test]
+    fn function_memory_plan_keeps_captured_parameters_in_activation_cells() {
+        let mut lexer = crate::lexer::Lexer::new(
+            "let global = 1; let factory = |x| |y| x + global + y;".to_string()
+        );
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = crate::parser::Parser::new(tokens);
+        let ast = parser.parse_program().unwrap();
+        let program = hir::lower(&ast).unwrap();
+        let memory = plan(&program);
+
+        let global = program.bindings.iter().find(|binding| binding.name == "global").unwrap().id;
+        let x = program.bindings.iter().find(|binding| binding.name == "x").unwrap().id;
+        let outer = program.functions[0].id;
+        let inner = program.functions[1].id;
+
+        assert_eq!(memory.bindings.get(&global), Some(&StorageClass::OwnedRegion));
+        let outer_plan = &memory.function_activations[&outer];
+        assert!(outer_plan.captured_cells.contains(&x));
+        assert_eq!(outer_plan.bindings.get(&x), Some(&StorageClass::OwnedRegion));
+        assert!(memory.function_activations.contains_key(&inner));
+    }
+
     #[test]
     fn ownership_sites_are_stable_and_only_assigned_to_owned_bindings() {
         let p = lower(vec![

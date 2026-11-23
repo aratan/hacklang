@@ -804,6 +804,9 @@ mod tests {
         assert_eq!(memory.operations.len(), 1);
         assert_eq!(memory.operations[0].kind, MemoryOperationKind::Promote);
         assert_eq!(memory.operations[0].source, None);
+        assert_eq!(memory.operations[0].origin, ValueOrigin::Computed);
+        assert_eq!(memory.operations[0].source_owner, StorageOwner::Scope(ScopeId(1)));
+        assert_eq!(memory.operations[0].destination_owner, StorageOwner::Binding(BindingId(1)));
     }
 
     #[test]

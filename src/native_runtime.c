@@ -15,8 +15,11 @@ typedef struct {
 } HlValue;
 
 typedef struct HlEnv HlEnv;
+typedef void (*HlCleanupFn)(void *);
+
 typedef struct HlAllocation {
-    void *memory;
+    HlCleanupFn cleanup;
+    void *context;
     struct HlAllocation *next;
 } HlAllocation;
 typedef struct HlBinding {
@@ -36,21 +39,66 @@ static void hl_fail(const char *message) {
     exit(1);
 }
 
+static void hl_cleanup_free(void *context) {
+    free(context);
+}
+
+/* Register one cleanup action. The returned handle remains stable until
+ * cancellation, transfer, or execution by hl_env_free. */
+HlAllocation *hl_env_defer(HlEnv *environment, HlCleanupFn cleanup, void *context) {
+    if (!environment || !cleanup) return NULL;
+    HlAllocation *entry = (HlAllocation *)malloc(sizeof(HlAllocation));
+    if (!entry) return NULL;
+    entry->cleanup = cleanup;
+    entry->context = context;
+    entry->next = environment->allocations;
+    environment->allocations = entry;
+    return entry;
+}
+
+static int hl_cleanup_detach(HlEnv *environment, HlAllocation *entry) {
+    if (!environment || !entry) return 0;
+    HlAllocation **cursor = &environment->allocations;
+    while (*cursor && *cursor != entry) cursor = &(*cursor)->next;
+    if (!*cursor) return 0;
+    *cursor = entry->next;
+    entry->next = NULL;
+    return 1;
+}
+
+/* Transfer an existing registration; never clone the cleanup action. */
+int hl_env_transfer(HlEnv *from, HlEnv *to, HlAllocation *entry) {
+    if (!from || !to || from == to || !hl_cleanup_detach(from, entry)) return 0;
+    entry->next = to->allocations;
+    to->allocations = entry;
+    return 1;
+}
+
+/* Cancel ownership without running the callback. The caller must already
+ * have handled or transferred the resource. */
+int hl_env_cancel(HlEnv *environment, HlAllocation *entry) {
+    if (!hl_cleanup_detach(environment, entry)) return 0;
+    free(entry);
+    return 1;
+}
+
 static void *hl_alloc(HlEnv *environment, size_t size) {
     void *memory = malloc(size ? size : 1);
-    HlAllocation *allocation = (HlAllocation *)malloc(sizeof(HlAllocation));
-    if (!memory || !allocation) hl_fail("memoria agotada");
-    allocation->memory = memory;
-    allocation->next = environment->allocations;
-    environment->allocations = allocation;
+    if (!memory) hl_fail("memoria agotada");
+    if (!hl_env_defer(environment, hl_cleanup_free, memory)) {
+        free(memory);
+        hl_fail("memoria agotada");
+    }
     return memory;
 }
+
 static void hl_env_free(HlEnv *environment) {
     if (!environment) return;
     HlAllocation *allocation = environment->allocations;
+    environment->allocations = NULL;
     while (allocation) {
         HlAllocation *next = allocation->next;
-        free(allocation->memory);
+        allocation->cleanup(allocation->context);
         free(allocation);
         allocation = next;
     }

@@ -66,7 +66,7 @@ fn main() {
     // --- FASE 3: ANÁLISIS ESTÁTICO (NO BLOQUEANTE) ---
     // Informa de incompatibilidades demostrables, pero no impide ejecutar
     // programas existentes ni sustituye las comprobaciones del runtime.
-    let diagnostics = type_checker::TypeChecker::check(&ast);
+    let diagnostics = type_checker::TypeChecker::check_with_file(&ast, Some(filename));
     if diagnostics_json {
         let items = diagnostics.iter().map(|diagnostic| diagnostic.to_json()).collect::<Vec<_>>();
         println!("[{}]", items.join(","));

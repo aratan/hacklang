@@ -1,4 +1,4 @@
-use crate::ast::{Expression as AstExpr, IndexAssignStatement, Program as AstProgram, Statement as AstStmt};
+use crate::ast::{Expression as AstExpr, Program as AstProgram, Statement as AstStmt};
 use crate::lexer::Token;
 use std::collections::HashMap;
 
@@ -345,4 +345,58 @@ mod tests {
         let StmtKind::Let { binding, .. } = &body[0].kind else { panic!("expected let"); };
         assert_eq!(hir.bindings[binding.0 as usize].scope, *scope);
     }
+
+    #[test]
+    fn lowers_nested_aggregates_and_index_assignment() {
+        let program = ast(vec![
+            AstStmt::Let(LetStatement {
+                name: "items".into(),
+                value: AstExpr::Array(vec![
+                    AstExpr::NumberLiteral(1.0),
+                    AstExpr::Map(vec![(
+                        AstExpr::StringLiteral("name".into()),
+                        AstExpr::StringLiteral("value".into()),
+                    )]),
+                ]),
+            }),
+            AstStmt::IndexAssign(crate::ast::IndexAssignStatement {
+                name: "items".into(),
+                index: AstExpr::NumberLiteral(0.0),
+                value: AstExpr::NumberLiteral(2.0),
+            }),
+        ]);
+        let hir = lower(&program).unwrap();
+        let StmtKind::Let { value, .. } = &hir.statements[0].kind else { panic!("expected let"); };
+        assert!(matches!(&value.kind, ExprKind::Array(items)
+            if matches!(&items[1].kind, ExprKind::Map(entries) if entries.len() == 1)));
+        assert!(matches!(&hir.statements[1].kind, StmtKind::IndexAssign {
+            binding: BindingId(0),
+            index: Expression { kind: ExprKind::Number(0.0), .. },
+            value: Expression { kind: ExprKind::Number(2.0), .. },
+        }));
+    }
+
+    #[test]
+    fn lowers_nested_index_reads() {
+        let program = ast(vec![
+            AstStmt::Let(LetStatement {
+                name: "items".into(),
+                value: AstExpr::Array(vec![AstExpr::Array(vec![AstExpr::NumberLiteral(7.0)])]),
+            }),
+            AstStmt::Print(crate::ast::PrintStatement {
+                value: AstExpr::Index {
+                    target: Box::new(AstExpr::Index {
+                        target: Box::new(AstExpr::Identifier("items".into())),
+                        index: Box::new(AstExpr::NumberLiteral(0.0)),
+                    }),
+                    index: Box::new(AstExpr::NumberLiteral(0.0)),
+                },
+            }),
+        ]);
+        let hir = lower(&program).unwrap();
+        let StmtKind::Print(value) = &hir.statements[1].kind else { panic!("expected print"); };
+        assert!(matches!(&value.kind, ExprKind::Index { target, index }
+            if matches!(&target.kind, ExprKind::Index { .. }) && matches!(&index.kind, ExprKind::Number(0.0))));
+    }
+
 }

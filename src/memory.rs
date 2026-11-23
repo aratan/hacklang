@@ -282,6 +282,7 @@ pub struct MemoryOperation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryPlan {
     pub bindings: HashMap<BindingId, StorageClass>,
+    /// Stable compiler-site identities for bindings that own dynamic resources.
     /// Stack assignments for scopes that own at least one scope-region value.
     /// This is planning metadata only; the current C runtime does not consume it.
     pub scope_stacks: HashMap<ScopeId, ScopeStackPlan>,
@@ -297,6 +298,7 @@ pub struct MemoryPlan {
     pub stack_slot_counts: HashMap<DataStackId, u32>,
     /// Proven lifetime extensions consumed by backend-specific promotion paths.
     pub operations: Vec<MemoryOperation>,
+    pub ownership_tokens: HashMap<BindingId, OwnershipTokenId>,
 }
 
 
@@ -950,7 +952,12 @@ pub fn plan(program: &Program) -> MemoryPlan {
         assign_binding_slots(&interference, &bindings, program, &scope_stacks);
     let mut operations = Vec::new();
     collect_operations(&program.statements, ScopeId(0), program, &bindings, &mut operations);
-    MemoryPlan { bindings, scope_stacks, usage, cfg, interference, binding_slots, stack_slot_counts, operations }
+    // Binding IDs are stable within this HIR program; zero is reserved for legacy fixtures.
+    let ownership_tokens = bindings.iter()
+        .filter_map(|(binding, class)| matches!(class, StorageClass::OwnedRegion)
+            .then_some((*binding, OwnershipTokenId(u64::from(binding.0) + 1))))
+        .collect();
+    MemoryPlan { bindings, scope_stacks, usage, cfg, interference, binding_slots, stack_slot_counts, operations, ownership_tokens }
 }
 
 #[cfg(test)]

@@ -1,5 +1,6 @@
 use crate::hir::{BinaryOp, ExprKind, Expression, Program, StmtKind, Statement};
 use crate::memory::{MemoryPlan, StorageClass};
+use std::collections::HashMap;
 
 #[derive(Default)]
 struct Generator {
@@ -8,6 +9,7 @@ struct Generator {
     loop_id: usize,
     scopes: Vec<String>,
     loops: Vec<(String, String, usize)>,
+    inline_slots: HashMap<crate::hir::BindingId, u32>,
 }
 
 impl Generator {
@@ -36,7 +38,10 @@ impl Generator {
             ExprKind::Number(_) => return Err("NaN e infinito no backend nativo aún no están soportados".into()),
             ExprKind::Bool(b) => format!("hl_bool({})", if *b { 1 } else { 0 }),
             ExprKind::String(s) => format!("hl_string(env, {})", Self::c_string(s)),
-            ExprKind::Read(id) => format!("hl_get(env, {})", Self::binding(p, *id)?),
+            ExprKind::Read(id) => match self.inline_slots.get(id) {
+                Some(slot) => format!("hl_frame_read_or_fail(env, &frame, {slot})"),
+                None => format!("hl_get(env, {})", Self::binding(p, *id)?),
+            },
             ExprKind::Binary { op, left, right } => {
                 let a = self.expr(p, left, out)?; let b = self.expr(p, right, out)?;
                 let f = match op { BinaryOp::Add=>"hl_add", BinaryOp::Sub=>"hl_sub", BinaryOp::Mul=>"hl_mul",
@@ -70,11 +75,19 @@ impl Generator {
         match &s.kind {
             StmtKind::Let { binding, value } => {
                 let v = self.expr(p, value, out)?;
-                Self::line(out, format!("hl_define(env, {}, {v});", Self::binding(p, *binding)?));
+                if let Some(slot) = self.inline_slots.get(binding) {
+                    Self::line(out, format!("hl_frame_write_or_fail(env, &frame, {slot}, {v});"));
+                } else {
+                    Self::line(out, format!("hl_define(env, {}, {v});", Self::binding(p, *binding)?));
+                }
             }
             StmtKind::Assign { binding, value } => {
                 let v = self.expr(p, value, out)?;
-                Self::line(out, format!("hl_assign(env, {}, {v});", Self::binding(p, *binding)?));
+                if let Some(slot) = self.inline_slots.get(binding) {
+                    Self::line(out, format!("hl_frame_write_or_fail(env, &frame, {slot}, {v});"));
+                } else {
+                    Self::line(out, format!("hl_assign(env, {}, {v});", Self::binding(p, *binding)?));
+                }
             }
             StmtKind::Print(e) => { let v = self.expr(p, e, out)?; Self::line(out, format!("hl_print({v});")); }
             StmtKind::Block { statements, .. } => self.block(p, statements, out)?,
@@ -127,7 +140,15 @@ pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, Stri
     }
     // Validate stack counts, stack ownership, and interference constraints before codegen.
     crate::memory::validate_slot_plan(program, memory)?;
-    let mut body = String::new(); let mut generator = Generator::default();
+    let layout = crate::memory::frame_layout(program, memory)?;
+    let inline_stack = crate::memory::DataStackId(u32::MAX);
+    let inline_count = layout.stacks.get(&inline_stack).map_or(0, |slots| slots.len());
+    let inline_slots: HashMap<_, _> = memory.binding_slots.iter()
+        .filter(|(_, assignment)| assignment.stack == inline_stack)
+        .map(|(binding, assignment)| (*binding, assignment.slot))
+        .collect();
+    let mut body = String::new();
+    let mut generator = Generator { inline_slots, ..Generator::default() };
     for stmt in &program.statements { generator.stmt(program, stmt, &mut body)?; }
     let mut source = include_str!("native_runtime.c").to_string();
     source.push_str("\n/* Compiler MemoryPlan (diagnostic metadata; runtime selection pending). */\n");
@@ -144,6 +165,11 @@ pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, Stri
         }
     }
     source.push_str("\nint main(void) {\n    HlEnv *env = hl_env_new(NULL);\n");
+    if inline_count > 0 {
+        source.push_str(&format!("    HlFrameSlot frame_slots[{inline_count}];\n    HlFrame frame;\n    hl_frame_init(&frame, frame_slots, {inline_count});\n"));
+    } else {
+        source.push_str("    HlFrame frame = { NULL, 0 };\n");
+    }
     source.push_str(&body); source.push_str("    hl_env_free(env);\n    return 0;\n}\n"); Ok(source)
 }
 

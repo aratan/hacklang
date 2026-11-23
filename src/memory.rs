@@ -495,7 +495,7 @@ fn collect_operations(
                 let source = match &value.kind { ExprKind::Read(source) => Some(*source), _ => None };
                 let dynamic = match source {
                     Some(source) => !matches!(bindings.get(&source), Some(StorageClass::Inline)),
-                    None => is_dynamic_string(value) == Some(true),
+                    None => is_dynamic_string(value) != Some(false),
                 };
                 let source_is_shorter = source.is_some_and(|id| {
                     let source_scope = program.bindings[id.0 as usize].scope;
@@ -737,6 +737,27 @@ mod tests {
         assert_eq!(decision.reason, PromotionReason::ReadFromShorterLivedBinding);
     }
 
+
+
+    #[test]
+    fn promotes_dynamic_expression_with_unknown_read_provenance_conservatively() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "source".into(), value: A::StringLiteral("prefix".into()) }),
+            S::Let(LetStatement { name: "target".into(), value: A::StringLiteral("initial".into()) }),
+            S::Block(vec![S::Assign(crate::ast::AssignStatement {
+                name: "target".into(),
+                value: A::Infix {
+                    left: Box::new(A::Identifier("source".into())),
+                    operator: crate::lexer::Token::Plus,
+                    right: Box::new(A::StringLiteral("suffix".into())),
+                },
+            })]),
+        ]);
+        let memory = plan(&p);
+        assert_eq!(memory.operations.len(), 1);
+        assert_eq!(memory.operations[0].kind, MemoryOperationKind::Promote);
+        assert_eq!(memory.operations[0].source, None);
+    }
 
     #[test]
     fn does_not_promote_value_read_from_an_outer_scope() {

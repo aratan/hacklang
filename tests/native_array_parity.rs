@@ -407,7 +407,7 @@ fn printing_nested_arrays_and_maps_matches_interpreter_debug_format() {
         "aggregate_debug_print",
         r#"
 let values = [1, "two", [3, 4]];
-let entries = @("name": "alpha", 2: [true, "line\\nfeed"]);
+let entries = @("name": "alpha", 2: [true, "line\nfeed"]);
 print values;
 print entries;
 "#,

@@ -345,10 +345,12 @@ fn build_cfg_sequence(
                 cfg.blocks[id as usize].defs.insert(*binding);
                 current.push(id);
             }
-            StmtKind::IndexAssign { binding, index, value } => {
+            StmtKind::IndexAssign { binding, indices, value } => {
                 let id = new_cfg_block(cfg);
                 for prev in current.drain(..) { add_edge(cfg, prev, id); }
-                expr_uses(index, &mut cfg.blocks[id as usize].uses);
+                for index in indices {
+                    expr_uses(index, &mut cfg.blocks[id as usize].uses);
+                }
                 expr_uses(value, &mut cfg.blocks[id as usize].uses);
                 cfg.blocks[id as usize].uses.insert(*binding);
                 cfg.blocks[id as usize].defs.insert(*binding);

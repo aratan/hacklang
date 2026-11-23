@@ -717,10 +717,10 @@ pub fn validate_slot_plan(program: &Program, plan: &MemoryPlan) -> Result<(), St
     // The interference graph is the safety proof behind physical slot reuse.
     // Reject incomplete or asymmetric metadata instead of silently treating a
     // missing neighbor as non-interfering.
-    if plan.binding_slots.len() != plan.interference.len()
-        || plan.binding_slots.keys().any(|binding| !plan.interference.contains_key(binding))
-    {
-        return Err("Asignaciones de slots inconsistentes con el grafo de interferencias".into());
+    for binding in plan.binding_slots.keys() {
+        if !plan.interference.contains_key(binding) {
+            return Err(format!("slot para BindingId inexistente {}", binding.0));
+        }
     }
 
     for (binding, neighbors) in &plan.interference {
@@ -909,7 +909,7 @@ mod tests {
         assert!(memory.interference[&BindingId(0)].contains(&BindingId(1)));
         memory.binding_slots.remove(&BindingId(1));
         assert!(validate_slot_plan(&p, &memory)
-            .unwrap_err().contains("Asignaciones de slots inconsistentes"));
+            .unwrap_err().contains("sin slot para vecino BindingId"));
     }
 
     #[test]

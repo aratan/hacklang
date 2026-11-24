@@ -14,6 +14,7 @@ struct Generator {
     ownership_sites: HashMap<crate::hir::BindingId, u64>,
     scope_lanes: HashMap<ScopeId, u32>,
     promotion_sites: HashMap<StmtId, (crate::hir::BindingId, u64)>,
+    function_return: Option<(String, String)>,
 }
 
 impl Generator {
@@ -85,7 +86,14 @@ impl Generator {
                 format!("hl_closure_new(env, UINT32_C({}), {}, {})",
                     function_id.0, captures, names.len())
             },
-            ExprKind::Call { .. } => return Err("Las llamadas ya están representadas en HIR, pero el runtime nativo aún no implementa invocación de funciones".into()),
+            ExprKind::Call { callee, args } => {
+                let callee = self.expr(p, callee, out)?;
+                let args = args.iter().map(|arg| self.expr(p, arg, out))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let values = if args.is_empty() { "NULL".to_string() }
+                    else { format!("(HlValue[]){{ {} }}", args.join(", ")) };
+                format!("hl_call(env, {callee}, {values}, {})", args.len())
+            },
             ExprKind::Map(items) => {
                 let mut entries = Vec::with_capacity(items.len());
                 for (key, value) in items {
@@ -216,7 +224,14 @@ impl Generator {
                 let (cond, _, depth) = self.loops.last().cloned().ok_or("continue fuera de bucle en HIR")?;
                 self.restore(out, depth); Self::line(out, format!("goto {cond};"));
             },
-            StmtKind::Return(_) => return Err("return está representado en HIR, pero el codegen de funciones nativas aún no está habilitado".into())
+            StmtKind::Return(value) => {
+                let (label, result) = self.function_return.clone()
+                    .ok_or("return fuera de una función durante codegen nativo")?;
+                let value = self.expr(p, value, out)?;
+                Self::line(out, format!("{result} = {value};"));
+                self.restore(out, 0);
+                Self::line(out, format!("goto {label};"));
+            }
         }
         Ok(())
     }

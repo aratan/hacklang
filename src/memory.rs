@@ -2273,9 +2273,9 @@ mod tests {
                     params: vec!["captured".into()],
                     body: Box::new(A::Lambda {
                         params: vec!["argument".into()],
-                        body: Box::new(A::Binary {
+                        body: Box::new(A::Infix {
                             left: Box::new(A::Identifier("captured".into())),
-                            op: crate::ast::BinaryOperator::Add,
+                            operator: crate::lexer::Token::Plus,
                             right: Box::new(A::Identifier("argument".into())),
                         }),
                     }),

@@ -1376,4 +1376,77 @@ int main(void) {
         let _ = fs::remove_dir_all(directory);
     }
 
+
+    #[test]
+    fn closure_values_share_captured_bindings_after_scope_exit() {
+        let directory = temporary_directory().expect("temporary directory");
+        let c_file = directory.join("closure_values.c");
+        let executable = directory.join("closure_values");
+        let source = format!(
+            "{}\n{}",
+            include_str!("native_runtime.c"),
+            r#"
+int main(void) {
+    HlEnv *root = hl_env_new(NULL);
+    HlEnv *activation = hl_env_new(root);
+    if (!root || !activation) return 10;
+    hl_define(activation, "counter", hl_number(7));
+    hl_define(activation, "label", hl_string(activation, "before"));
+    const char *names[] = { "counter", "label" };
+    HlValue closure = hl_closure_new(activation, 23, names, 2);
+    if (closure.tag != HL_CLOSURE || !closure.as.closure
+        || closure.as.closure->function_id != 23
+        || closure.as.closure->capture_count != 2) return 11;
+
+    hl_assign(activation, "counter", hl_number(8));
+    hl_assign(activation, "label", hl_string(activation, "after"));
+    HlValue captured = hl_number(0);
+    if (!hl_closure_capture_read(closure, 0, &captured)
+        || captured.tag != HL_NUMBER || captured.as.number != 8) return 12;
+    if (!hl_closure_capture_read(closure, 1, &captured)
+        || captured.tag != HL_STRING || strcmp(captured.as.string, "after") != 0) return 13;
+
+    if (!hl_closure_capture_write(closure, 0, hl_number(9))) return 14;
+    if (hl_get(activation, "counter").as.number != 9) return 15;
+
+    hl_env_free(activation);
+    if (!hl_closure_capture_read(closure, 0, &captured)
+        || captured.tag != HL_NUMBER || captured.as.number != 9) return 16;
+    if (!hl_closure_capture_write(closure, 1, hl_string(root, "after-scope"))) return 17;
+    if (!hl_closure_capture_read(closure, 1, &captured)
+        || strcmp(captured.as.string, "after-scope") != 0) return 18;
+    hl_env_free(root);
+    return 0;
+}
+"#
+        );
+        fs::write(&c_file, source).expect("write closure value runtime test");
+        let compiler = select_c_compiler().expect("C compiler");
+        let build = Command::new(&compiler)
+            .arg("-std=c11")
+            .arg("-O1")
+            .arg("-g")
+            .arg("-fsanitize=address,undefined")
+            .arg("-fno-omit-frame-pointer")
+            .arg(&c_file)
+            .arg("-o")
+            .arg(&executable)
+            .arg("-lm")
+            .output()
+            .expect("compile closure value test with sanitizers");
+        assert!(
+            build.status.success(),
+            "sanitized closure value compilation failed: {}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let run = Command::new(&executable).output().expect("run sanitized closure value test");
+        assert!(
+            run.status.success(),
+            "closure value test failed with code {:?}: {}",
+            run.status.code(),
+            String::from_utf8_lossy(&run.stderr)
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
+
 }

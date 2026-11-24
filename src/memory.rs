@@ -287,9 +287,11 @@ pub struct FunctionActivationPlan {
     pub bindings: HashMap<BindingId, StorageClass>,
     /// Locals that require stable identity because another closure captures them.
     pub captured_cells: Vec<BindingId>,
-    /// Deterministic cell indexes within this activation's environment.
-    /// These are layout metadata; the C runtime does not allocate them yet.
+    /// Deterministic cell indexes for captured bindings; never reused as frame slots.
     pub cell_slots: HashMap<BindingId, u32>,
+    /// Deterministic activation-frame slots for non-captured parameters and locals.
+    pub frame_slots: HashMap<BindingId, u32>,
+    pub frame_slot_count: u32,
     pub ownership_tokens: HashMap<BindingId, OwnershipTokenId>,
 }
 
@@ -1055,6 +1057,15 @@ fn plan_function_activations(program: &Program) -> HashMap<FunctionId, FunctionA
         let cell_slots = captured_cells.iter().enumerate()
             .map(|(slot, binding)| (*binding, slot as u32))
             .collect();
+        let mut frame_bindings: Vec<_> = bindings.keys()
+            .filter(|binding| !captured_cells.contains(binding))
+            .copied()
+            .collect();
+        frame_bindings.sort_unstable();
+        let frame_slots: HashMap<_, _> = frame_bindings.iter().enumerate()
+            .map(|(slot, binding)| (*binding, slot as u32))
+            .collect();
+        let frame_slot_count = frame_bindings.len() as u32;
         let ownership_tokens = bindings.iter()
             .filter_map(|(binding, class)| matches!(class, StorageClass::OwnedRegion)
                 .then_some((*binding, OwnershipTokenId(u64::from(binding.0) + 1))))
@@ -1063,6 +1074,8 @@ fn plan_function_activations(program: &Program) -> HashMap<FunctionId, FunctionA
             bindings,
             captured_cells,
             cell_slots,
+            frame_slots,
+            frame_slot_count,
             ownership_tokens,
         });
     }
@@ -1147,7 +1160,12 @@ mod tests {
         assert_eq!(outer_plan.bindings.get(&y), Some(&StorageClass::OwnedRegion));
         assert_eq!(outer_plan.cell_slots.get(&x), Some(&0));
         assert_eq!(outer_plan.cell_slots.get(&y), Some(&1));
-        assert!(memory.function_activations.contains_key(&inner));
+        assert!(outer_plan.frame_slots.is_empty());
+        assert_eq!(outer_plan.frame_slot_count, 0);
+        let inner_plan = &memory.function_activations[&inner];
+        let z = program.bindings.iter().find(|binding| binding.name == "z").unwrap().id;
+        assert_eq!(inner_plan.frame_slots.get(&z), Some(&0));
+        assert_eq!(inner_plan.frame_slot_count, 1);
     }
 
     #[test]

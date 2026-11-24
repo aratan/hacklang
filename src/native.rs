@@ -1296,4 +1296,75 @@ int main(void) {
         let _ = fs::remove_dir_all(directory);
     }
 
+
+    #[test]
+    fn captured_cells_keep_stable_identity_after_activation_teardown() {
+        let directory = temporary_directory().expect("temporary directory");
+        let c_file = directory.join("captured_cells.c");
+        let executable = directory.join("captured_cells");
+        let source = format!(
+            "{}\\n{}",
+            include_str!("native_runtime.c"),
+            r#"
+int main(void) {
+    HlEnv *root = hl_env_new(NULL);
+    HlEnv *activation = hl_env_new(root);
+    HlEnv *sibling = hl_env_new(root);
+    if (!root || !activation || !sibling) return 10;
+
+    HlCell *captured = hl_cell_new(activation, hl_number(41), 1);
+    if (!captured) return 11;
+    HlValue observed = hl_number(0);
+    if (!hl_cell_read(captured, &observed) || observed.as.number != 41) return 12;
+
+    /* The creating activation may disappear while a closure still owns the cell. */
+    hl_env_free(activation);
+    if (!hl_cell_read(captured, &observed) || observed.as.number != 41) return 13;
+
+    /* Sibling closures share the same mutable cell rather than snapshots. */
+    if (!hl_cell_write(captured, hl_number(42))) return 14;
+    if (!hl_cell_read(captured, &observed) || observed.as.number != 42) return 15;
+
+    HlCell *uninitialized = hl_cell_new(sibling, hl_number(0), 0);
+    if (!uninitialized || hl_cell_read(uninitialized, &observed)) return 16;
+    if (!hl_cell_write(uninitialized, hl_bool(1))
+        || !hl_cell_read(uninitialized, &observed)
+        || observed.tag != HL_BOOL || !observed.as.boolean) return 17;
+
+    hl_env_free(sibling);
+    if (!hl_cell_read(captured, &observed) || observed.as.number != 42) return 18;
+    hl_env_free(root);
+    return 0;
+}
+"#
+        );
+        fs::write(&c_file, source).expect("write captured cell runtime test");
+        let compiler = select_c_compiler().expect("C compiler");
+        let build = Command::new(&compiler)
+            .arg("-std=c11")
+            .arg("-O1")
+            .arg("-g")
+            .arg("-fsanitize=address,undefined")
+            .arg("-fno-omit-frame-pointer")
+            .arg(&c_file)
+            .arg("-o")
+            .arg(&executable)
+            .arg("-lm")
+            .output()
+            .expect("compile captured cell test with sanitizers");
+        assert!(
+            build.status.success(),
+            "sanitized captured cell compilation failed: {}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let run = Command::new(&executable).output().expect("run sanitized captured cell test");
+        assert!(
+            run.status.success(),
+            "captured cell test failed with code {:?}: {}",
+            run.status.code(),
+            String::from_utf8_lossy(&run.stderr)
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
+
 }

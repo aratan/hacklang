@@ -86,6 +86,11 @@ typedef struct HlArenaLane {
 } HlArenaLane;
 
 typedef struct HlOwnershipRecord HlOwnershipRecord;
+typedef struct HlCell {
+    HlValue value;
+    int initialized;
+    struct HlCell *next;
+} HlCell;
 typedef struct HlAllocation {
     HlCleanupFn cleanup;
     void *context;
@@ -116,6 +121,7 @@ struct HlEnv {
     HlBinding *bindings;
     HlAllocation *allocations;
     HlOwnershipRecord *ownership_records; /* root environment owns token tombstones */
+    HlCell *cells; /* stable captured cells retained until root teardown */
     uint64_t next_ownership_id;
     HlArenaLane *lane;
     HlArenaBlock *lane_mark_block;
@@ -339,6 +345,9 @@ static void hl_env_free(HlEnv *environment) {
     }
     /* Token tombstones live in the root until all descendant callbacks have run. */
     if (!environment->parent) {
+        HlCell *cell = environment->cells;
+        while (cell) { HlCell *next = cell->next; free(cell); cell = next; }
+        environment->cells = NULL;
         HlOwnershipRecord *record = environment->ownership_records;
         while (record) { HlOwnershipRecord *next = record->next; free(record); record = next; }
         environment->ownership_records = NULL;
@@ -352,6 +361,31 @@ static void hl_env_free(HlEnv *environment) {
     }
     free(environment);
 }
+/* Captured cells have stable heap identity and root lifetime. This deliberately
+ * over-retains until root teardown; tracing collection is a later stage. */
+static HlCell *hl_cell_new(HlEnv *environment, HlValue initial, int initialized) {
+    HlEnv *root = hl_env_root(environment);
+    if (!root || root->closing) return NULL;
+    HlCell *cell = (HlCell *)malloc(sizeof(HlCell));
+    if (!cell) hl_fail(environment, "memoria agotada al crear celda capturada");
+    cell->value = initial;
+    cell->initialized = initialized != 0;
+    cell->next = root->cells;
+    root->cells = cell;
+    return cell;
+}
+static int hl_cell_read(const HlCell *cell, HlValue *out) {
+    if (!cell || !out || !cell->initialized) return 0;
+    *out = cell->value;
+    return 1;
+}
+static int hl_cell_write(HlCell *cell, HlValue value) {
+    if (!cell) return 0;
+    cell->value = value;
+    cell->initialized = 1;
+    return 1;
+}
+
 static char *hl_copy_string(HlEnv *environment, const char *value) {
     size_t size = strlen(value) + 1;
     char *copy = (char *)hl_alloc(environment, size);

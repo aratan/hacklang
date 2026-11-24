@@ -88,6 +88,7 @@ typedef struct HlArenaLane {
 typedef struct HlOwnershipRecord HlOwnershipRecord;
 typedef struct HlCell {
     HlValue value;
+    HlEnv *owner;
     int initialized;
     struct HlCell *next;
 } HlCell;
@@ -361,6 +362,8 @@ static void hl_env_free(HlEnv *environment) {
     }
     free(environment);
 }
+static HlValue hl_clone_value(HlEnv *environment, HlValue value);
+
 /* Captured cells have stable heap identity and root lifetime. This deliberately
  * over-retains until root teardown; tracing collection is a later stage. */
 static HlCell *hl_cell_new(HlEnv *environment, HlValue initial, int initialized) {
@@ -368,7 +371,8 @@ static HlCell *hl_cell_new(HlEnv *environment, HlValue initial, int initialized)
     if (!root || root->closing) return NULL;
     HlCell *cell = (HlCell *)malloc(sizeof(HlCell));
     if (!cell) hl_fail(environment, "memoria agotada al crear celda capturada");
-    cell->value = initial;
+    cell->value = initialized ? hl_clone_value(root, initial) : initial;
+    cell->owner = root;
     cell->initialized = initialized != 0;
     cell->next = root->cells;
     root->cells = cell;
@@ -381,7 +385,8 @@ static int hl_cell_read(const HlCell *cell, HlValue *out) {
 }
 static int hl_cell_write(HlCell *cell, HlValue value) {
     if (!cell) return 0;
-    cell->value = value;
+    if (!cell->owner || cell->owner->closing) return 0;
+    cell->value = hl_clone_value(cell->owner, value);
     cell->initialized = 1;
     return 1;
 }

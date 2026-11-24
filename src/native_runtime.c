@@ -405,6 +405,30 @@ static int hl_cell_write(HlCell *cell, HlValue value) {
 
 static HlBinding *hl_find(HlEnv *environment, const char *name);
 
+static HlCell *hl_closure_capture_cell(HlValue closure, size_t index) {
+    if (closure.tag != HL_CLOSURE || !closure.as.closure
+        || index >= closure.as.closure->capture_count)
+        return NULL;
+    return closure.as.closure->captures[index];
+}
+static void hl_binding_alias_cell(HlEnv *environment, const char *name, HlCell *cell) {
+    if (!environment || !cell || !cell->initialized)
+        hl_fail(environment, "celda de captura no disponible al entrar en función");
+    if (hl_find_local(environment, name))
+        hl_fail(environment, "binding duplicado al instalar captura");
+    HlBinding *binding = (HlBinding *)hl_alloc(environment, sizeof(HlBinding));
+    binding->name = hl_copy_string(environment, name);
+    binding->owner = environment;
+    binding->string_storage = NULL;
+    binding->string_capacity = 0;
+    binding->ownership_site = 0;
+    binding->ownership_token = 0;
+    binding->aggregate_lane = (HlArenaLane){0};
+    binding->value = cell->value;
+    binding->cell = cell;
+    binding->next = environment->bindings;
+    environment->bindings = binding;
+}
 static HlCell *hl_binding_capture(HlEnv *environment, const char *name) {
     HlBinding *binding = hl_find(environment, name);
     if (!binding) {

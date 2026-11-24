@@ -281,6 +281,12 @@ pub struct MemoryOperation {
     pub reason: PromotionReason,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivationBindingSlot {
+    Frame(u32),
+    CaptureCell(u32),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionActivationPlan {
     /// Conservative storage classes for parameters and locals in this activation.
@@ -292,6 +298,8 @@ pub struct FunctionActivationPlan {
     /// Deterministic activation-frame slots for non-captured parameters and locals.
     pub frame_slots: HashMap<BindingId, u32>,
     pub frame_slot_count: u32,
+    /// Parameter destinations in source argument order, including captured parameters.
+    pub parameter_slots: Vec<ActivationBindingSlot>,
     pub ownership_tokens: HashMap<BindingId, OwnershipTokenId>,
 }
 
@@ -1066,6 +1074,14 @@ fn plan_function_activations(program: &Program) -> HashMap<FunctionId, FunctionA
             .map(|(slot, binding)| (*binding, slot as u32))
             .collect();
         let frame_slot_count = frame_bindings.len() as u32;
+        let parameter_slots = function.params.iter().map(|parameter| {
+            if let Some(slot) = cell_slots.get(parameter) {
+                ActivationBindingSlot::CaptureCell(*slot)
+            } else {
+                ActivationBindingSlot::Frame(*frame_slots.get(parameter)
+                    .expect("every non-captured parameter has an activation frame slot"))
+            }
+        }).collect();
         let ownership_tokens = bindings.iter()
             .filter_map(|(binding, class)| matches!(class, StorageClass::OwnedRegion)
                 .then_some((*binding, OwnershipTokenId(u64::from(binding.0) + 1))))
@@ -1076,6 +1092,7 @@ fn plan_function_activations(program: &Program) -> HashMap<FunctionId, FunctionA
             cell_slots,
             frame_slots,
             frame_slot_count,
+            parameter_slots,
             ownership_tokens,
         });
     }
@@ -1166,6 +1183,11 @@ mod tests {
         let z = program.bindings.iter().find(|binding| binding.name == "z").unwrap().id;
         assert_eq!(inner_plan.frame_slots.get(&z), Some(&0));
         assert_eq!(inner_plan.frame_slot_count, 1);
+        assert_eq!(inner_plan.parameter_slots, vec![ActivationBindingSlot::Frame(0)]);
+        assert_eq!(outer_plan.parameter_slots, vec![
+            ActivationBindingSlot::CaptureCell(0),
+            ActivationBindingSlot::CaptureCell(1),
+        ]);
     }
 
     #[test]

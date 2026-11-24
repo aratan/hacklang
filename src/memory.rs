@@ -1110,6 +1110,33 @@ pub fn validate_function_activation_plan(
     for function in &program.functions {
         let activation = plan.function_activations.get(&function.id)
             .ok_or_else(|| format!("MemoryPlan sin activación para FunctionId {}", function.id.0))?;
+        let expected_bindings: std::collections::HashSet<_> = program.bindings.iter()
+            .filter(|binding| binding.function_owner == Some(function.id))
+            .map(|binding| binding.id).collect();
+        let actual_bindings: std::collections::HashSet<_> =
+            activation.bindings.keys().copied().collect();
+        if actual_bindings != expected_bindings {
+            return Err(format!("conjunto de bindings incompleto o ajeno en FunctionId {}", function.id.0));
+        }
+        let expected_owned: std::collections::HashSet<_> = activation.bindings.iter()
+            .filter_map(|(binding, class)| matches!(class, StorageClass::OwnedRegion)
+                .then_some(*binding)).collect();
+        let actual_owned: std::collections::HashSet<_> =
+            activation.ownership_tokens.keys().copied().collect();
+        if expected_owned != actual_owned {
+            return Err(format!("conjunto de tokens de propiedad incoherente en FunctionId {}", function.id.0));
+        }
+        let frame_bindings: std::collections::HashSet<_> =
+            activation.frame_slots.keys().copied().collect();
+        let cell_bindings: std::collections::HashSet<_> =
+            activation.cell_slots.keys().copied().collect();
+        let expected_frame: std::collections::HashSet<_> = expected_bindings.iter()
+            .filter(|binding| !activation.captured_cells.contains(binding))
+            .copied().collect();
+        if frame_bindings != expected_frame || cell_bindings
+            != activation.captured_cells.iter().copied().collect() {
+            return Err(format!("asignación de bindings a frame/celdas incompleta en FunctionId {}", function.id.0));
+        }
         let mut expected_cells: Vec<_> = program.capture_storage.bindings.iter()
             .filter_map(|entry| match entry.storage {
                 crate::capture::CaptureStorageKind::ActivationCell(owner) if owner == function.id =>

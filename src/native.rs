@@ -941,21 +941,34 @@ int main(void) {
     }
 
     #[test]
-    fn rejects_function_hir_until_native_closure_runtime_exists() {
+    fn compiles_closure_values_with_captured_module_bindings() {
         let program = Program {
-            statements: vec![Statement::Let(LetStatement {
-                name: "identity".into(),
-                value: Expression::Lambda {
-                    params: vec!["x".into()],
-                    body: Box::new(Expression::Identifier("x".into())),
-                },
-            })],
+            statements: vec![
+                Statement::Let(LetStatement {
+                    name: "offset".into(),
+                    value: Expression::NumberLiteral(5.0),
+                }),
+                Statement::Let(LetStatement {
+                    name: "add".into(),
+                    value: Expression::Lambda {
+                        params: vec!["x".into()],
+                        body: Box::new(Expression::Infix {
+                            left: Box::new(Expression::Identifier("x".into())),
+                            operator: crate::lexer::Token::Plus,
+                            right: Box::new(Expression::Identifier("offset".into())),
+                        }),
+                    },
+                }),
+            ],
         };
         let directory = temporary_directory().expect("temporary directory");
         let source = directory.join("closure.hl");
-        fs::write(&source, "let identity = |x| x;").unwrap();
-        let error = compile_to_executable(&program, &source, None).unwrap_err();
-        assert!(error.contains("backend C aún genera") || error.contains("backend C aún no genera"));
+        let executable = directory.join("closure");
+        fs::write(&source, "let offset = 5; let add = |x| x + offset;").unwrap();
+        compile_to_executable(&program, &source, Some(&executable))
+            .expect("native closure value compilation");
+        let run = Command::new(&executable).output().expect("run closure value executable");
+        assert!(run.status.success(), "closure value program failed: {}", String::from_utf8_lossy(&run.stderr));
         let _ = fs::remove_dir_all(directory);
     }
 

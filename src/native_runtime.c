@@ -13,12 +13,13 @@
 typedef struct HlArray HlArray;
 typedef struct HlMap HlMap;
 typedef struct HlMapEntry HlMapEntry;
-typedef enum { HL_NUMBER, HL_BOOL, HL_STRING, HL_ARRAY, HL_MAP } HlTag;
+typedef struct HlClosure HlClosure;
+typedef enum { HL_NUMBER, HL_BOOL, HL_STRING, HL_ARRAY, HL_MAP, HL_CLOSURE } HlTag;
 typedef enum { HL_STORAGE_SCOPE, HL_STORAGE_OWNED } HlStorageClass;
 static int hl_is_aggregate_tag(HlTag tag) { return tag == HL_ARRAY || tag == HL_MAP; }
 typedef struct {
     HlTag tag;
-    union { double number; int boolean; const char *string; HlArray *array; HlMap *map; } as;
+    union { double number; int boolean; const char *string; HlArray *array; HlMap *map; HlClosure *closure; } as;
 } HlValue;
 struct HlArray {
     size_t length;
@@ -92,6 +93,12 @@ typedef struct HlCell {
     int initialized;
     struct HlCell *next;
 } HlCell;
+struct HlClosure {
+    uint32_t function_id;
+    size_t capture_count;
+    HlCell **captures;
+    struct HlClosure *next;
+};
 typedef struct HlAllocation {
     HlCleanupFn cleanup;
     void *context;
@@ -115,6 +122,7 @@ typedef struct HlBinding {
     uint64_t ownership_site;
     uint64_t ownership_token;
     HlArenaLane aggregate_lane;
+    HlCell *cell;
     struct HlBinding *next;
 } HlBinding;
 struct HlEnv {
@@ -123,6 +131,7 @@ struct HlEnv {
     HlAllocation *allocations;
     HlOwnershipRecord *ownership_records; /* root environment owns token tombstones */
     HlCell *cells; /* stable captured cells retained until root teardown */
+    HlClosure *closures; /* closure descriptors retained until root teardown */
     uint64_t next_ownership_id;
     HlArenaLane *lane;
     HlArenaBlock *lane_mark_block;
@@ -346,6 +355,9 @@ static void hl_env_free(HlEnv *environment) {
     }
     /* Token tombstones live in the root until all descendant callbacks have run. */
     if (!environment->parent) {
+        HlClosure *closure = environment->closures;
+        while (closure) { HlClosure *next = closure->next; free(closure->captures); free(closure); closure = next; }
+        environment->closures = NULL;
         HlCell *cell = environment->cells;
         while (cell) { HlCell *next = cell->next; free(cell); cell = next; }
         environment->cells = NULL;
@@ -389,6 +401,45 @@ static int hl_cell_write(HlCell *cell, HlValue value) {
     cell->value = hl_clone_value(cell->owner, value);
     cell->initialized = 1;
     return 1;
+}
+
+static HlCell *hl_binding_capture(HlEnv *environment, const char *name) {
+    HlBinding *binding = hl_find(environment, name);
+    if (!binding) {
+        char message[512];
+        snprintf(message, sizeof(message), "Variable '%s' no definida para captura", name);
+        hl_fail(environment, message);
+    }
+    if (!binding->cell) binding->cell = hl_cell_new(binding->owner, binding->value, 1);
+    return binding->cell;
+}
+static HlValue hl_closure_new(HlEnv *environment, uint32_t function_id,
+        const char *const *capture_names, size_t capture_count) {
+    HlEnv *root = hl_env_root(environment);
+    if (!root || root->closing) hl_fail(environment, "entorno raíz no disponible para closure");
+    HlClosure *closure = (HlClosure *)calloc(1, sizeof(HlClosure));
+    if (!closure) hl_fail(environment, "memoria agotada al crear closure");
+    if (capture_count) {
+        closure->captures = (HlCell **)calloc(capture_count, sizeof(HlCell *));
+        if (!closure->captures) { free(closure); hl_fail(environment, "memoria agotada al capturar bindings"); }
+    }
+    closure->function_id = function_id;
+    closure->capture_count = capture_count;
+    for (size_t i = 0; i < capture_count; ++i)
+        closure->captures[i] = hl_binding_capture(environment, capture_names[i]);
+    closure->next = root->closures;
+    root->closures = closure;
+    HlValue result; result.tag = HL_CLOSURE; result.as.closure = closure; return result;
+}
+static int hl_closure_capture_read(const HlValue value, size_t index, HlValue *out) {
+    if (value.tag != HL_CLOSURE || !value.as.closure
+        || index >= value.as.closure->capture_count) return 0;
+    return hl_cell_read(value.as.closure->captures[index], out);
+}
+static int hl_closure_capture_write(const HlValue value, size_t index, HlValue captured) {
+    if (value.tag != HL_CLOSURE || !value.as.closure
+        || index >= value.as.closure->capture_count) return 0;
+    return hl_cell_write(value.as.closure->captures[index], captured);
 }
 
 static char *hl_copy_string(HlEnv *environment, const char *value) {
@@ -477,6 +528,7 @@ static HlValue hl_clone_value(HlEnv *environment, HlValue value) {
                 copy->items[i] = hl_clone_value(environment, value.as.array->items[i]);
             HlValue result; result.tag = HL_ARRAY; result.as.array = copy; return result;
         }
+        case HL_CLOSURE: return value;
         case HL_MAP: {
             if (!value.as.map) hl_fail(environment, "mapa nulo");
             if (value.as.map->length > SIZE_MAX / sizeof(HlMapEntry))
@@ -518,6 +570,7 @@ static HlEnv *hl_env_new_in_lane(HlEnv *parent, HlArenaLane *lane) {
     environment->allocations = NULL;
     environment->ownership_records = NULL;
     environment->cells = NULL;
+    environment->closures = NULL;
     environment->next_ownership_id = 0;
     environment->lane = lane;
     environment->lane_mark_block = lane->current ? lane->current : lane->blocks;
@@ -651,6 +704,7 @@ static void hl_define_planned_site(HlEnv *environment, const char *name, HlValue
     HlBinding *item = hl_find_local(environment, name);
     if (item) {
         item->value = hl_store_value(item, value, storage);
+        if (item->cell) hl_cell_write(item->cell, item->value);
         return;
     }
     item = (HlBinding *)hl_alloc(environment, sizeof(HlBinding));
@@ -660,6 +714,7 @@ static void hl_define_planned_site(HlEnv *environment, const char *name, HlValue
     item->string_capacity = 0;
     item->ownership_site = ownership_site;
     item->ownership_token = 0;
+    item->cell = NULL;
     item->aggregate_lane = (HlArenaLane){0};
     item->value.tag = HL_NUMBER;
     item->value.as.number = 0.0;
@@ -681,6 +736,7 @@ static void hl_assign_planned_site(HlEnv *environment, const char *name, HlValue
     if (ownership_site && item->ownership_site != ownership_site)
         hl_fail(environment, "site de propiedad incoherente en asignación planificada");
     item->value = hl_store_value(item, value, storage);
+    if (item->cell) hl_cell_write(item->cell, item->value);
 }
 static void hl_assign_planned(HlEnv *environment, const char *name, HlValue value, HlStorageClass storage) {
     hl_assign_planned_site(environment, name, value, storage, 0);
@@ -698,6 +754,11 @@ static HlValue hl_get(HlEnv *environment, const char *name) {
         char message[512];
         snprintf(message, sizeof(message), "Variable '%s' no definida", name);
         hl_fail(environment, message);
+    }
+    if (item->cell) {
+        HlValue captured;
+        if (!hl_cell_read(item->cell, &captured)) hl_fail(environment, "lectura de captura no inicializada");
+        return captured.tag == HL_ARRAY || captured.tag == HL_MAP ? hl_clone_value(environment, captured) : captured;
     }
     /* Arrays have value semantics: each read receives an independent
      * graph allocated in the current activation's lane. */

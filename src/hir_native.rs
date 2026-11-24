@@ -237,7 +237,76 @@ impl Generator {
     }
 }
 
+
+fn validate_native_expr(expression: &Expression) -> Result<(), String> {
+    match &expression.kind {
+        ExprKind::Call { .. } => return Err(
+            "llamadas a funciones aún no están soportadas por el backend nativo: falta emitir cuerpos y activaciones".into()
+        ),
+        ExprKind::Binary { left, right, .. } => {
+            validate_native_expr(left)?;
+            validate_native_expr(right)?;
+        }
+        ExprKind::Ternary { condition, when_true, when_false } => {
+            validate_native_expr(condition)?;
+            validate_native_expr(when_true)?;
+            validate_native_expr(when_false)?;
+        }
+        ExprKind::Array(items) => for item in items { validate_native_expr(item)?; },
+        ExprKind::Map(items) => for (key, value) in items {
+            validate_native_expr(key)?;
+            validate_native_expr(value)?;
+        },
+        ExprKind::Index { target, index } => {
+            validate_native_expr(target)?;
+            validate_native_expr(index)?;
+        }
+        ExprKind::Length(value) => validate_native_expr(value)?,
+        ExprKind::Number(_) | ExprKind::Bool(_) | ExprKind::String(_)
+        | ExprKind::Read(_) | ExprKind::Closure(_) => {}
+    }
+    Ok(())
+}
+
+fn validate_native_statements(statements: &[Statement]) -> Result<(), String> {
+    for statement in statements {
+        match &statement.kind {
+            StmtKind::Let { value, .. } | StmtKind::Assign { value, .. }
+            | StmtKind::Print(value) | StmtKind::Return(value) =>
+                validate_native_expr(value)?,
+            StmtKind::IndexAssign { indices, value, .. } => {
+                for index in indices { validate_native_expr(index)?; }
+                validate_native_expr(value)?;
+            }
+            StmtKind::Block { statements, .. } =>
+                validate_native_statements(statements)?,
+            StmtKind::If { condition, then_body, else_body, .. } => {
+                validate_native_expr(condition)?;
+                validate_native_statements(then_body)?;
+                validate_native_statements(else_body)?;
+            }
+            StmtKind::While { condition, body, .. } => {
+                validate_native_expr(condition)?;
+                validate_native_statements(body)?;
+            }
+            StmtKind::Break | StmtKind::Continue => {}
+        }
+    }
+    Ok(())
+}
+
 pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, String> {
+    // Never emit a call to an absent C runtime dispatcher. Function metadata
+    // and closure cells exist, but generated function bodies/activation frames
+    // are not wired into this backend yet.
+    validate_native_statements(&program.statements)?;
+    for function in &program.functions {
+        if let Some(expression) = &function.body.expression {
+            validate_native_expr(expression)?;
+        }
+        validate_native_statements(&function.body.statements)?;
+    }
+
     // Reject stale/incomplete plans instead of silently compiling without the
     // frontend's storage decisions. ScopeStackPlan is materialized below as
     // physical HlArenaLane instances; BindingSlotPlan remains frame-layout
@@ -593,5 +662,32 @@ mod tests {
         assert!(main.contains("hl_index(env,"));
         assert!(!main.contains("la asignación por índice está representada"));
     }
+
+    #[test]
+    fn native_backend_rejects_calls_until_function_activations_are_emitted() {
+        use crate::ast::{Expression as A, FunctionCallExpression, LetStatement, Program as AstProgram, Statement as AstStmt};
+        let ast = AstProgram { statements: vec![
+            AstStmt::Let(LetStatement {
+                name: "identity".into(),
+                value: A::Lambda {
+                    params: vec!["value".into()],
+                    body: Box::new(A::Identifier("value".into())),
+                },
+            }),
+            AstStmt::Let(LetStatement {
+                name: "result".into(),
+                value: A::FunctionCall {
+                    func: Box::new(A::Identifier("identity".into())),
+                    args: vec![A::NumberLiteral(7.0)],
+                },
+            }),
+        ]};
+        let lowered = hir::lower(&ast).unwrap();
+        let memory = crate::memory::plan(&lowered);
+        let error = generate_c(&lowered, &memory).unwrap_err();
+        assert!(error.contains("llamadas a funciones aún no están soportadas"));
+        assert!(error.contains("falta emitir cuerpos y activaciones"));
+    }
+
 
 }

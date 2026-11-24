@@ -1121,7 +1121,7 @@ mod tests {
     #[test]
     fn function_memory_plan_keeps_captured_parameters_in_activation_cells() {
         let mut lexer = crate::lexer::Lexer::new(
-            "let global = 1; let factory = |x| |y| x + global + y;".to_string()
+            "let global_b = 2; let global_a = 1; let factory = |x, y| |z| x + y + global_b + global_a + z;".to_string()
         );
         let tokens = lexer.tokenize().unwrap();
         let mut parser = crate::parser::Parser::new(tokens);
@@ -1129,18 +1129,24 @@ mod tests {
         let program = hir::lower(&ast).unwrap();
         let memory = plan(&program);
 
-        let global = program.bindings.iter().find(|binding| binding.name == "global").unwrap().id;
+        let global_b = program.bindings.iter().find(|binding| binding.name == "global_b").unwrap().id;
+        let global_a = program.bindings.iter().find(|binding| binding.name == "global_a").unwrap().id;
         let x = program.bindings.iter().find(|binding| binding.name == "x").unwrap().id;
+        let y = program.bindings.iter().find(|binding| binding.name == "y").unwrap().id;
         let outer = program.functions[0].id;
         let inner = program.functions[1].id;
 
-        assert_eq!(memory.bindings.get(&global), Some(&StorageClass::OwnedRegion));
-        assert_eq!(memory.module_cells, vec![global]);
-        assert_eq!(memory.module_cell_slots.get(&global), Some(&0));
+        assert_eq!(memory.bindings.get(&global_a), Some(&StorageClass::OwnedRegion));
+        assert_eq!(memory.bindings.get(&global_b), Some(&StorageClass::OwnedRegion));
+        assert_eq!(memory.module_cells, vec![global_b, global_a]);
+        assert_eq!(memory.module_cell_slots.get(&global_b), Some(&0));
+        assert_eq!(memory.module_cell_slots.get(&global_a), Some(&1));
         let outer_plan = &memory.function_activations[&outer];
-        assert!(outer_plan.captured_cells.contains(&x));
+        assert_eq!(outer_plan.captured_cells, vec![x, y]);
         assert_eq!(outer_plan.bindings.get(&x), Some(&StorageClass::OwnedRegion));
+        assert_eq!(outer_plan.bindings.get(&y), Some(&StorageClass::OwnedRegion));
         assert_eq!(outer_plan.cell_slots.get(&x), Some(&0));
+        assert_eq!(outer_plan.cell_slots.get(&y), Some(&1));
         assert!(memory.function_activations.contains_key(&inner));
     }
 

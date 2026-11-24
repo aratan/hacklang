@@ -1099,6 +1099,80 @@ fn plan_function_activations(program: &Program) -> HashMap<FunctionId, FunctionA
     plans
 }
 
+/// Validate activation-local storage before a backend consumes it.
+pub fn validate_function_activation_plan(
+    program: &Program,
+    plan: &MemoryPlan,
+) -> Result<(), String> {
+    if plan.function_activations.len() != program.functions.len() {
+        return Err("MemoryPlan: número de activaciones distinto al número de funciones".into());
+    }
+    for function in &program.functions {
+        let activation = plan.function_activations.get(&function.id)
+            .ok_or_else(|| format!("MemoryPlan sin activación para FunctionId {}", function.id.0))?;
+        let mut expected_cells: Vec<_> = program.capture_storage.bindings.iter()
+            .filter_map(|entry| match entry.storage {
+                crate::capture::CaptureStorageKind::ActivationCell(owner) if owner == function.id =>
+                    Some(entry.binding),
+                _ => None,
+            }).collect();
+        expected_cells.sort_unstable();
+        expected_cells.dedup();
+        let mut actual_cells = activation.captured_cells.clone();
+        actual_cells.sort_unstable();
+        actual_cells.dedup();
+        if actual_cells != expected_cells || actual_cells.len() != activation.captured_cells.len() {
+            return Err(format!("celdas capturadas incoherentes en FunctionId {}", function.id.0));
+        }
+        if activation.cell_slots.len() != activation.captured_cells.len()
+            || activation.frame_slots.len() != activation.frame_slot_count as usize {
+            return Err(format!("conteo de slots incoherente en FunctionId {}", function.id.0));
+        }
+        for (index, binding) in activation.captured_cells.iter().enumerate() {
+            if activation.cell_slots.get(binding) != Some(&(index as u32)) {
+                return Err(format!("índice de celda no determinista para BindingId {}", binding.0));
+            }
+        }
+        let mut frame_indices: Vec<_> = activation.frame_slots.values().copied().collect();
+        frame_indices.sort_unstable();
+        if frame_indices.iter().copied().ne(0..activation.frame_slot_count) {
+            return Err(format!("slots de frame no densos en FunctionId {}", function.id.0));
+        }
+        for binding in activation.bindings.keys() {
+            let metadata = program.bindings.get(binding.0 as usize)
+                .ok_or_else(|| format!("BindingId inválido {} en activación", binding.0))?;
+            if metadata.function_owner != Some(function.id) {
+                return Err(format!("BindingId {} asignado a una activación ajena", binding.0));
+            }
+            let captured = activation.cell_slots.contains_key(binding);
+            let framed = activation.frame_slots.contains_key(binding);
+            if captured == framed {
+                return Err(format!("BindingId {} debe ocupar exactamente un slot", binding.0));
+            }
+            if matches!(activation.bindings.get(binding), Some(StorageClass::OwnedRegion))
+                != activation.ownership_tokens.contains_key(binding) {
+                return Err(format!("token de propiedad incoherente para BindingId {}", binding.0));
+            }
+        }
+        for (index, parameter) in function.params.iter().enumerate() {
+            let expected = if let Some(slot) = activation.cell_slots.get(parameter) {
+                ActivationBindingSlot::CaptureCell(*slot)
+            } else if let Some(slot) = activation.frame_slots.get(parameter) {
+                ActivationBindingSlot::Frame(*slot)
+            } else {
+                return Err(format!("parámetro BindingId {} sin slot", parameter.0));
+            };
+            if activation.parameter_slots.get(index) != Some(&expected) {
+                return Err(format!("destino de parámetro incoherente para BindingId {}", parameter.0));
+            }
+        }
+        if activation.parameter_slots.len() != function.params.len() {
+            return Err(format!("número de destinos de parámetros incorrecto en FunctionId {}", function.id.0));
+        }
+    }
+    Ok(())
+}
+
 pub fn plan(program: &Program) -> MemoryPlan {
     let mut bindings = HashMap::new();
     visit_storage_bindings(&program.statements, program, &mut bindings);

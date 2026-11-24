@@ -2319,4 +2319,40 @@ mod tests {
         assert!(error.contains("índice de celda no determinista"));
     }
 
+    #[test]
+    fn function_activation_validator_rejects_missing_local_binding() {
+        let program = lower(vec![S::Let(LetStatement {
+            name: "identity".into(),
+            value: A::Lambda {
+                params: vec!["value".into()],
+                body: Box::new(A::Identifier("value".into())),
+            },
+        })]);
+        let mut memory = plan(&program);
+        let function_id = program.functions[0].id;
+        memory.function_activations.get_mut(&function_id).unwrap().bindings.clear();
+        let error = validate_function_activation_plan(&program, &memory).unwrap_err();
+        assert!(error.contains("conjunto de bindings incompleto"));
+    }
+
+    #[test]
+    fn function_activation_validator_rejects_orphan_ownership_token() {
+        let program = lower(vec![S::Let(LetStatement {
+            name: "factory".into(),
+            value: A::Lambda {
+                params: vec!["captured".into()],
+                body: Box::new(A::Lambda {
+                    params: vec![],
+                    body: Box::new(A::Identifier("captured".into())),
+                }),
+            },
+        })]);
+        let mut memory = plan(&program);
+        let function_id = program.functions[0].id;
+        let activation = memory.function_activations.get_mut(&function_id).unwrap();
+        activation.ownership_tokens.clear();
+        let error = validate_function_activation_plan(&program, &memory).unwrap_err();
+        assert!(error.contains("conjunto de tokens de propiedad incoherente"));
+    }
+
 }

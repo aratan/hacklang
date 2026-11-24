@@ -323,6 +323,7 @@ pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, Stri
         }
     }
     // Validate stack counts, stack ownership, and interference constraints before codegen.
+    crate::memory::validate_function_activation_plan(program, memory)?;
     crate::memory::validate_slot_plan(program, memory)?;
     crate::memory::validate_memory_operations(program, memory)?;
     let layout = crate::memory::frame_layout(program, memory)?;

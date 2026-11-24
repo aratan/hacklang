@@ -2245,4 +2245,51 @@ mod tests {
         assert_eq!(ledger.drain_owner(owner), Ok(vec![]));
     }
 
+    #[test]
+    fn function_activation_validator_rejects_inconsistent_frame_layout() {
+        let program = lower(vec![
+            S::Let(crate::ast::LetStatement {
+                name: "identity".into(),
+                value: A::Lambda {
+                    params: vec!["value".into()],
+                    body: Box::new(A::Identifier("value".into())),
+                },
+            }),
+        ]);
+        let mut memory = plan(&program);
+        validate_function_activation_plan(&program, &memory).unwrap();
+        let function_id = program.functions[0].id;
+        memory.function_activations.get_mut(&function_id).unwrap().frame_slot_count += 1;
+        let error = validate_function_activation_plan(&program, &memory).unwrap_err();
+        assert!(error.contains("conteo de slots incoherente"));
+    }
+
+    #[test]
+    fn function_activation_validator_checks_capture_cell_indices() {
+        let program = lower(vec![
+            S::Let(crate::ast::LetStatement {
+                name: "factory".into(),
+                value: A::Lambda {
+                    params: vec!["captured".into()],
+                    body: Box::new(A::Lambda {
+                        params: vec!["argument".into()],
+                        body: Box::new(A::Binary {
+                            left: Box::new(A::Identifier("captured".into())),
+                            op: crate::ast::BinaryOperator::Add,
+                            right: Box::new(A::Identifier("argument".into())),
+                        }),
+                    }),
+                },
+            }),
+        ]);
+        let mut memory = plan(&program);
+        validate_function_activation_plan(&program, &memory).unwrap();
+        let outer = program.functions[0].id;
+        let activation = memory.function_activations.get_mut(&outer).unwrap();
+        let captured = activation.captured_cells[0];
+        activation.cell_slots.insert(captured, 7);
+        let error = validate_function_activation_plan(&program, &memory).unwrap_err();
+        assert!(error.contains("índice de celda no determinista"));
+    }
+
 }

@@ -477,6 +477,7 @@ static int hl_map_key_equal(HlValue left, HlValue right) {
             for (size_t i = 0; i < left.as.array->length; ++i)
                 if (!hl_map_key_equal(left.as.array->items[i], right.as.array->items[i])) return 0;
             return 1;
+        case HL_CLOSURE: return left.as.closure == right.as.closure;
         case HL_MAP:
             if (!left.as.map || !right.as.map
                 || left.as.map->length != right.as.map->length) return 0;
@@ -881,6 +882,7 @@ static int hl_truthy(HlValue value) {
         case HL_STRING: return value.as.string[0] != '\0';
         case HL_ARRAY: return value.as.array != NULL;
         case HL_MAP: return value.as.map != NULL;
+        case HL_CLOSURE: return value.as.closure != NULL;
     }
     return 0;
 }
@@ -985,6 +987,7 @@ static void hl_debug_value(HlValue value) {
             }
             fputs("])", stdout);
             break;
+        case HL_CLOSURE: printf("Closure(%u)", value.as.closure ? value.as.closure->function_id : 0); break;
         case HL_MAP:
             fputs("Map([", stdout);
             if (value.as.map) for (size_t i = 0; i < value.as.map->length; ++i) {
@@ -1031,6 +1034,7 @@ static void hl_print(HlValue value) {
         case HL_STRING: puts(value.as.string); break;
         case HL_ARRAY: hl_debug_print_array(value); putchar('\n'); break;
         case HL_MAP: hl_debug_print_map(value); putchar('\n'); break;
+        case HL_CLOSURE: printf("<closure:%u>\\n", value.as.closure ? value.as.closure->function_id : 0); break;
     }
 }
 static int hl_is_string_number_pair(HlValue left, HlValue right) {

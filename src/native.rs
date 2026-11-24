@@ -1313,17 +1313,27 @@ int main(void) {
     if (!root || !activation || !sibling) return 10;
 
     HlCell *captured = hl_cell_new(activation, hl_number(41), 1);
-    if (!captured) return 11;
+    HlValue aggregate_items[1] = { hl_string(activation, "nested-activation-text") };
+    HlCell *aggregate_cell = hl_cell_new(activation,
+        hl_array(activation, aggregate_items, 1), 1);
+    if (!captured || !aggregate_cell) return 11;
     HlValue observed = hl_number(0);
     if (!hl_cell_read(captured, &observed) || observed.as.number != 41) return 12;
 
     /* The creating activation may disappear while a closure still owns the cell. */
     hl_env_free(activation);
     if (!hl_cell_read(captured, &observed) || observed.as.number != 41) return 13;
+    if (!hl_cell_read(aggregate_cell, &observed)
+        || observed.tag != HL_ARRAY || !observed.as.array
+        || strcmp(observed.as.array->items[0].as.string, "nested-activation-text") != 0) return 19;
 
     /* Sibling closures share the same mutable cell rather than snapshots. */
     if (!hl_cell_write(captured, hl_number(42))) return 14;
     if (!hl_cell_read(captured, &observed) || observed.as.number != 42) return 15;
+    if (!hl_cell_write(aggregate_cell, hl_string(sibling, "sibling-text"))) return 20;
+    hl_env_free(sibling);
+    if (!hl_cell_read(aggregate_cell, &observed)
+        || observed.tag != HL_STRING || strcmp(observed.as.string, "sibling-text") != 0) return 21;
 
     HlCell *uninitialized = hl_cell_new(sibling, hl_number(0), 0);
     if (!uninitialized || hl_cell_read(uninitialized, &observed)) return 16;
@@ -1331,7 +1341,6 @@ int main(void) {
         || !hl_cell_read(uninitialized, &observed)
         || observed.tag != HL_BOOL || !observed.as.boolean) return 17;
 
-    hl_env_free(sibling);
     if (!hl_cell_read(captured, &observed) || observed.as.number != 42) return 18;
     hl_env_free(root);
     return 0;

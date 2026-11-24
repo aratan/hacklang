@@ -1335,7 +1335,7 @@ int main(void) {
     if (!hl_cell_read(aggregate_cell, &observed)
         || observed.tag != HL_STRING || strcmp(observed.as.string, "sibling-text") != 0) return 21;
 
-    HlCell *uninitialized = hl_cell_new(sibling, hl_number(0), 0);
+    HlCell *uninitialized = hl_cell_new(root, hl_number(0), 0);
     if (!uninitialized || hl_cell_read(uninitialized, &observed)) return 16;
     if (!hl_cell_write(uninitialized, hl_bool(1))
         || !hl_cell_read(uninitialized, &observed)

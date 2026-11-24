@@ -287,6 +287,9 @@ pub struct FunctionActivationPlan {
     pub bindings: HashMap<BindingId, StorageClass>,
     /// Locals that require stable identity because another closure captures them.
     pub captured_cells: Vec<BindingId>,
+    /// Deterministic cell indexes within this activation's environment.
+    /// These are layout metadata; the C runtime does not allocate them yet.
+    pub cell_slots: HashMap<BindingId, u32>,
     pub ownership_tokens: HashMap<BindingId, OwnershipTokenId>,
 }
 
@@ -295,6 +298,10 @@ pub struct MemoryPlan {
     pub bindings: HashMap<BindingId, StorageClass>,
     /// Per-function storage metadata. It is not yet consumed by native codegen.
     pub function_activations: HashMap<FunctionId, FunctionActivationPlan>,
+    /// Module bindings captured by closures, ordered by BindingId.
+    pub module_cells: Vec<BindingId>,
+    /// Deterministic root-environment cell indexes for module captures.
+    pub module_cell_slots: HashMap<BindingId, u32>,
     /// Stable compiler-site identities for bindings that own dynamic resources.
     /// The native runtime pairs these sites with dynamic handles and cleanup
     /// registrations for owned strings and aggregate graphs.
@@ -1045,6 +1052,9 @@ fn plan_function_activations(program: &Program) -> HashMap<FunctionId, FunctionA
             bindings.insert(*binding, StorageClass::OwnedRegion);
         }
 
+        let cell_slots = captured_cells.iter().enumerate()
+            .map(|(slot, binding)| (*binding, slot as u32))
+            .collect();
         let ownership_tokens = bindings.iter()
             .filter_map(|(binding, class)| matches!(class, StorageClass::OwnedRegion)
                 .then_some((*binding, OwnershipTokenId(u64::from(binding.0) + 1))))
@@ -1052,6 +1062,7 @@ fn plan_function_activations(program: &Program) -> HashMap<FunctionId, FunctionA
         plans.insert(function.id, FunctionActivationPlan {
             bindings,
             captured_cells,
+            cell_slots,
             ownership_tokens,
         });
     }
@@ -1069,6 +1080,15 @@ pub fn plan(program: &Program) -> MemoryPlan {
         }
     }
     let function_activations = plan_function_activations(program);
+    let mut module_cells: Vec<_> = program.capture_storage.bindings.iter()
+        .filter_map(|entry| (entry.storage == crate::capture::CaptureStorageKind::ModuleCell)
+            .then_some(entry.binding))
+        .collect();
+    module_cells.sort_unstable();
+    module_cells.dedup();
+    let module_cell_slots = module_cells.iter().enumerate()
+        .map(|(slot, binding)| (*binding, slot as u32))
+        .collect();
     let scope_stacks = plan_scope_stacks(program, &bindings);
     let mut usage = HashMap::new();
     let mut position = 0;
@@ -1087,7 +1107,7 @@ pub fn plan(program: &Program) -> MemoryPlan {
         .collect();
     let mut operations = Vec::new();
     collect_operations(&program.statements, ScopeId(0), program, &bindings, &ownership_tokens, &mut operations);
-    MemoryPlan { bindings, function_activations, scope_stacks, usage, cfg, interference, binding_slots, stack_slot_counts, operations, ownership_tokens }
+    MemoryPlan { bindings, function_activations, module_cells, module_cell_slots, scope_stacks, usage, cfg, interference, binding_slots, stack_slot_counts, operations, ownership_tokens }
 }
 
 #[cfg(test)]
@@ -1115,9 +1135,12 @@ mod tests {
         let inner = program.functions[1].id;
 
         assert_eq!(memory.bindings.get(&global), Some(&StorageClass::OwnedRegion));
+        assert_eq!(memory.module_cells, vec![global]);
+        assert_eq!(memory.module_cell_slots.get(&global), Some(&0));
         let outer_plan = &memory.function_activations[&outer];
         assert!(outer_plan.captured_cells.contains(&x));
         assert_eq!(outer_plan.bindings.get(&x), Some(&StorageClass::OwnedRegion));
+        assert_eq!(outer_plan.cell_slots.get(&x), Some(&0));
         assert!(memory.function_activations.contains_key(&inner));
     }
 

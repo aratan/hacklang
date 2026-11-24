@@ -665,7 +665,7 @@ mod tests {
 
     #[test]
     fn native_backend_rejects_calls_until_function_activations_are_emitted() {
-        use crate::ast::{Expression as A, FunctionCallExpression, LetStatement, Program as AstProgram, Statement as AstStmt};
+        use crate::ast::{Expression as A, LetStatement, Program as AstProgram, Statement as AstStmt};
         let ast = AstProgram { statements: vec![
             AstStmt::Let(LetStatement {
                 name: "identity".into(),

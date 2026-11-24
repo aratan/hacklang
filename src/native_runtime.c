@@ -512,6 +512,7 @@ static HlEnv *hl_env_new_in_lane(HlEnv *parent, HlArenaLane *lane) {
     environment->bindings = NULL;
     environment->allocations = NULL;
     environment->ownership_records = NULL;
+    environment->cells = NULL;
     environment->next_ownership_id = 0;
     environment->lane = lane;
     environment->lane_mark_block = lane->current ? lane->current : lane->blocks;

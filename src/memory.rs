@@ -1062,7 +1062,7 @@ fn plan_function_activations(program: &Program) -> HashMap<FunctionId, FunctionA
             bindings.insert(*binding, StorageClass::OwnedRegion);
         }
 
-        let cell_slots = captured_cells.iter().enumerate()
+        let cell_slots: HashMap<BindingId, u32> = captured_cells.iter().enumerate()
             .map(|(slot, binding)| (*binding, slot as u32))
             .collect();
         let mut frame_bindings: Vec<_> = bindings.keys()

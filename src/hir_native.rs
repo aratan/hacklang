@@ -228,7 +228,13 @@ pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, Stri
     // physical HlArenaLane instances; BindingSlotPlan remains frame-layout
     // metadata and is materialized separately as activation-local frame slots.
     for binding in &program.bindings {
-        if !memory.bindings.contains_key(&binding.id) {
+        if let Some(owner) = binding.function_owner {
+            let activation = memory.function_activations.get(&owner)
+                .ok_or_else(|| format!("MemoryPlan incompleto: falta activación FunctionId {}", owner.0))?;
+            if !activation.bindings.contains_key(&binding.id) {
+                return Err(format!("MemoryPlan incompleto: falta BindingId {} en FunctionId {}", binding.id.0, owner.0));
+            }
+        } else if !memory.bindings.contains_key(&binding.id) {
             return Err(format!("MemoryPlan incompleto: falta BindingId {}", binding.id.0));
         }
     }
@@ -261,15 +267,25 @@ pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, Stri
     let mut source = include_str!("native_runtime.c").to_string();
     source.push_str("\n/* Compiler MemoryPlan: physical scope lanes. */\n");
     for binding in &program.bindings {
-        let class = match memory.bindings.get(&binding.id).expect("validated above") {
+        let class = if let Some(owner) = binding.function_owner {
+            memory.function_activations[&owner].bindings[&binding.id]
+        } else {
+            memory.bindings[&binding.id]
+        };
+        let class_name = match class {
             StorageClass::Inline => "inline",
             StorageClass::ScopeRegion(_) => "scope-region",
             StorageClass::OwnedRegion => "owned-region",
         };
-        source.push_str(&format!("/* binding {} ({}) => {} */\n", binding.id.0, binding.name, class));
+        source.push_str(&format!("/* binding {} ({}) => {} */\n", binding.id.0, binding.name, class_name));
         if let Some(slot) = memory.binding_slots.get(&binding.id) {
             source.push_str(&format!("/* binding {} => data-stack {} slot {} */\n",
                 binding.id.0, slot.stack.0, slot.slot));
+        } else if let Some(owner) = binding.function_owner {
+            if let Some(slot) = memory.function_activations[&owner].cell_slots.get(&binding.id) {
+                source.push_str(&format!("/* binding {} => function {} capture-cell {} */\n",
+                    binding.id.0, owner.0, slot));
+            }
         }
     }
     source.push_str("\nint main(void) {\n");

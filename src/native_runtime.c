@@ -403,6 +403,7 @@ static int hl_cell_write(HlCell *cell, HlValue value) {
     return 1;
 }
 
+static HlBinding *hl_find_local(HlEnv *environment, const char *name);
 static HlBinding *hl_find(HlEnv *environment, const char *name);
 
 static HlCell *hl_closure_capture_cell(HlValue closure, size_t index) {

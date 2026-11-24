@@ -70,7 +70,21 @@ impl Generator {
                 let value = self.expr(p, value, out)?;
                 format!("hl_length(env, {value})")
             },
-            ExprKind::Closure(_) => return Err("Las closures ya están representadas en HIR, pero el runtime nativo aún no implementa entornos capturados".into()),
+            ExprKind::Closure(function_id) => {
+                let function = p.functions.get(function_id.0 as usize)
+                    .filter(|function| function.id == *function_id)
+                    .ok_or_else(|| format!("FunctionId inválido para closure: {}", function_id.0))?;
+                let names = function.captures.iter()
+                    .map(|capture| Self::binding(p, capture.binding))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let captures = if names.is_empty() {
+                    "NULL".to_string()
+                } else {
+                    format!("(const char *[]){{ {} }}", names.join(", "))
+                };
+                format!("hl_closure_new(env, UINT32_C({}), {}, {})",
+                    function_id.0, captures, names.len())
+            },
             ExprKind::Call { .. } => return Err("Las llamadas ya están representadas en HIR, pero el runtime nativo aún no implementa invocación de funciones".into()),
             ExprKind::Map(items) => {
                 let mut entries = Vec::with_capacity(items.len());
@@ -209,9 +223,6 @@ impl Generator {
 }
 
 pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, String> {
-    if !program.functions.is_empty() {
-        return Err("El HIR contiene funciones; el backend C todavía no implementa sus activaciones ni entornos capturados".into());
-    }
     // Reject stale/incomplete plans instead of silently compiling without the
     // frontend's storage decisions. ScopeStackPlan is materialized below as
     // physical HlArenaLane instances; BindingSlotPlan remains frame-layout

@@ -240,6 +240,26 @@ fn invalid_array_read_indices_match_interpreter_error_classification() {
 }
 
 #[test]
+fn invalid_array_write_indices_match_interpreter_error_classification() {
+    assert_interpreter_native_failure(
+        "array_write_out_of_range",
+        "let values = [1, 2];\nvalues[9] = 3;\n",
+        "fuera de rango",
+    );
+    assert_interpreter_native_failure(
+        "array_write_fractional_index",
+        "let values = [1, 2];\nvalues[1.5] = 3;\n",
+        "entero no negativo",
+    );
+    assert_interpreter_native_failure(
+        "array_write_negative_index",
+        // The parser has no unary minus; produce the negative index at runtime.
+        "let values = [1, 2];\nlet i = 0 - 1;\nvalues[i] = 3;\n",
+        "entero no negativo",
+    );
+}
+
+#[test]
 fn invalid_nested_array_intermediate_matches_interpreter_error_classification() {
     assert_interpreter_native_failure(
         "nested_array_write_non_array_intermediate",
@@ -334,6 +354,71 @@ print original[7];
 print original[true];
 print original[[3, 4]];
 print original[@("inner": 1)];
+"#,
+    );
+}
+
+#[test]
+fn duplicate_and_unicode_map_keys_match_interpreter() {
+    assert_interpreter_native_parity(
+        "map_duplicate_unicode_keys",
+        r#"
+let repeated = @("alpha": 1, "alpha": 2);
+print repeated["alpha"];
+print len(repeated);
+let accented = @("ñ": "tilde", "🙂": "emoji");
+print accented["ñ"];
+print accented["🙂"];
+print len(accented);
+"#,
+    );
+}
+
+#[test]
+fn map_inside_array_copies_are_deep_and_independent() {
+    assert_interpreter_native_parity(
+        "map_inside_array_deep_copy",
+        r#"
+let rows = [@("name": "alpha", "tags": ["x"])];
+let copy = rows;
+copy[0]["name"] = "beta";
+copy[0]["tags"][0] = "y";
+print rows[0]["name"];
+print rows[0]["tags"][0];
+print copy[0]["name"];
+print copy[0]["tags"][0];
+print len(copy[0]);
+"#,
+    );
+}
+
+#[test]
+fn array_inside_map_copy_mutation_matches_interpreter() {
+    assert_interpreter_native_parity(
+        "array_inside_map_deep_copy",
+        r#"
+let values = @("rows": [[1, 2], [3, 4]]);
+let copy = values;
+copy["rows"][1][0] = 99;
+print values["rows"][1][0];
+print copy["rows"][1][0];
+print len(copy["rows"]);
+"#,
+    );
+}
+
+#[test]
+fn map_promoted_from_child_scope_keeps_nested_values() {
+    assert_interpreter_native_parity(
+        "map_promotion_nested_values",
+        r#"
+let saved = @("k": [0]);
+if (true) (
+    let inner = @("deep": [1, 2]);
+    saved = inner;
+)
+print saved["deep"][1];
+print len(saved);
 "#,
     );
 }

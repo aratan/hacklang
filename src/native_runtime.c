@@ -1084,6 +1084,13 @@ static void hl_index_assign_path(HlEnv *environment, const char *name,
     if (!indices || index_count == 0)
         hl_fail(environment, "la asignación por índice requiere al menos un índice");
 
+    /* A binding captured by a closure may have been updated through a sibling
+     * closure since this alias was installed. Refresh from the canonical cell
+     * before mutating, but keep the working copy in this binding's own lane;
+     * hl_binding_sync_cell promotes the completed graph back to the cell. */
+    if (binding->cell)
+        binding->value = hl_clone_value(binding->owner, binding->cell->value);
+
     HlValue *slot = &binding->value;
     for (size_t depth = 0; depth < index_count; ++depth) {
         const int is_last = depth + 1 == index_count;

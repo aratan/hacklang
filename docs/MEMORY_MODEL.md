@@ -285,7 +285,7 @@ Se añaden pruebas para promoción transitiva, ciclos, destinos inválidos, inva
 |---|---|---|
 | Evaluador Rust | Arena de entornos con mark-and-sweep de frames; String/Vec/HashMap son gestionados por Rust | Propiedad/ámbitos deterministas y escape analysis; sin GC general |
 | Runtime C | Arenas bump por lanes/ámbitos, slots físicos `HlFrame` para bindings inline, buffers reutilizables propiedad de bindings, copia profunda de arrays/maps y promoción por copia en los casos conectados; limpieza LIFO en cierres y errores fatales probados | Ampliar propiedad/escape de todos los tipos y temporales, y habilitar movimiento solo con pruebas de vida y aliasing |\n| Planificador HIR | `src/memory.rs` calcula CFG/liveness, interferencias, slots, lanes, tokens y promociones; el backend consume lanes y slots inline y valida el plan | Escape analysis transitiva/path-sensitive y planificación de todos los temporales/activaciones |
-| Closures | HIR, análisis de capturas, celdas compartidas y descriptores runtime; invocación nativa deshabilitada y celdas retenidas conservadoramente hasta teardown raíz | ABI de llamadas, activaciones, raíces temporales y recolección segura de ciclos |
+| Closures | HIR, análisis de capturas, celdas compartidas y descriptores runtime; llamadas directas a funciones sin capturas habilitadas con frames de activación, ABI de argumentos y retorno saneado; invocación de capturas y callees dinámicos rechazada en compilación; celdas retenidas conservadoramente hasta teardown raíz | Raíces temporales, acceso a celdas de captura en cuerpos generados y recolección segura de ciclos |
 | Arrays / Maps C | Implementados en runtime; clonación recursiva, indexación y asignación anidada; paridad diferencial de arrays presente, cobertura de mapas por ampliar | Completar paridad, errores y garantías de vida/propiedad en todos los caminos |
 | Análisis de escape | No existe | Fase del compilador compartida por backend y futuras optimizaciones |
 
@@ -297,7 +297,7 @@ No describir el sistema actual como si ya implementara el modelo objetivo.
 2. **Representación interna — parcial:** HIR, `MemoryPlan`, lanes, slots, tokens y operaciones de promoción ya existen; los modelos `RegionTable`/`OwnershipLedger` siguen siendo prototipos Rust y no deben confundirse con el runtime productivo.
 3. **Análisis conservador — parcial:** CFG/liveness, interferencias y decisiones de almacenamiento están conectados; falta escape analysis transitiva y sensible a caminos para todos los tipos/temporales.
 4. **Runtime C — integrado para el subconjunto actual:** arenas bump, lanes físicas, slots inline, almacenamiento owned y limpieza de ámbitos/salidas probadas. No hay todavía propiedad general de grafos ni GC de ciclos de closures.
-5. **Funciones y closures invocables:** implementar ABI, cuerpos C, activaciones y retorno; resolver vida de capturas/ciclos y añadir pruebas diferenciales/sanitizers antes de habilitarlas.
+5. **Funciones y closures invocables — parcial:** ABI, cuerpos C, frames de activación y retorno implementados para funciones sin capturas, con pruebas diferenciales y sanitizers; faltan capturas, callees dinámicos y la vida de ciclos antes de habilitarlos.
 6. **Closures y recursividad nativas**: solo cuando los ciclos y la propiedad tengan pruebas específicas.
 7. **Optimización**: reducir promociones y asignaciones tras medir; añadir una futura orden `hl explain-memory` para explicar decisiones stack/region/owned.
 

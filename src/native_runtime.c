@@ -934,6 +934,54 @@ static void hl_index_assign_path(HlEnv *environment, const char *name,
     }
 }
 
+/* Index assignment on activation storage (parameters, locals and temporaries
+ * held in frame slots). The updated value is returned so the caller writes it
+ * back into its slot; new storage belongs to the current environment lane. */
+static HlValue hl_index_assign_value(HlEnv *environment, HlValue target,
+                                     const HlValue *indices, size_t index_count,
+                                     HlValue value) {
+    if (!indices || index_count == 0)
+        hl_fail(environment, "la asignación por índice requiere al menos un índice");
+    HlValue *slot = &target;
+    for (size_t depth = 0; depth < index_count; ++depth) {
+        const int is_last = depth + 1 == index_count;
+        if (slot->tag == HL_ARRAY && slot->as.array) {
+            size_t position = hl_array_index(environment, indices[depth]);
+            if (position >= slot->as.array->length)
+                hl_fail(environment, "índice de array fuera de rango");
+            slot = &slot->as.array->items[position];
+            if (is_last) *slot = hl_clone_value(environment, value);
+            continue;
+        }
+        if (slot->tag == HL_MAP && slot->as.map) {
+            size_t position = hl_map_find_key(slot->as.map, indices[depth]);
+            if (is_last) {
+                HlValue stored = hl_clone_value(environment, value);
+                if (position != SIZE_MAX) {
+                    slot->as.map->entries[position].value = stored;
+                } else {
+                    size_t length = slot->as.map->length;
+                    if (length >= SIZE_MAX / sizeof(HlMapEntry))
+                        hl_fail(environment, "mapa demasiado grande al insertar clave");
+                    HlMapEntry *grown = (HlMapEntry *)hl_alloc(environment,
+                        (length + 1) * sizeof(HlMapEntry));
+                    if (length) memcpy(grown, slot->as.map->entries, length * sizeof(HlMapEntry));
+                    grown[length].key = hl_clone_value(environment, indices[depth]);
+                    grown[length].value = stored;
+                    slot->as.map->entries = grown;
+                    slot->as.map->length = length + 1;
+                }
+                return target;
+            }
+            if (position == SIZE_MAX) hl_fail(environment, "Clave no encontrada en mapa");
+            slot = &slot->as.map->entries[position].value;
+            continue;
+        }
+        hl_fail(environment, "no se puede asignar por índice a un valor que no sea colección");
+    }
+    return target;
+}
+
 static void hl_index_assign(HlEnv *environment, const char *name, HlValue index, HlValue value) {
     hl_index_assign_path(environment, name, &index, 1, value);
 }

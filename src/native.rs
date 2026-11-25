@@ -1542,4 +1542,37 @@ int main(void) {
         let _ = fs::remove_dir_all(directory);
     }
 
+    #[test]
+    fn sanitized_direct_calls_keep_activation_frames_and_error_paths_safe() {
+        let directory = temporary_directory().expect("temporary directory");
+        let success = sanitized_native_build(
+            "let fill = |n| ( let values = [n, n + 1]; return values; );\nlet first = fill(4);\nlet second = fill(9);\nprint first[1];\nprint second[0];\n",
+            &directory,
+            "sanitized_calls_success",
+        );
+        let run = Command::new(&success)
+            .output()
+            .expect("run sanitized function call program");
+        assert!(
+            run.status.success(),
+            "sanitized function call program failed: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&run.stdout), "5\n9\n");
+        assert_no_sanitizer_report(&run.stderr, "function_calls_success");
+
+        let failure = sanitized_native_build(
+            "let read = |values| (values[9]);\nprint read([1, 2]);\n",
+            &directory,
+            "sanitized_calls_failure",
+        );
+        let run = Command::new(&failure)
+            .output()
+            .expect("run sanitized failing function call program");
+        assert!(!run.status.success(), "out-of-range read inside a call unexpectedly succeeded");
+        assert_no_sanitizer_report(&run.stderr, "function_calls_failure");
+
+        let _ = fs::remove_dir_all(directory);
+    }
+
 }

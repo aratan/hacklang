@@ -170,7 +170,21 @@ impl Generator {
                     return Err("la asignación por índice requiere al menos un índice".into());
                 }
                 let value = self.expr(p, value, out)?;
-                if indices.len() == 1 {
+                if let Some(slot) = self.inline_slots.get(binding).copied() {
+                    // Frame-held values (parameters and locals) are not visible
+                    // by name; assign through the value and write it back.
+                    let index_values = if indices.len() == 1 {
+                        format!("&{}", indices[0])
+                    } else {
+                        format!("(HlValue[]){{ {} }}", indices.join(", "))
+                    };
+                    let updated = self.temp();
+                    Self::line(out, format!(
+                        "HlValue {updated} = hl_index_assign_value(env, hl_frame_read_or_fail(env, &frame, {slot}), {index_values}, {}, {value});",
+                        indices.len()
+                    ));
+                    Self::line(out, format!("hl_frame_write_or_fail(env, &frame, {slot}, {updated});"));
+                } else if indices.len() == 1 {
                     Self::line(out, format!(
                         "hl_index_assign(env, {}, {}, {value});",
                         Self::binding(p, *binding)?,
@@ -240,9 +254,10 @@ impl Generator {
 
 fn validate_native_expr(expression: &Expression) -> Result<(), String> {
     match &expression.kind {
-        ExprKind::Call { .. } => return Err(
-            "llamadas a funciones aún no están soportadas por el backend nativo: falta emitir cuerpos y activaciones".into()
-        ),
+        ExprKind::Call { callee, args } => {
+            validate_native_expr(callee)?;
+            for arg in args { validate_native_expr(arg)?; }
+        }
         ExprKind::Binary { left, right, .. } => {
             validate_native_expr(left)?;
             validate_native_expr(right)?;
@@ -266,6 +281,258 @@ fn validate_native_expr(expression: &Expression) -> Result<(), String> {
         | ExprKind::Read(_) | ExprKind::Closure(_) => {}
     }
     Ok(())
+}
+
+/// Module-level bindings whose value is statically a function value.
+/// Aliases are followed and any reassignment disqualifies the binding, so a
+/// call site is only accepted when the callee identity cannot change.
+fn module_function_bindings(program: &Program) -> HashMap<crate::hir::BindingId, crate::hir::FunctionId> {
+    fn collect_assigned(statements: &[Statement], assigned: &mut std::collections::HashSet<crate::hir::BindingId>) {
+        for statement in statements {
+            match &statement.kind {
+                StmtKind::Assign { binding, .. } => { assigned.insert(*binding); }
+                StmtKind::Block { statements, .. } => collect_assigned(statements, assigned),
+                StmtKind::If { then_body, else_body, .. } => {
+                    collect_assigned(then_body, assigned);
+                    collect_assigned(else_body, assigned);
+                }
+                StmtKind::While { body, .. } => collect_assigned(body, assigned),
+                _ => {}
+            }
+        }
+    }
+    let mut assigned = std::collections::HashSet::new();
+    collect_assigned(&program.statements, &mut assigned);
+    for function in &program.functions {
+        collect_assigned(&function.body.statements, &mut assigned);
+    }
+    let mut functions = HashMap::new();
+    for statement in &program.statements {
+        let StmtKind::Let { binding, value } = &statement.kind else { continue };
+        if assigned.contains(binding) { continue; }
+        let target = match &value.kind {
+            ExprKind::Closure(id) => Some(*id),
+            ExprKind::Read(source) => functions.get(source).copied(),
+            _ => None,
+        };
+        if let Some(id) = target { functions.insert(*binding, id); }
+    }
+    functions
+}
+
+struct CallCollector {
+    bindings: HashMap<crate::hir::BindingId, crate::hir::FunctionId>,
+    reachable: Vec<crate::hir::FunctionId>,
+    seen: std::collections::HashSet<crate::hir::FunctionId>,
+}
+
+fn record_call(
+    program: &Program,
+    memory: &MemoryPlan,
+    collector: &mut CallCollector,
+    callee: &Expression,
+    args: &[Expression],
+) -> Result<(), String> {
+    let id = match &callee.kind {
+        ExprKind::Closure(id) => *id,
+        ExprKind::Read(binding) => collector.bindings.get(binding).copied().ok_or_else(||
+            "llamadas a un valor de función dinámico aún no están soportadas por el backend nativo: declara la función con un nombre".to_string())?,
+        _ => return Err(
+            "llamadas a expresiones que no son funciones con nombre aún no están soportadas por el backend nativo".to_string()
+        ),
+    };
+    let function = program.functions.get(id.0 as usize).filter(|function| function.id == id)
+        .ok_or_else(|| format!("FunctionId inválido en llamada: {}", id.0))?;
+    if !function.captures.is_empty() {
+        return Err(format!(
+            "la llamada a la función {} aún no está soportada por el backend nativo: captura variables de su entorno",
+            id.0
+        ));
+    }
+    let activation = memory.function_activations.get(&id)
+        .ok_or_else(|| format!("MemoryPlan incompleto: falta activación FunctionId {}", id.0))?;
+    if !activation.captured_cells.is_empty() {
+        return Err(format!(
+            "la llamada a la función {} aún no está soportada por el backend nativo: sus locales son capturados por otra función",
+            id.0
+        ));
+    }
+    if args.len() != function.params.len() {
+        return Err(format!(
+            "la función {} espera {} argumentos y la llamada pasa {}",
+            id.0, function.params.len(), args.len()
+        ));
+    }
+    if collector.seen.insert(id) { collector.reachable.push(id); }
+    Ok(())
+}
+
+fn walk_expression_calls(
+    program: &Program, memory: &MemoryPlan, expression: &Expression, collector: &mut CallCollector,
+) -> Result<(), String> {
+    match &expression.kind {
+        ExprKind::Call { callee, args } => {
+            walk_expression_calls(program, memory, callee, collector)?;
+            for arg in args { walk_expression_calls(program, memory, arg, collector)?; }
+            record_call(program, memory, collector, callee, args)?;
+        }
+        ExprKind::Binary { left, right, .. } => {
+            walk_expression_calls(program, memory, left, collector)?;
+            walk_expression_calls(program, memory, right, collector)?;
+        }
+        ExprKind::Ternary { condition, when_true, when_false } => {
+            walk_expression_calls(program, memory, condition, collector)?;
+            walk_expression_calls(program, memory, when_true, collector)?;
+            walk_expression_calls(program, memory, when_false, collector)?;
+        }
+        ExprKind::Array(items) => for item in items { walk_expression_calls(program, memory, item, collector)?; },
+        ExprKind::Map(items) => for (key, value) in items {
+            walk_expression_calls(program, memory, key, collector)?;
+            walk_expression_calls(program, memory, value, collector)?;
+        },
+        ExprKind::Index { target, index } => {
+            walk_expression_calls(program, memory, target, collector)?;
+            walk_expression_calls(program, memory, index, collector)?;
+        }
+        ExprKind::Length(value) => walk_expression_calls(program, memory, value, collector)?,
+        ExprKind::Number(_) | ExprKind::Bool(_) | ExprKind::String(_)
+        | ExprKind::Read(_) | ExprKind::Closure(_) => {}
+    }
+    Ok(())
+}
+
+fn walk_statement_calls(
+    program: &Program, memory: &MemoryPlan, statements: &[Statement], collector: &mut CallCollector,
+) -> Result<(), String> {
+    for statement in statements {
+        match &statement.kind {
+            StmtKind::Let { value, .. } | StmtKind::Assign { value, .. }
+            | StmtKind::Print(value) | StmtKind::Return(value) =>
+                walk_expression_calls(program, memory, value, collector)?,
+            StmtKind::IndexAssign { indices, value, .. } => {
+                for index in indices { walk_expression_calls(program, memory, index, collector)?; }
+                walk_expression_calls(program, memory, value, collector)?;
+            }
+            StmtKind::Block { statements, .. } =>
+                walk_statement_calls(program, memory, statements, collector)?,
+            StmtKind::If { condition, then_body, else_body, .. } => {
+                walk_expression_calls(program, memory, condition, collector)?;
+                walk_statement_calls(program, memory, then_body, collector)?;
+                walk_statement_calls(program, memory, else_body, collector)?;
+            }
+            StmtKind::While { condition, body, .. } => {
+                walk_expression_calls(program, memory, condition, collector)?;
+                walk_statement_calls(program, memory, body, collector)?;
+            }
+            StmtKind::Break | StmtKind::Continue => {}
+        }
+    }
+    Ok(())
+}
+
+/// Direct calls whose callee identity and activation are fully known. Dynamic
+/// callees, captures and cells remain rejected until their lifetime contract
+/// and cycle collection exist.
+fn reachable_functions(program: &Program, memory: &MemoryPlan) -> Result<Vec<crate::hir::FunctionId>, String> {
+    let mut collector = CallCollector {
+        bindings: module_function_bindings(program),
+        reachable: Vec::new(),
+        seen: std::collections::HashSet::new(),
+    };
+    walk_statement_calls(program, memory, &program.statements, &mut collector)?;
+    let mut index = 0;
+    while index < collector.reachable.len() {
+        let id = collector.reachable[index];
+        index += 1;
+        let function = &program.functions[id.0 as usize];
+        if let Some(expression) = &function.body.expression {
+            walk_expression_calls(program, memory, expression, &mut collector)?;
+        }
+        walk_statement_calls(program, memory, &function.body.statements, &mut collector)?;
+    }
+    Ok(collector.reachable)
+}
+
+fn function_definition(
+    program: &Program, memory: &MemoryPlan, function: &crate::hir::Function,
+) -> Result<String, String> {
+    let id = function.id.0;
+    let activation = memory.function_activations.get(&function.id)
+        .ok_or_else(|| format!("MemoryPlan incompleto: falta activación FunctionId {id}"))?;
+    let inline_slots = activation.frame_slots.clone();
+    let owned_bindings = activation.bindings.iter()
+        .filter_map(|(binding, class)| matches!(class, StorageClass::OwnedRegion).then_some(*binding))
+        .collect();
+    let ownership_sites = activation.ownership_tokens.iter()
+        .map(|(binding, token)| (*binding, token.0))
+        .collect();
+    let scope_lanes = memory.scope_stacks.iter()
+        .map(|(scope, plan)| (*scope, plan.stack.0))
+        .collect();
+    let promotion_sites = memory.operations.iter()
+        .map(|operation| (operation.statement, (operation.destination, operation.ownership_token.0)))
+        .collect();
+    let end_label = format!("fn_end_{id}");
+    let result_slot = format!("fn_result_{id}");
+    let mut generator = Generator {
+        inline_slots, owned_bindings, ownership_sites, scope_lanes, promotion_sites,
+        function_return: Some((end_label.clone(), result_slot.clone())),
+        ..Generator::default()
+    };
+    let mut out = String::new();
+    Generator::line(&mut out, format!("static HlValue hl_fn_{id}(HlEnv *fn_parent, const HlValue *fn_args, size_t fn_arg_count) {{"));
+    Generator::line(&mut out, format!(
+        "    if (fn_arg_count != {}) hl_fail(fn_parent, \"número de argumentos incorrecto en la llamada a la función\");",
+        function.params.len()
+    ));
+    Generator::line(&mut out, "    HlEnv *env = hl_env_new(fn_parent);");
+    if activation.frame_slot_count > 0 {
+        Generator::line(&mut out, format!("    HlFrameSlot frame_slots[{}];", activation.frame_slot_count));
+        Generator::line(&mut out, "    HlFrame frame;");
+        Generator::line(&mut out, format!("    hl_frame_init(&frame, frame_slots, {});", activation.frame_slot_count));
+    } else {
+        Generator::line(&mut out, "    HlFrame frame = { NULL, 0 };");
+    }
+    for (index, parameter) in function.params.iter().enumerate() {
+        let slot = activation.frame_slots.get(parameter).ok_or_else(|| format!(
+            "MemoryPlan incompleto: el parámetro BindingId {} de FunctionId {id} no tiene slot de frame",
+            parameter.0
+        ))?;
+        Generator::line(&mut out, format!(
+            "    hl_frame_write_or_fail(env, &frame, {slot}, hl_clone_value(env, fn_args[{index}]));"
+        ));
+    }
+    Generator::line(&mut out, format!("    HlValue {result_slot} = hl_number(0);"));
+    if let Some(expression) = &function.body.expression {
+        let value = generator.expr(program, expression, &mut out)?;
+        Generator::line(&mut out, format!("    {result_slot} = {value};"));
+    }
+    for statement in &function.body.statements {
+        generator.stmt(program, statement, &mut out)?;
+    }
+    Generator::line(&mut out, format!("{end_label}: ;"));
+    Generator::line(&mut out, format!("    HlValue fn_out_{id} = hl_clone_value(fn_parent, {result_slot});"));
+    Generator::line(&mut out, "    hl_env_free(env);");
+    Generator::line(&mut out, format!("    return fn_out_{id};"));
+    Generator::line(&mut out, "}");
+    Ok(out)
+}
+
+fn call_dispatcher(reachable: &[crate::hir::FunctionId]) -> String {
+    let mut out = String::new();
+    Generator::line(&mut out, "static HlValue hl_call(HlEnv *fn_caller, HlValue fn_callee, const HlValue *fn_args, size_t fn_arg_count) {");
+    Generator::line(&mut out, "    if (fn_callee.tag != HL_CLOSURE || !fn_callee.as.closure)");
+    Generator::line(&mut out, "        hl_fail(fn_caller, \"solo se pueden llamar valores de función\");");
+    Generator::line(&mut out, "    switch (fn_callee.as.closure->function_id) {");
+    for id in reachable {
+        Generator::line(&mut out, format!("        case {}: return hl_fn_{}(fn_caller, fn_args, fn_arg_count);", id.0, id.0));
+    }
+    Generator::line(&mut out, "        default: break;");
+    Generator::line(&mut out, "    }");
+    Generator::line(&mut out, "    hl_fail(fn_caller, \"esta función aún no está soportada por el backend nativo\");");
+    Generator::line(&mut out, "    return hl_number(0);");
+    Generator::line(&mut out, "}");
+    out
 }
 
 fn validate_native_statements(statements: &[Statement]) -> Result<(), String> {
@@ -306,6 +573,9 @@ pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, Stri
         }
         validate_native_statements(&function.body.statements)?;
     }
+    // Only functions reachable from a supported call site get C bodies. Their
+    // activation frames and return path are materialized below.
+    let reachable = reachable_functions(program, memory)?;
 
     // Reject stale/incomplete plans instead of silently compiling without the
     // frontend's storage decisions. ScopeStackPlan is materialized below as
@@ -350,6 +620,20 @@ pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, Stri
     let mut generator = Generator { inline_slots, owned_bindings, ownership_sites, scope_lanes: scope_lanes.clone(), promotion_sites, ..Generator::default() };
     for stmt in &program.statements { generator.stmt(program, stmt, &mut body)?; }
     let mut source = include_str!("native_runtime.c").to_string();
+    if !reachable.is_empty() {
+        source.push_str("\n/* Generated function bodies and activation frames. */\n");
+        for id in &reachable {
+            source.push_str(&format!(
+                "static HlValue hl_fn_{}(HlEnv *fn_parent, const HlValue *fn_args, size_t fn_arg_count);\n",
+                id.0
+            ));
+        }
+        source.push_str("static HlValue hl_call(HlEnv *fn_caller, HlValue fn_callee, const HlValue *fn_args, size_t fn_arg_count);\n");
+        for id in &reachable {
+            source.push_str(&function_definition(program, memory, &program.functions[id.0 as usize])?);
+        }
+        source.push_str(&call_dispatcher(&reachable));
+    }
     source.push_str("\n/* Compiler MemoryPlan: physical scope lanes. */\n");
     for binding in &program.bindings {
         let class = if let Some(owner) = binding.function_owner {
@@ -665,7 +949,7 @@ mod tests {
     }
 
     #[test]
-    fn native_backend_rejects_calls_until_function_activations_are_emitted() {
+    fn native_backend_emits_activation_frames_for_direct_calls() {
         use crate::ast::{Expression as A, LetStatement, Program as AstProgram, Statement as AstStmt};
         let ast = AstProgram { statements: vec![
             AstStmt::Let(LetStatement {
@@ -685,9 +969,40 @@ mod tests {
         ]};
         let lowered = hir::lower(&ast).unwrap();
         let memory = crate::memory::plan(&lowered);
+        let c = generate_c(&lowered, &memory).unwrap();
+        assert!(c.contains("static HlValue hl_fn_0(HlEnv *fn_parent"));
+        assert!(c.contains("hl_frame_write_or_fail(env, &frame, 0, hl_clone_value(env, fn_args[0]));"));
+        assert!(c.contains("case 0: return hl_fn_0(fn_caller, fn_args, fn_arg_count);"));
+        assert!(c.contains("hl_call(env,"));
+    }
+
+    #[test]
+    fn native_backend_rejects_calls_to_capturing_functions() {
+        use crate::ast::{Expression as A, LetStatement, Program as AstProgram, Statement as AstStmt};
+        // The recursive lambda captures its own module binding, so its
+        // activation needs module cells and a lifetime contract not yet built.
+        let ast = AstProgram { statements: vec![
+            AstStmt::Let(LetStatement {
+                name: "factorial".into(),
+                value: A::Lambda {
+                    params: vec!["n".into()],
+                    body: Box::new(A::FunctionCall {
+                        func: Box::new(A::Identifier("factorial".into())),
+                        args: vec![A::NumberLiteral(1.0)],
+                    }),
+                },
+            }),
+            AstStmt::Print(PrintStatement {
+                value: A::FunctionCall {
+                    func: Box::new(A::Identifier("factorial".into())),
+                    args: vec![A::NumberLiteral(5.0)],
+                },
+            }),
+        ]};
+        let lowered = hir::lower(&ast).unwrap();
+        let memory = crate::memory::plan(&lowered);
         let error = generate_c(&lowered, &memory).unwrap_err();
-        assert!(error.contains("llamadas a funciones aún no están soportadas"));
-        assert!(error.contains("falta emitir cuerpos y activaciones"));
+        assert!(error.contains("captura variables de su entorno"), "{error}");
     }
 
 

@@ -91,14 +91,29 @@ typedef struct HlCell {
     HlValue value;
     HlEnv *owner;
     int initialized;
+    int marked; /* tracing mark, reset by every collection */
     struct HlCell *next;
 } HlCell;
 struct HlClosure {
     uint32_t function_id;
     size_t capture_count;
     HlCell **captures;
+    int marked; /* tracing mark, reset by every collection */
     struct HlClosure *next;
+
 };
+
+/* Root registry: activation frames and protected temporaries are roots of the
+ * closure/cell graph. Nodes live in the root environment and are popped in
+ * LIFO order by the generated unwinding path. */
+typedef struct HlRootFrame {
+    HlFrame *frame;
+    struct HlRootFrame *next;
+} HlRootFrame;
+typedef struct HlRootValue {
+    HlValue *slot;
+    struct HlRootValue *next;
+} HlRootValue;
 typedef struct HlAllocation {
     HlCleanupFn cleanup;
     void *context;
@@ -130,8 +145,10 @@ struct HlEnv {
     HlBinding *bindings;
     HlAllocation *allocations;
     HlOwnershipRecord *ownership_records; /* root environment owns token tombstones */
-    HlCell *cells; /* stable captured cells retained until root teardown */
-    HlClosure *closures; /* closure descriptors retained until root teardown */
+    HlCell *cells; /* all capture cells, swept by tracing collection */
+    HlClosure *closures; /* all closure descriptors, swept by tracing collection */
+    HlRootFrame *frame_roots; /* active activation frames */
+    HlRootValue *value_roots; /* protected evaluator temporaries */
     uint64_t next_ownership_id;
     HlArenaLane *lane;
     HlArenaBlock *lane_mark_block;
@@ -355,6 +372,12 @@ static void hl_env_free(HlEnv *environment) {
     }
     /* Token tombstones live in the root until all descendant callbacks have run. */
     if (!environment->parent) {
+        HlRootFrame *frame_root = environment->frame_roots;
+        while (frame_root) { HlRootFrame *next = frame_root->next; free(frame_root); frame_root = next; }
+        environment->frame_roots = NULL;
+        HlRootValue *value_root = environment->value_roots;
+        while (value_root) { HlRootValue *next = value_root->next; free(value_root); value_root = next; }
+        environment->value_roots = NULL;
         HlClosure *closure = environment->closures;
         while (closure) { HlClosure *next = closure->next; free(closure->captures); free(closure); closure = next; }
         environment->closures = NULL;
@@ -442,6 +465,28 @@ static HlCell *hl_binding_capture(HlEnv *environment, const char *name) {
     if (!binding->cell) binding->cell = hl_cell_new(binding->owner, binding->value, 1);
     return binding->cell;
 }
+/* A captured binding must exist before its initializer runs: a self-recursive
+ * lambda captures the binding it is currently defining. Predeclaring installs
+ * the binding and its (still uninitialized) cell, so capture creation finds the
+ * same identity that the definition later initializes. */
+static void hl_binding_predeclare(HlEnv *environment, const char *name, uint64_t ownership_site) {
+    if (!environment || environment->closing)
+        hl_fail(environment, "entorno cerrado al predeclarar un binding");
+    if (hl_find_local(environment, name)) return;
+    HlValue zero; zero.tag = HL_NUMBER; zero.as.number = 0.0;
+    HlBinding *binding = (HlBinding *)hl_alloc(environment, sizeof(HlBinding));
+    binding->name = hl_copy_string(environment, name);
+    binding->owner = environment;
+    binding->string_storage = NULL;
+    binding->string_capacity = 0;
+    binding->ownership_site = ownership_site;
+    binding->ownership_token = 0;
+    binding->aggregate_lane = (HlArenaLane){0};
+    binding->value = zero;
+    binding->cell = hl_cell_new(environment, zero, 0);
+    binding->next = environment->bindings;
+    environment->bindings = binding;
+}
 static HlValue hl_closure_new(HlEnv *environment, uint32_t function_id,
         const char *const *capture_names, size_t capture_count) {
     HlEnv *root = hl_env_root(environment);
@@ -469,6 +514,122 @@ static int hl_closure_capture_write(const HlValue value, size_t index, HlValue c
     if (value.tag != HL_CLOSURE || !value.as.closure
         || index >= value.as.closure->capture_count) return 0;
     return hl_cell_write(value.as.closure->captures[index], captured);
+}
+
+/* --- Root registry and cycle tracing ------------------------------------
+ * Cells and closures form a graph (cell -> closure -> captured cell). Cells
+ * meant for a self- or mutually-recursive closure would otherwise keep each
+ * other alive forever. The generated code registers every activation frame and
+ * every protected temporary as a root; collection marks the graph from the
+ * live environment chain plus those roots and sweeps the rest. It runs only at
+ * statement boundaries, where no evaluator temporary is live.
+ */
+static void hl_trace_value(HlValue value);
+static void hl_trace_cell(HlCell *cell);
+static void hl_trace_closure(HlClosure *closure);
+
+static void hl_trace_value(HlValue value) {
+    switch (value.tag) {
+        case HL_CLOSURE: hl_trace_closure(value.as.closure); break;
+        case HL_ARRAY:
+            if (value.as.array)
+                for (size_t i = 0; i < value.as.array->length; ++i)
+                    hl_trace_value(value.as.array->items[i]);
+            break;
+        case HL_MAP:
+            if (value.as.map)
+                for (size_t i = 0; i < value.as.map->length; ++i) {
+                    hl_trace_value(value.as.map->entries[i].key);
+                    hl_trace_value(value.as.map->entries[i].value);
+                }
+            break;
+        default: break;
+    }
+}
+static void hl_trace_cell(HlCell *cell) {
+    if (!cell || cell->marked) return;
+    cell->marked = 1;
+    if (cell->initialized) hl_trace_value(cell->value);
+}
+static void hl_trace_closure(HlClosure *closure) {
+    if (!closure || closure->marked) return;
+    closure->marked = 1;
+    for (size_t i = 0; i < closure->capture_count; ++i)
+        hl_trace_cell(closure->captures[i]);
+}
+
+static void hl_root_frame_push(HlEnv *environment, HlFrame *frame) {
+    HlEnv *root = hl_env_root(environment);
+    if (!root || root->closing || !frame) return;
+    HlRootFrame *node = (HlRootFrame *)malloc(sizeof(HlRootFrame));
+    if (!node) hl_fail(environment, "memoria agotada al registrar el frame activo");
+    node->frame = frame;
+    node->next = root->frame_roots;
+    root->frame_roots = node;
+}
+static void hl_root_frame_pop(HlEnv *environment) {
+    HlEnv *root = hl_env_root(environment);
+    if (!root || !root->frame_roots) return;
+    HlRootFrame *node = root->frame_roots;
+    root->frame_roots = node->next;
+    free(node);
+}
+static void hl_root_value_push(HlEnv *environment, HlValue *slot) {
+    HlEnv *root = hl_env_root(environment);
+    if (!root || root->closing || !slot) return;
+    HlRootValue *node = (HlRootValue *)malloc(sizeof(HlRootValue));
+    if (!node) hl_fail(environment, "memoria agotada al registrar una raíz temporal");
+    node->slot = slot;
+    node->next = root->value_roots;
+    root->value_roots = node;
+}
+static void hl_root_value_pop(HlEnv *environment, HlValue *slot) {
+    HlEnv *root = hl_env_root(environment);
+    if (!root) return;
+    HlRootValue **link = &root->value_roots;
+    while (*link && (*link)->slot != slot) link = &(*link)->next;
+    if (!*link) return;
+    HlRootValue *node = *link;
+    *link = node->next;
+    free(node);
+}
+
+static void hl_collect(HlEnv *environment) {
+    HlEnv *root = hl_env_root(environment);
+    if (!root || root->closing) return;
+    for (HlEnv *scope = environment; scope; scope = scope->parent)
+        for (HlBinding *binding = scope->bindings; binding; binding = binding->next) {
+            hl_trace_cell(binding->cell);
+            hl_trace_value(binding->value);
+        }
+    for (HlRootFrame *node = root->frame_roots; node; node = node->next) {
+        HlFrame *frame = node->frame;
+        if (!frame || !frame->slots) continue;
+        for (size_t i = 0; i < frame->slot_count; ++i)
+            if (frame->slots[i].initialized) hl_trace_value(frame->slots[i].value);
+    }
+    for (HlRootValue *node = root->value_roots; node; node = node->next)
+        if (node->slot) hl_trace_value(*node->slot);
+
+    HlCell **cell_link = &root->cells;
+    while (*cell_link) {
+        HlCell *cell = *cell_link;
+        if (!cell->marked) { *cell_link = cell->next; free(cell); continue; }
+        cell->marked = 0;
+        cell_link = &cell->next;
+    }
+    HlClosure **closure_link = &root->closures;
+    while (*closure_link) {
+        HlClosure *closure = *closure_link;
+        if (!closure->marked) {
+            *closure_link = closure->next;
+            free(closure->captures);
+            free(closure);
+            continue;
+        }
+        closure->marked = 0;
+        closure_link = &closure->next;
+    }
 }
 
 static char *hl_copy_string(HlEnv *environment, const char *value) {
@@ -601,6 +762,8 @@ static HlEnv *hl_env_new_in_lane(HlEnv *parent, HlArenaLane *lane) {
     environment->ownership_records = NULL;
     environment->cells = NULL;
     environment->closures = NULL;
+    environment->frame_roots = NULL;
+    environment->value_roots = NULL;
     environment->next_ownership_id = 0;
     environment->lane = lane;
     environment->lane_mark_block = lane->current ? lane->current : lane->blocks;
@@ -937,7 +1100,7 @@ static void hl_index_assign_path(HlEnv *environment, const char *name,
             slot = &slot->as.map->entries[position].value;
             continue;
         }
-        hl_fail(environment, "no se puede asignar por índice a un valor que no sea colección");
+        hl_fail(environment, "no se puede indexar por asignación un valor que no sea colección");
     }
     hl_binding_sync_cell(binding);
 }
@@ -985,7 +1148,7 @@ static HlValue hl_index_assign_value(HlEnv *environment, HlValue target,
             slot = &slot->as.map->entries[position].value;
             continue;
         }
-        hl_fail(environment, "no se puede asignar por índice a un valor que no sea colección");
+        hl_fail(environment, "no se puede indexar por asignación un valor que no sea colección");
     }
     return target;
 }

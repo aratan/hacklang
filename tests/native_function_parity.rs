@@ -235,25 +235,86 @@ print scale(0);
 }
 
 #[test]
-fn recursion_and_dynamic_callees_stay_rejected() {
-    assert_native_build_failure(
-        "recursive_function",
-        "let factorial = |n| ((n < 2) ? 1 : n * factorial(n - 1));\nprint factorial(5);\n",
-        "recursiva",
+fn higher_order_callees_match_interpreter() {
+    assert_interpreter_native_parity(
+        "higher_order",
+        r#"
+let apply = |func, a| (func(a));
+let inc = |x| (x + 1);
+print apply(inc, 1);
+let twice = |func, a| (func(func(a)));
+print twice(inc, 5);
+let base = 10;
+let add_base = |x| (x + base);
+print apply(add_base, 4);
+let compose = |outer, inner, a| (outer(inner(a)));
+print compose(inc, add_base, 0);
+let ops = [inc, |x| (x * 10)];
+print ops[1](3);
+print ops[0](3);
+let table = @("double": |x| (x * 2));
+let lookup = |entries, key, a| (entries[key](a));
+print lookup(table, "double", 7);
+let pick = |flag, a| ((flag ? inc : add_base)(a));
+print pick(1, 2);
+print pick(0, 2);
+"#,
     );
+}
+
+#[test]
+fn higher_order_argument_errors_match_interpreter() {
     assert_native_build_failure(
-        "uncalled_recursive_closure",
-        "let f = |n| f(n);\nprint 1;\n",
-        "antes de que exista",
-    );
-    assert_native_build_failure(
-        "higher_order_callee",
-        "let apply = |func, a| (func(a));\nlet inc = |x| (x + 1);\nprint apply(inc, 1);\n",
-        "valor de función dinámico",
-    );
-    assert_native_build_failure(
-        "arity_mismatch",
+        "static_arity_mismatch",
         "let add = |x, y| (x + y);\nprint add(1);\n",
         "espera 2 argumentos",
+    );
+}
+
+#[test]
+fn recursive_and_mutually_recursive_calls_match_interpreter() {
+    assert_interpreter_native_parity(
+        "recursion",
+        r#"
+let factorial = |n| ((n < 2) ? 1 : n * factorial(n - 1));
+print factorial(5);
+print factorial(0);
+let fib = |n| ((n < 2) ? n : fib(n - 1) + fib(n - 2));
+print fib(10);
+let even = |n| ((n < 1) ? 1 : odd(n - 1));
+let odd = |n| ((n < 1) ? 0 : even(n - 1));
+print even(10);
+print odd(7);
+let unused = |n| unused(n);
+print 1;
+"#,
+    );
+}
+
+#[test]
+fn recursive_closures_created_per_activation_match_interpreter() {
+    // Each activation builds its own self-recursive closure, so the closure and
+    // its capture cell form a cycle that tracing collection must reclaim.
+    assert_interpreter_native_parity(
+        "recursive_closures",
+        r#"
+let make = |n| (
+    let countdown = |k| ((k < 1) ? n : countdown(k - 1));
+    return countdown;
+);
+let down = make(4);
+print down(10);
+let other = make(9);
+print other(2);
+print down(3);
+let tally = 0;
+let i = 0;
+while (i < 5) (
+    let inner = |k| ((k < 1) ? i : inner(k - 1));
+    tally = tally + inner(3);
+    i = i + 1;
+);
+print tally;
+"#,
     );
 }

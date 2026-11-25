@@ -1543,6 +1543,44 @@ int main(void) {
     }
 
     #[test]
+    fn sanitized_higher_order_and_recursive_closures_are_safe() {
+        let directory = temporary_directory().expect("temporary directory");
+        let success = sanitized_native_build(
+            "let apply = |f, a| (f(a));\nlet inc = |x| (x + 1);\nprint apply(inc, 1);\nlet fact = |n| ((n < 2) ? 1 : n * fact(n - 1));\nprint fact(5);\nlet even = |n| ((n < 1) ? 1 : odd(n - 1));\nlet odd = |n| ((n < 1) ? 0 : even(n - 1));\nprint even(6);\nlet make = |n| ( let down = |k| ((k < 1) ? n : down(k - 1)); return down; );\nlet i = 0;\nlet total = 0;\nwhile (i < 3) (\n    let loop_closure = make(i);\n    total = total + loop_closure(5);\n    i = i + 1;\n);\nprint total;\nlet ops = [inc, |x| (x * 3)];\nprint ops[0](4);\nprint ops[1](4);\nlet table = @(\"k\": |x| (x + 2));\nlet lookup = |t, key, a| (t[key](a));\nprint lookup(table, \"k\", 5);\nlet tail = |n| ((n < 1) ? 0 : tail(n - 1));\nprint tail(8);\n",
+            &directory,
+            "sanitized_higher_order_success",
+        );
+        let run = Command::new(&success)
+            .output()
+            .expect("run sanitized higher-order program");
+        assert!(
+            run.status.success(),
+            "sanitized higher-order program failed: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&run.stdout),
+            "2\n120\n1\n3\n5\n12\n7\n0\n"
+        );
+        assert_no_sanitizer_report(&run.stderr, "higher_order_success");
+
+        // A runtime error raised inside a recursive closure must unwind without
+        // leaking the activation or its capture cell.
+        let failure = sanitized_native_build(
+            "let boom = |n| ((n < 1) ? [1][3] : boom(n - 1));\nprint boom(4);\n",
+            &directory,
+            "sanitized_higher_order_failure",
+        );
+        let run = Command::new(&failure)
+            .output()
+            .expect("run sanitized failing recursive program");
+        assert!(!run.status.success(), "out-of-range recursive read unexpectedly succeeded");
+        assert_no_sanitizer_report(&run.stderr, "higher_order_failure");
+
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn sanitized_direct_calls_keep_activation_frames_and_error_paths_safe() {
         let directory = temporary_directory().expect("temporary directory");
         let success = sanitized_native_build(

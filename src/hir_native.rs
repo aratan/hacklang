@@ -15,6 +15,12 @@ struct Generator {
     scope_lanes: HashMap<ScopeId, u32>,
     promotion_sites: HashMap<StmtId, (crate::hir::BindingId, u64)>,
     function_return: Option<(String, String)>,
+    /// Bindings whose storage is a shared capture cell. They are predeclared
+    /// before their initializer so a self-recursive closure can capture them.
+    cell_bindings: std::collections::HashSet<crate::hir::BindingId>,
+    /// Trace closure cycles at statement boundaries when the program can create
+    /// closure values.
+    collect: bool,
 }
 
 impl Generator {
@@ -132,15 +138,33 @@ impl Generator {
         let id = self.scope; self.scope += 1; let prev = format!("prev_{id}");
         Self::line(out, "{"); Self::line(out, format!("HlEnv *{prev} = env;"));
         self.enter_scope_env(scope, out); self.scopes.push(prev.clone());
-        for s in statements { self.stmt(p, s, out)?; }
+        self.statements(p, statements, out)?;
         self.scopes.pop(); Self::line(out, "hl_env_free(env);"); Self::line(out, format!("env = {prev};")); Self::line(out, "}"); Ok(())
     }
     fn restore(&self, out: &mut String, depth: usize) {
         for prev in self.scopes[depth..].iter().rev() { Self::line(out, "hl_env_free(env);"); Self::line(out, format!("env = {prev};")); }
     }
+    /// A statement boundary has no live evaluator temporary, so it is a safe
+    /// point to sweep unreachable closure/cell cycles.
+    fn collect_point(&self, out: &mut String) {
+        if self.collect { Self::line(out, "hl_collect(env);"); }
+    }
+    fn statements(&mut self, p: &Program, statements: &[Statement], out: &mut String) -> Result<(), String> {
+        for statement in statements {
+            self.stmt(p, statement, out)?;
+            self.collect_point(out);
+        }
+        Ok(())
+    }
     fn stmt(&mut self, p: &Program, s: &Statement, out: &mut String) -> Result<(), String> {
         match &s.kind {
             StmtKind::Let { binding, value } => {
+                // A captured binding is predeclared with an uninitialized cell
+                // so the initializer (which may capture it) shares its identity.
+                if self.cell_bindings.contains(binding) {
+                    let site = self.ownership_sites.get(binding).copied().unwrap_or(0);
+                    Self::line(out, format!("hl_binding_predeclare(env, {}, UINT64_C({site}));", Self::binding(p, *binding)?));
+                }
                 let v = self.expr(p, value, out)?;
                 if let Some(slot) = self.inline_slots.get(binding) {
                     Self::line(out, format!("hl_frame_write_or_fail(env, &frame, {slot}, {v});"));
@@ -225,9 +249,10 @@ impl Generator {
                 self.enter_scope_env(*scope, out); self.scopes.push(iter_prev.clone());
                 let c = self.expr(p, condition, out)?;
                 Self::line(out, format!("if (!hl_truthy({c})) {{ hl_env_free(env); env = {iter_prev}; goto {end}; }}"));
-                for child in body { self.stmt(p, child, out)?; }
+                self.statements(p, body, out)?;
                 self.scopes.pop();
                 Self::line(out, "hl_env_free(env);"); Self::line(out, format!("env = {iter_prev};"));
+                self.collect_point(out);
                 Self::line(out, format!("goto {cond};")); Self::line(out, format!("{end}: ;"));
                 self.loops.pop(); self.scopes.pop(); Self::line(out, format!("hl_env_free({loop_env});"));
                 Self::line(out, format!("env = {prev};"));
@@ -326,8 +351,12 @@ struct CallCollector {
     bindings: HashMap<crate::hir::BindingId, crate::hir::FunctionId>,
     reachable: Vec<crate::hir::FunctionId>,
     seen: std::collections::HashSet<crate::hir::FunctionId>,
-    caller: Option<crate::hir::FunctionId>,
-    edges: Vec<(crate::hir::FunctionId, crate::hir::FunctionId)>,
+    /// Whether some call site resolves its callee only at runtime (higher-order
+    /// parameter, closure stored in an aggregate...).
+    dynamic_calls: bool,
+    /// Sticky flag: the runtime dispatcher must exist even when no closure
+    /// function was widened into the reachable set.
+    saw_dynamic_calls: bool,
 }
 
 fn record_call(
@@ -337,13 +366,24 @@ fn record_call(
     callee: &Expression,
     args: &[Expression],
 ) -> Result<(), String> {
+    // A callee whose value is not statically a known function is resolved by
+    // the runtime dispatcher. Its possible targets are every function that can
+    // produce a closure value, so the call is recorded instead of rejected.
     let id = match &callee.kind {
         ExprKind::Closure(id) => *id,
-        ExprKind::Read(binding) => collector.bindings.get(binding).copied().ok_or_else(||
-            "llamadas a un valor de función dinámico aún no están soportadas por el backend nativo: declara la función con un nombre".to_string())?,
-        _ => return Err(
-            "llamadas a expresiones que no son funciones con nombre aún no están soportadas por el backend nativo".to_string()
-        ),
+        ExprKind::Read(binding) => match collector.bindings.get(binding).copied() {
+            Some(id) => id,
+            None => {
+                collector.dynamic_calls = true;
+                collector.saw_dynamic_calls = true;
+                return Ok(());
+            }
+        },
+        _ => {
+            collector.dynamic_calls = true;
+            collector.saw_dynamic_calls = true;
+            return Ok(());
+        }
     };
     let function = program.functions.get(id.0 as usize).filter(|function| function.id == id)
         .ok_or_else(|| format!("FunctionId inválido en llamada: {}", id.0))?;
@@ -359,7 +399,6 @@ fn record_call(
             id.0, function.params.len(), args.len()
         ));
     }
-    if let Some(caller) = collector.caller { collector.edges.push((caller, id)); }
     if collector.seen.insert(id) { collector.reachable.push(id); }
     Ok(())
 }
@@ -427,116 +466,106 @@ fn walk_statement_calls(
     Ok(())
 }
 
-/// A module-level closure can only capture bindings that already exist. A
-/// self- or mutually-recursive lambda violates that order because its capture
-/// cell is requested while the binding is still being defined; the runtime
-/// would abort at closure construction. Reject it at compile time until root
-/// cells are created eagerly with cycle tracing.
-fn validate_capture_creation_order(program: &Program) -> Result<(), String> {
-    let mut defined = std::collections::HashSet::new();
-    for statement in &program.statements {
-        let StmtKind::Let { binding, value } = &statement.kind else { continue };
-        if let ExprKind::Closure(id) = &value.kind {
-            let function = program.functions.get(id.0 as usize)
-                .filter(|function| function.id == *id)
-                .ok_or_else(|| format!("FunctionId inválido para closure: {}", id.0))?;
-            for capture in &function.captures {
-                let target = program.bindings.get(capture.binding.0 as usize)
-                    .ok_or_else(|| format!("BindingId inválido en captura: {}", capture.binding.0))?;
-                if target.function_owner.is_none() && !defined.contains(&capture.binding) {
-                    return Err(format!(
-                        "la función '{}' captura la variable '{}' antes de que exista: las celdas de closures recursivas requieren recolección de ciclos, aún no soportada",
-                        program.bindings.get(binding.0 as usize).map_or("anónima", |binding| binding.name.as_str()),
-                        target.name
-                    ));
+/// Every function id that can become a runtime closure value. A dynamic callee
+/// may carry any of them, so their bodies and dispatcher cases must exist.
+fn closure_functions(program: &Program) -> Vec<crate::hir::FunctionId> {
+    fn expression(value: &Expression, out: &mut Vec<crate::hir::FunctionId>) {
+        match &value.kind {
+            ExprKind::Closure(id) => out.push(*id),
+            ExprKind::Binary { left, right, .. } => { expression(left, out); expression(right, out); }
+            ExprKind::Ternary { condition, when_true, when_false } => {
+                expression(condition, out);
+                expression(when_true, out);
+                expression(when_false, out);
+            }
+            ExprKind::Array(items) => for item in items { expression(item, out); },
+            ExprKind::Map(items) => for (key, value) in items {
+                expression(key, out);
+                expression(value, out);
+            }
+            ExprKind::Index { target, index } => { expression(target, out); expression(index, out); }
+            ExprKind::Length(value) => expression(value, out),
+            ExprKind::Call { callee, args } => {
+                expression(callee, out);
+                for arg in args { expression(arg, out); }
+            }
+            ExprKind::Number(_) | ExprKind::Bool(_) | ExprKind::String(_) | ExprKind::Read(_) => {}
+        }
+    }
+    fn statements(values: &[Statement], out: &mut Vec<crate::hir::FunctionId>) {
+        for statement in values {
+            match &statement.kind {
+                StmtKind::Let { value, .. } | StmtKind::Assign { value, .. }
+                | StmtKind::Print(value) | StmtKind::Return(value) => expression(value, out),
+                StmtKind::IndexAssign { indices, value, .. } => {
+                    for index in indices { expression(index, out); }
+                    expression(value, out);
                 }
+                StmtKind::Block { statements: body, .. } => statements(body, out),
+                StmtKind::If { condition, then_body, else_body, .. } => {
+                    expression(condition, out);
+                    statements(then_body, out);
+                    statements(else_body, out);
+                }
+                StmtKind::While { condition, body, .. } => {
+                    expression(condition, out);
+                    statements(body, out);
+                }
+                StmtKind::Break | StmtKind::Continue => {}
             }
         }
-        defined.insert(*binding);
     }
-    Ok(())
+    let mut out = Vec::new();
+    statements(&program.statements, &mut out);
+    for function in &program.functions {
+        if let Some(value) = &function.body.expression { expression(value, &mut out); }
+        statements(&function.body.statements, &mut out);
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
-/// Reject recursion before codegen: a recursive closure captures its own
-/// module binding, and those root cells need cycle tracing, which the runtime
-/// does not implement yet.
-fn reject_recursive_calls(
-    program: &Program,
-    reachable: &[crate::hir::FunctionId],
-    edges: &[(crate::hir::FunctionId, crate::hir::FunctionId)],
-) -> Result<(), String> {
-    let mut adjacency: HashMap<crate::hir::FunctionId, Vec<crate::hir::FunctionId>> = HashMap::new();
-    for (caller, callee) in edges {
-        adjacency.entry(*caller).or_default().push(*callee);
-    }
-    fn visit(
-        id: crate::hir::FunctionId,
-        adjacency: &HashMap<crate::hir::FunctionId, Vec<crate::hir::FunctionId>>,
-        visiting: &mut std::collections::HashSet<crate::hir::FunctionId>,
-        done: &mut std::collections::HashSet<crate::hir::FunctionId>,
-    ) -> bool {
-        if done.contains(&id) { return false; }
-        if !visiting.insert(id) { return true; }
-        if let Some(callees) = adjacency.get(&id) {
-            for callee in callees {
-                if visit(*callee, adjacency, visiting, done) { return true; }
-            }
-        }
-        visiting.remove(&id);
-        done.insert(id);
-        false
-    }
-    let mut visiting = std::collections::HashSet::new();
-    let mut done = std::collections::HashSet::new();
-    for id in reachable {
-        if !visit(*id, &adjacency, &mut visiting, &mut done) { continue; }
-        let name = program.statements.iter().find_map(|statement| match &statement.kind {
-            StmtKind::Let { binding, value }
-                if matches!(&value.kind, ExprKind::Closure(target) if target == id) =>
-                program.bindings.get(binding.0 as usize).map(|binding| binding.name.clone()),
-            _ => None,
-        });
-        return Err(match name {
-            Some(name) => format!(
-                "la función {name} participa en una llamada recursiva y el backend nativo aún no soporta recursividad: requiere celdas raíz con recolección de ciclos"
-            ),
-            None => format!(
-                "la función {} participa en una llamada recursiva y el backend nativo aún no soporta recursividad: requiere celdas raíz con recolección de ciclos",
-                id.0
-            ),
-        });
-    }
-    Ok(())
-}
-
-/// Direct calls whose callee identity and activation are fully known. Dynamic
-/// callees remain rejected; recursion is rejected until cycle tracing exists.
-fn reachable_functions(program: &Program, memory: &MemoryPlan) -> Result<Vec<crate::hir::FunctionId>, String> {
+/// Call targets whose bodies must be emitted. Direct calls are resolved
+/// statically; a dynamic call site can reach any function that produces a
+/// closure value, so those functions become reachable conservatively. Recursive
+/// call graphs are accepted: the runtime collects closure/cell cycles.
+fn reachable_functions(
+    program: &Program, memory: &MemoryPlan,
+) -> Result<(Vec<crate::hir::FunctionId>, bool), String> {
     let mut collector = CallCollector {
         bindings: module_function_bindings(program),
         reachable: Vec::new(),
         seen: std::collections::HashSet::new(),
-        caller: None,
-        edges: Vec::new(),
+        dynamic_calls: false,
+        saw_dynamic_calls: false,
     };
     walk_statement_calls(program, memory, &program.statements, &mut collector)?;
     let mut index = 0;
-    while index < collector.reachable.len() {
-        let id = collector.reachable[index];
-        index += 1;
-        let function = &program.functions[id.0 as usize];
-        collector.caller = Some(id);
-        if let Some(expression) = &function.body.expression {
-            walk_expression_calls(program, memory, expression, &mut collector)?;
+    loop {
+        while index < collector.reachable.len() {
+            let id = collector.reachable[index];
+            index += 1;
+            let function = &program.functions[id.0 as usize];
+            if let Some(expression) = &function.body.expression {
+                walk_expression_calls(program, memory, expression, &mut collector)?;
+            }
+            walk_statement_calls(program, memory, &function.body.statements, &mut collector)?;
         }
-        walk_statement_calls(program, memory, &function.body.statements, &mut collector)?;
+        if !collector.dynamic_calls { break; }
+        // Widening step: any closure value may flow into a dynamic callee.
+        collector.dynamic_calls = false;
+        let candidates = closure_functions(program);
+        for callee in &candidates {
+            if collector.seen.insert(*callee) { collector.reachable.push(*callee); }
+        }
+        if candidates.is_empty() { break; }
     }
-    reject_recursive_calls(program, &collector.reachable, &collector.edges)?;
-    Ok(collector.reachable)
+    Ok((collector.reachable, collector.saw_dynamic_calls))
 }
 
 fn function_definition(
-    program: &Program, memory: &MemoryPlan, function: &crate::hir::Function,
+    program: &Program, memory: &MemoryPlan, function: &crate::hir::Function, collect: bool,
 ) -> Result<String, String> {
     let id = function.id.0;
     let activation = memory.function_activations.get(&function.id)
@@ -556,9 +585,11 @@ fn function_definition(
         .collect();
     let end_label = format!("fn_end_{id}");
     let result_slot = format!("fn_result_{id}");
+    let cell_bindings = activation.cell_slots.keys().copied().collect();
     let mut generator = Generator {
         inline_slots, owned_bindings, ownership_sites, scope_lanes, promotion_sites,
         function_return: Some((end_label.clone(), result_slot.clone())),
+        cell_bindings, collect,
         ..Generator::default()
     };
     let mut out = String::new();
@@ -586,6 +617,8 @@ fn function_definition(
     } else {
         Generator::line(&mut out, "    HlFrame frame = { NULL, 0 };");
     }
+    // The frame and the pending result are roots of the closure/cell graph.
+    Generator::line(&mut out, "    hl_root_frame_push(env, &frame);");
     for (index, parameter) in function.params.iter().enumerate() {
         if let Some(slot) = activation.frame_slots.get(parameter) {
             Generator::line(&mut out, format!(
@@ -608,14 +641,15 @@ fn function_definition(
         ));
     }
     Generator::line(&mut out, format!("    HlValue {result_slot} = hl_number(0);"));
+    Generator::line(&mut out, format!("    hl_root_value_push(env, &{result_slot});"));
     if let Some(expression) = &function.body.expression {
         let value = generator.expr(program, expression, &mut out)?;
         Generator::line(&mut out, format!("    {result_slot} = {value};"));
     }
-    for statement in &function.body.statements {
-        generator.stmt(program, statement, &mut out)?;
-    }
+    generator.statements(program, &function.body.statements, &mut out)?;
     Generator::line(&mut out, format!("{end_label}: ;"));
+    Generator::line(&mut out, format!("    hl_root_value_pop(env, &{result_slot});"));
+    Generator::line(&mut out, "    hl_root_frame_pop(env);");
     Generator::line(&mut out, format!("    HlValue fn_out_{id} = hl_clone_value(fn_parent, {result_slot});"));
     Generator::line(&mut out, "    hl_env_free(env);");
     Generator::line(&mut out, format!("    return fn_out_{id};"));
@@ -627,7 +661,7 @@ fn call_dispatcher(reachable: &[crate::hir::FunctionId]) -> String {
     let mut out = String::new();
     Generator::line(&mut out, "static HlValue hl_call(HlEnv *fn_caller, HlValue fn_callee, const HlValue *fn_args, size_t fn_arg_count) {");
     Generator::line(&mut out, "    if (fn_callee.tag != HL_CLOSURE || !fn_callee.as.closure)");
-    Generator::line(&mut out, "        hl_fail(fn_caller, \"solo se pueden llamar valores de función\");");
+    Generator::line(&mut out, "        hl_fail(fn_caller, \"solo se pueden llamar valores de función: el valor no es una función\");");
     Generator::line(&mut out, "    switch (fn_callee.as.closure->function_id) {");
     for id in reachable {
         Generator::line(&mut out, format!("        case {}: return hl_fn_{}(fn_caller, fn_callee, fn_args, fn_arg_count);", id.0, id.0));
@@ -672,7 +706,6 @@ pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, Stri
     // and closure cells exist, but generated function bodies/activation frames
     // are not wired into this backend yet.
     validate_native_statements(&program.statements)?;
-    validate_capture_creation_order(program)?;
     for function in &program.functions {
         if let Some(expression) = &function.body.expression {
             validate_native_expr(expression)?;
@@ -681,7 +714,7 @@ pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, Stri
     }
     // Only functions reachable from a supported call site get C bodies. Their
     // activation frames and return path are materialized below.
-    let reachable = reachable_functions(program, memory)?;
+    let (reachable, has_dynamic_calls) = reachable_functions(program, memory)?;
 
     // Reject stale/incomplete plans instead of silently compiling without the
     // frontend's storage decisions. ScopeStackPlan is materialized below as
@@ -727,11 +760,27 @@ pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, Stri
     let promotion_sites = memory.operations.iter()
         .map(|operation| (operation.statement, (operation.destination, operation.ownership_token.0)))
         .collect();
+    let collect = !closure_functions(program).is_empty();
     let mut body = String::new();
-    let mut generator = Generator { inline_slots, owned_bindings, ownership_sites, scope_lanes: scope_lanes.clone(), promotion_sites, ..Generator::default() };
-    for stmt in &program.statements { generator.stmt(program, stmt, &mut body)?; }
+    let mut generator = Generator {
+        inline_slots, owned_bindings, ownership_sites: ownership_sites.clone(),
+        scope_lanes: scope_lanes.clone(), promotion_sites,
+        cell_bindings: cell_bindings.clone(), collect,
+        ..Generator::default()
+    };
+    // Module capture cells are root-owned and must exist before any module
+    // statement runs: mutually recursive lambdas capture bindings that are
+    // still undefined at closure-creation time.
+    for binding in &memory.module_cells {
+        let site = ownership_sites.get(binding).copied().unwrap_or(0);
+        body.push_str(&format!(
+            "hl_binding_predeclare(env, {}, UINT64_C({site}));\n",
+            Generator::binding(program, *binding)?
+        ));
+    }
+    generator.statements(program, &program.statements, &mut body)?;
     let mut source = include_str!("native_runtime.c").to_string();
-    if !reachable.is_empty() {
+    if !reachable.is_empty() || has_dynamic_calls {
         source.push_str("\n/* Generated function bodies and activation frames. */\n");
         for id in &reachable {
             source.push_str(&format!(
@@ -741,7 +790,7 @@ pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, Stri
         }
         source.push_str("static HlValue hl_call(HlEnv *fn_caller, HlValue fn_callee, const HlValue *fn_args, size_t fn_arg_count);\n");
         for id in &reachable {
-            source.push_str(&function_definition(program, memory, &program.functions[id.0 as usize])?);
+            source.push_str(&function_definition(program, memory, &program.functions[id.0 as usize], collect)?);
         }
         source.push_str(&call_dispatcher(&reachable));
     }
@@ -782,6 +831,7 @@ pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, Stri
     } else {
         source.push_str("    HlFrame frame = { NULL, 0 };\n");
     }
+    source.push_str("    hl_root_frame_push(env, &frame);\n");
     source.push_str(&body); source.push_str("    hl_env_free(env);\n");
     if lane_count > 0 {
         for lane in 0..lane_count {
@@ -1161,10 +1211,10 @@ mod tests {
     }
 
     #[test]
-    fn native_backend_rejects_recursive_calls_before_codegen() {
+    fn native_backend_accepts_recursion_with_root_cells_and_tracing() {
         use crate::ast::{Expression as A, LetStatement, Program as AstProgram, Statement as AstStmt};
-        // The recursive lambda captures its own module binding, so its
-        // activation needs root cells with cycle tracing, which is not built.
+        // A recursive lambda captures its own module binding, so the binding
+        // must exist with a root cell before the closure is constructed.
         let ast = AstProgram { statements: vec![
             AstStmt::Let(LetStatement {
                 name: "factorial".into(),
@@ -1185,8 +1235,57 @@ mod tests {
         ]};
         let lowered = hir::lower(&ast).unwrap();
         let memory = crate::memory::plan(&lowered);
-        let error = generate_c(&lowered, &memory).unwrap_err();
-        assert!(error.contains("recursiva"), "{error}");
+        let c = generate_c(&lowered, &memory).unwrap();
+        let generated_main = c.split("int main(void) {").last().unwrap();
+        let predeclare = generated_main
+            .find("hl_binding_predeclare(env, \"factorial\",")
+            .expect("root cell must be predeclared");
+        let creation = generated_main
+            .find("hl_closure_new(env, UINT32_C(0)")
+            .expect("closure must be created");
+        assert!(predeclare < creation, "root cell must exist before its capture cell is requested");
+        assert!(generated_main.contains("hl_collect(env);"), "statement boundaries must trace closures");
+        assert!(c.contains("hl_root_frame_push(env, &frame);"));
+        assert!(c.contains("hl_root_value_push(env, &fn_result_0);"));
+        assert!(c.contains("case 0: return hl_fn_0(fn_caller, fn_callee, fn_args, fn_arg_count);"));
+    }
+
+    #[test]
+    fn native_backend_dispatches_higher_order_callees_dynamically() {
+        use crate::ast::{Expression as A, LetStatement, Program as AstProgram, Statement as AstStmt};
+        // `apply` calls its parameter, so the target is only known at runtime.
+        let ast = AstProgram { statements: vec![
+            AstStmt::Let(LetStatement {
+                name: "apply".into(),
+                value: A::Lambda {
+                    params: vec!["fn".into(), "value".into()],
+                    body: Box::new(A::FunctionCall {
+                        func: Box::new(A::Identifier("fn".into())),
+                        args: vec![A::Identifier("value".into())],
+                    }),
+                },
+            }),
+            AstStmt::Let(LetStatement {
+                name: "inc".into(),
+                value: A::Lambda {
+                    params: vec!["x".into()],
+                    body: Box::new(A::Identifier("x".into())),
+                },
+            }),
+            AstStmt::Print(PrintStatement {
+                value: A::FunctionCall {
+                    func: Box::new(A::Identifier("apply".into())),
+                    args: vec![A::Identifier("inc".into()), A::NumberLiteral(2.0)],
+                },
+            }),
+        ]};
+        let lowered = hir::lower(&ast).unwrap();
+        let memory = crate::memory::plan(&lowered);
+        let c = generate_c(&lowered, &memory).unwrap();
+        assert!(c.contains("hl_call(env, "), "dynamic callee must go through the runtime dispatcher");
+        // Both the higher-order function and the closure it receives need bodies.
+        assert!(c.contains("static HlValue hl_fn_0("));
+        assert!(c.contains("static HlValue hl_fn_1("));
     }
 
 

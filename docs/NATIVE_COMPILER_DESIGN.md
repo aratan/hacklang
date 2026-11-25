@@ -237,7 +237,7 @@ La arquitectura objetivo está especificada en [MEMORY_MODEL.md](MEMORY_MODEL.md
 
 **Estado: integración parcial ya operativa.** El evaluador Rust mantiene su arena de entornos con mark-and-sweep de frames. En C, `MemoryPlan` se consume durante codegen: `scope_stacks` selecciona lanes físicas, los slots `Inline` se materializan en `HlFrame` y los valores dinámicos usan arenas/buffers propiedad de sus bindings. Las promociones integradas son por copia para preservar la vida de valores que escapan; no existe todavía análisis de escape transitivo completo ni un sistema general de movimiento/propiedad para grafos y closures.
 
-La matriz MEM de `MEMORY_MODEL.md` sigue siendo el contrato de pruebas. Arrays, mapas e indexación ya están implementados en el backend nativo, pero la cobertura diferencial de mapas y los casos de propiedad/escape deben ampliarse. La invocación nativa de funciones y closures sigue bloqueada hasta demostrar la vida de capturas, ciclos, retornos y limpieza de activaciones.
+La matriz MEM de `MEMORY_MODEL.md` sigue siendo el contrato de pruebas. Arrays, mapas e indexación están implementados en el backend nativo, con paridad diferencial de arrays, mapas anidados y clasificación de errores de tipos. La invocación nativa de funciones y closures está habilitada para llamadas directas y dinámicas (higher-order), incluida la recursividad y la recursividad mutua: las celdas de captura de módulo se predeclaran antes de ejecutar el programa y el runtime ejecuta un trazado de ciclos sobre células y descriptores de closure en los límites de sentencia. Queda pendiente reclamar los valores clonados en la lane raíz y el análisis de escape transitivo.
 
 
 ### Planificación de memoria previa al backend

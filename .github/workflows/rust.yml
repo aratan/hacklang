@@ -70,7 +70,23 @@ jobs:
           "$temp_dir/native-compact" > "$temp_dir/native-compact.out"
           diff -u "$temp_dir/interpreter.out" "$temp_dir/native-compact.out"
 
-          if cargo run --quiet -- build examples/test_functions.hl -o "$temp_dir/unsupported" > /dev/null 2>&1; then
+          functions_source="examples/test_functions.hl"
+          cargo run --quiet -- run "$functions_source" > "$temp_dir/functions-interpreter.log"
+          awk '
+            /^--- Ejecutando código Hacklang ---$/ { capture = 1; next }
+            /^--------------------------------$/ { capture = 0 }
+            capture { print }
+          ' "$temp_dir/functions-interpreter.log" > "$temp_dir/functions-interpreter.out"
+
+          cargo run --quiet -- build "$functions_source" -o "$temp_dir/functions-native" > /dev/null
+          "$temp_dir/functions-native" > "$temp_dir/functions-native.out"
+          diff -u "$temp_dir/functions-interpreter.out" "$temp_dir/functions-native.out"
+
+          cat > "$temp_dir/unsupported.hl" <<'EOF'
+          let add = |x, y| (x + y);
+          print add(1);
+          EOF
+          if cargo run --quiet -- build "$temp_dir/unsupported.hl" -o "$temp_dir/unsupported" > /dev/null 2>&1; then
             echo "El backend aceptó inesperadamente un programa con funciones no soportadas" >&2
             exit 1
           fi

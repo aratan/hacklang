@@ -537,3 +537,88 @@ print entries;
 "#,
     );
 }
+
+#[test]
+fn deeply_nested_maps_keep_value_semantics_match_interpreter() {
+    assert_interpreter_native_parity(
+        "deep_nested_maps",
+        r#"
+let tree = @("a": @("b": @("c": 1)));
+print tree["a"]["b"]["c"];
+tree["a"]["b"]["c"] = 7;
+print tree["a"]["b"]["c"];
+tree["a"]["b"] = @("d": 9);
+print tree["a"]["b"]["d"];
+print len(tree["a"]);
+let copy = tree;
+copy["a"]["b"]["d"] = 11;
+print tree["a"]["b"]["d"];
+print copy["a"]["b"]["d"];
+let rows = [@("x": @("y": 1))];
+rows[0]["x"]["y"] = 5;
+print rows[0]["x"]["y"];
+print len(rows[0]["x"]);
+let nested = @("lista": [@("n": 2)]);
+nested["lista"][0]["n"] = 4;
+print nested["lista"][0]["n"];
+"#,
+    );
+}
+
+#[test]
+fn nested_map_errors_match_interpreter_error_classification() {
+    assert_interpreter_native_failure(
+        "nested_map_missing_inner_key",
+        "let tree = @(\"a\": @(\"b\": 1));\nprint tree[\"a\"][\"missing\"];\n",
+        "clave no encontrada",
+    );
+    assert_interpreter_native_failure(
+        "nested_map_deep_missing_key_read",
+        "let tree = @(\"a\": @(\"b\": @(\"c\": 1)));\nprint tree[\"a\"][\"x\"][\"c\"];\n",
+        "clave no encontrada",
+    );
+    assert_interpreter_native_failure(
+        "nested_map_write_through_missing_key",
+        "let tree = @(\"a\": @(\"b\": 1));\ntree[\"a\"][\"c\"][\"d\"] = 2;\n",
+        "clave no encontrada",
+    );
+    assert_interpreter_native_failure(
+        "nested_map_write_into_scalar",
+        "let tree = @(\"a\": 1);\ntree[\"a\"][\"b\"] = 2;\n",
+        "no se puede indexar por asignación",
+    );
+}
+
+#[test]
+fn type_errors_match_interpreter_error_classification() {
+    assert_interpreter_native_failure(
+        "index_scalar_value",
+        "let x = 5;\nprint x[0];\n",
+        "no se puede indexar",
+    );
+    assert_interpreter_native_failure(
+        "map_plus_number",
+        "print @(\"a\": 1) + 1;\n",
+        "type mismatch",
+    );
+    assert_interpreter_native_failure(
+        "array_plus_number",
+        "let values = [1];\nprint values + 2;\n",
+        "type mismatch",
+    );
+    assert_interpreter_native_failure(
+        "len_rejects_scalar",
+        "print len(5);\n",
+        "len()",
+    );
+    assert_interpreter_native_failure(
+        "call_non_function_value",
+        "let y = 3;\nprint y(1);\n",
+        "no es una función",
+    );
+    assert_interpreter_native_failure(
+        "index_assign_read_only_value",
+        "let n = 1;\nn[0] = 2;\n",
+        "no se puede indexar por asignación",
+    );
+}

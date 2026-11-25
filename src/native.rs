@@ -691,9 +691,18 @@ int main(void) {
         );
         fs::write(&c_file, source).expect("write lane failure test");
         let compiler = select_c_compiler().expect("C compiler");
-        let build = Command::new(&compiler).arg("-std=c11").arg("-O2")
-            .arg(&c_file).arg("-o").arg(&executable).arg("-lm")
-            .output().expect("compile lane failure test");
+        let build = Command::new(&compiler)
+            .arg("-std=c11")
+            .arg("-O1")
+            .arg("-g")
+            .arg("-fsanitize=address,undefined")
+            .arg("-fno-omit-frame-pointer")
+            .arg(&c_file)
+            .arg("-o")
+            .arg(&executable)
+            .arg("-lm")
+            .output()
+            .expect("compile sanitized lane failure test");
         assert!(build.status.success(), "lane failure test compilation failed: {}",
             String::from_utf8_lossy(&build.stderr));
         let run = Command::new(&executable).output().expect("run lane failure test");
@@ -736,13 +745,16 @@ int main(void) {
         let compiler = select_c_compiler().expect("C compiler");
         let build = Command::new(&compiler)
             .arg("-std=c11")
-            .arg("-O2")
+            .arg("-O1")
+            .arg("-g")
+            .arg("-fsanitize=address,undefined")
+            .arg("-fno-omit-frame-pointer")
             .arg(&c_file)
             .arg("-o")
             .arg(&executable)
             .arg("-lm")
             .output()
-            .expect("compile C runtime failure test");
+            .expect("compile sanitized C runtime failure test");
         assert!(
             build.status.success(),
             "C runtime failure test compilation failed: {}",

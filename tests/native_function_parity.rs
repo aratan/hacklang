@@ -342,6 +342,31 @@ print functions[0]();
 }
 
 #[test]
+fn nested_aggregate_graphs_escape_scopes_with_strings_and_closures() {
+    assert_interpreter_native_parity(
+        "nested_aggregate_escape_graph",
+        r#"
+let saved = [];
+let save = |flag| (
+    if (flag) (
+        let captured_text = "closure-survives-scope";
+        let nested = @(
+            "payload": ["scope-text", ["deeper-text"]],
+            "call": || (captured_text)
+        );
+        saved = [nested];
+    )
+);
+save(1);
+print saved[0]["payload"][0];
+print saved[0]["payload"][1][0];
+print saved[0]["call"]();
+"#,
+    );
+}
+
+
+#[test]
 fn higher_order_argument_errors_match_interpreter() {
     assert_native_build_failure(
         "static_arity_mismatch",

@@ -1040,6 +1040,11 @@ fn plan_function_activations(program: &Program) -> HashMap<FunctionId, FunctionA
             bindings.insert(*parameter, StorageClass::OwnedRegion);
         }
         visit_storage_bindings(&function.body.statements, program, &mut bindings);
+        // Assignment and index-assignment targets may belong to an enclosing
+        // scope or to another activation; they are not storage of this one.
+        bindings.retain(|binding, _| program.bindings
+            .get(binding.0 as usize)
+            .is_some_and(|binding| binding.function_owner == Some(function.id)));
 
         // Include every local even if it is only referenced through a nested
         // expression or future HIR node not yet visited by the storage walker.
@@ -1248,6 +1253,30 @@ mod tests {
 
     fn lower(statements: Vec<S>) -> Program { hir::lower(&AP { statements }).unwrap() }
 
+    #[test]
+    fn activation_plan_excludes_captured_outer_assignment_targets() {
+        let program = lower(vec![
+            S::Let(LetStatement { name: "total".into(), value: A::NumberLiteral(0.0) }),
+            S::Let(LetStatement {
+                name: "bump".into(),
+                value: A::Lambda {
+                    params: vec!["n".into()],
+                    body: Box::new(A::Block(vec![S::Assign(crate::ast::AssignStatement {
+                        name: "total".into(),
+                        value: A::Identifier("n".into()),
+                    })])),
+                },
+            }),
+        ]);
+        let memory = plan(&program);
+        let function = &program.functions[0];
+        let activation = &memory.function_activations[&function.id];
+        let outer = program.bindings.iter()
+            .find(|binding| binding.name == "total").unwrap().id;
+        assert!(!activation.bindings.contains_key(&outer));
+        assert!(activation.bindings.contains_key(&function.params[0]));
+        validate_function_activation_plan(&program, &memory).unwrap();
+    }
 
     #[test]
     fn function_memory_plan_keeps_captured_parameters_in_activation_cells() {

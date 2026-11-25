@@ -1575,4 +1575,39 @@ int main(void) {
         let _ = fs::remove_dir_all(directory);
     }
 
+    #[test]
+    fn sanitized_shared_capture_cells_survive_activations() {
+        let directory = temporary_directory().expect("temporary directory");
+        let success = sanitized_native_build(
+            "let total = 0;\nlet bump = |n| (total = total + n);\nprint bump(2);\nprint bump(3);\nprint total;\nlet counter = 0;\nlet inc = |n| (counter = counter + n);\nlet dec = |n| (counter = counter - n);\ninc(10);\ndec(3);\nprint counter;\nlet items = [1, 2];\nlet set_first = |v| (items[0] = v);\nset_first(9);\nprint items[0];\nprint items[1];\nlet outer = |x| ( let show = || (print x); print x + total; );\nouter(4);\n",
+            &directory,
+            "sanitized_captures_success",
+        );
+        let run = Command::new(&success)
+            .output()
+            .expect("run sanitized capture program");
+        assert!(
+            run.status.success(),
+            "sanitized capture program failed: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        // A block-bodied lambda that only assigns falls through to the
+        // interpreter's implicit numeric zero.
+        assert_eq!(String::from_utf8_lossy(&run.stdout), "0\n0\n5\n7\n9\n2\n9\n");
+        assert_no_sanitizer_report(&run.stderr, "captures_success");
+
+        let failure = sanitized_native_build(
+            "let items = [1];\nlet read = |i| (items[i]);\nprint read(3);\n",
+            &directory,
+            "sanitized_captures_failure",
+        );
+        let run = Command::new(&failure)
+            .output()
+            .expect("run sanitized failing capture program");
+        assert!(!run.status.success(), "out-of-range capture read unexpectedly succeeded");
+        assert_no_sanitizer_report(&run.stderr, "captures_failure");
+
+        let _ = fs::remove_dir_all(directory);
+    }
+
 }

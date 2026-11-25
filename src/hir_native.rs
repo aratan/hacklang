@@ -45,6 +45,8 @@ impl Generator {
             ExprKind::String(s) => format!("hl_string(env, {})", Self::c_string(s)),
             ExprKind::Read(id) => match self.inline_slots.get(id) {
                 Some(slot) => format!("hl_frame_read_or_fail(env, &frame, {slot})"),
+                // Cell-backed bindings live in an environment binding; hl_get
+                // reads through the shared cell when one is installed.
                 None => format!("hl_get(env, {})", Self::binding(p, *id)?),
             },
             ExprKind::Binary { op, left, right } => {
@@ -324,6 +326,8 @@ struct CallCollector {
     bindings: HashMap<crate::hir::BindingId, crate::hir::FunctionId>,
     reachable: Vec<crate::hir::FunctionId>,
     seen: std::collections::HashSet<crate::hir::FunctionId>,
+    caller: Option<crate::hir::FunctionId>,
+    edges: Vec<(crate::hir::FunctionId, crate::hir::FunctionId)>,
 }
 
 fn record_call(
@@ -343,19 +347,11 @@ fn record_call(
     };
     let function = program.functions.get(id.0 as usize).filter(|function| function.id == id)
         .ok_or_else(|| format!("FunctionId inválido en llamada: {}", id.0))?;
-    if !function.captures.is_empty() {
-        return Err(format!(
-            "la llamada a la función {} aún no está soportada por el backend nativo: captura variables de su entorno",
-            id.0
-        ));
-    }
     let activation = memory.function_activations.get(&id)
         .ok_or_else(|| format!("MemoryPlan incompleto: falta activación FunctionId {}", id.0))?;
-    if !activation.captured_cells.is_empty() {
-        return Err(format!(
-            "la llamada a la función {} aún no está soportada por el backend nativo: sus locales son capturados por otra función",
-            id.0
-        ));
+    if activation.frame_slots.len() + activation.cell_slots.len()
+        != activation.bindings.len() {
+        return Err(format!("MemoryPlan incompleto: activación incompleta en FunctionId {}", id.0));
     }
     if args.len() != function.params.len() {
         return Err(format!(
@@ -363,6 +359,7 @@ fn record_call(
             id.0, function.params.len(), args.len()
         ));
     }
+    if let Some(caller) = collector.caller { collector.edges.push((caller, id)); }
     if collector.seen.insert(id) { collector.reachable.push(id); }
     Ok(())
 }
@@ -430,14 +427,97 @@ fn walk_statement_calls(
     Ok(())
 }
 
+/// A module-level closure can only capture bindings that already exist. A
+/// self- or mutually-recursive lambda violates that order because its capture
+/// cell is requested while the binding is still being defined; the runtime
+/// would abort at closure construction. Reject it at compile time until root
+/// cells are created eagerly with cycle tracing.
+fn validate_capture_creation_order(program: &Program) -> Result<(), String> {
+    let mut defined = std::collections::HashSet::new();
+    for statement in &program.statements {
+        let StmtKind::Let { binding, value } = &statement.kind else { continue };
+        if let ExprKind::Closure(id) = &value.kind {
+            let function = program.functions.get(id.0 as usize)
+                .filter(|function| function.id == *id)
+                .ok_or_else(|| format!("FunctionId inválido para closure: {}", id.0))?;
+            for capture in &function.captures {
+                let target = program.bindings.get(capture.binding.0 as usize)
+                    .ok_or_else(|| format!("BindingId inválido en captura: {}", capture.binding.0))?;
+                if target.function_owner.is_none() && !defined.contains(&capture.binding) {
+                    return Err(format!(
+                        "la función '{}' captura la variable '{}' antes de que exista: las celdas de closures recursivas requieren recolección de ciclos, aún no soportada",
+                        program.bindings.get(binding.0 as usize).map_or("anónima", |binding| binding.name.as_str()),
+                        target.name
+                    ));
+                }
+            }
+        }
+        defined.insert(*binding);
+    }
+    Ok(())
+}
+
+/// Reject recursion before codegen: a recursive closure captures its own
+/// module binding, and those root cells need cycle tracing, which the runtime
+/// does not implement yet.
+fn reject_recursive_calls(
+    program: &Program,
+    reachable: &[crate::hir::FunctionId],
+    edges: &[(crate::hir::FunctionId, crate::hir::FunctionId)],
+) -> Result<(), String> {
+    let mut adjacency: HashMap<crate::hir::FunctionId, Vec<crate::hir::FunctionId>> = HashMap::new();
+    for (caller, callee) in edges {
+        adjacency.entry(*caller).or_default().push(*callee);
+    }
+    fn visit(
+        id: crate::hir::FunctionId,
+        adjacency: &HashMap<crate::hir::FunctionId, Vec<crate::hir::FunctionId>>,
+        visiting: &mut std::collections::HashSet<crate::hir::FunctionId>,
+        done: &mut std::collections::HashSet<crate::hir::FunctionId>,
+    ) -> bool {
+        if done.contains(&id) { return false; }
+        if !visiting.insert(id) { return true; }
+        if let Some(callees) = adjacency.get(&id) {
+            for callee in callees {
+                if visit(*callee, adjacency, visiting, done) { return true; }
+            }
+        }
+        visiting.remove(&id);
+        done.insert(id);
+        false
+    }
+    let mut visiting = std::collections::HashSet::new();
+    let mut done = std::collections::HashSet::new();
+    for id in reachable {
+        if !visit(*id, &adjacency, &mut visiting, &mut done) { continue; }
+        let name = program.statements.iter().find_map(|statement| match &statement.kind {
+            StmtKind::Let { binding, value }
+                if matches!(&value.kind, ExprKind::Closure(target) if target == id) =>
+                program.bindings.get(binding.0 as usize).map(|binding| binding.name.clone()),
+            _ => None,
+        });
+        return Err(match name {
+            Some(name) => format!(
+                "la función {name} participa en una llamada recursiva y el backend nativo aún no soporta recursividad: requiere celdas raíz con recolección de ciclos"
+            ),
+            None => format!(
+                "la función {} participa en una llamada recursiva y el backend nativo aún no soporta recursividad: requiere celdas raíz con recolección de ciclos",
+                id.0
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// Direct calls whose callee identity and activation are fully known. Dynamic
-/// callees, captures and cells remain rejected until their lifetime contract
-/// and cycle collection exist.
+/// callees remain rejected; recursion is rejected until cycle tracing exists.
 fn reachable_functions(program: &Program, memory: &MemoryPlan) -> Result<Vec<crate::hir::FunctionId>, String> {
     let mut collector = CallCollector {
         bindings: module_function_bindings(program),
         reachable: Vec::new(),
         seen: std::collections::HashSet::new(),
+        caller: None,
+        edges: Vec::new(),
     };
     walk_statement_calls(program, memory, &program.statements, &mut collector)?;
     let mut index = 0;
@@ -445,11 +525,13 @@ fn reachable_functions(program: &Program, memory: &MemoryPlan) -> Result<Vec<cra
         let id = collector.reachable[index];
         index += 1;
         let function = &program.functions[id.0 as usize];
+        collector.caller = Some(id);
         if let Some(expression) = &function.body.expression {
             walk_expression_calls(program, memory, expression, &mut collector)?;
         }
         walk_statement_calls(program, memory, &function.body.statements, &mut collector)?;
     }
+    reject_recursive_calls(program, &collector.reachable, &collector.edges)?;
     Ok(collector.reachable)
 }
 
@@ -480,12 +562,23 @@ fn function_definition(
         ..Generator::default()
     };
     let mut out = String::new();
-    Generator::line(&mut out, format!("static HlValue hl_fn_{id}(HlEnv *fn_parent, const HlValue *fn_args, size_t fn_arg_count) {{"));
+    Generator::line(&mut out, format!("static HlValue hl_fn_{id}(HlEnv *fn_parent, HlValue fn_closure, const HlValue *fn_args, size_t fn_arg_count) {{"));
     Generator::line(&mut out, format!(
         "    if (fn_arg_count != {}) hl_fail(fn_parent, \"número de argumentos incorrecto en la llamada a la función\");",
         function.params.len()
     ));
     Generator::line(&mut out, "    HlEnv *env = hl_env_new(fn_parent);");
+    if function.captures.is_empty() {
+        Generator::line(&mut out, "    (void)fn_closure;");
+    } else {
+        // Order matches the closure descriptor built at creation time.
+        for (index, capture) in function.captures.iter().enumerate() {
+            Generator::line(&mut out, format!(
+                "    hl_binding_alias_cell(env, {}, hl_closure_capture_cell(fn_closure, {index}));",
+                Generator::binding(program, capture.binding)?
+            ));
+        }
+    }
     if activation.frame_slot_count > 0 {
         Generator::line(&mut out, format!("    HlFrameSlot frame_slots[{}];", activation.frame_slot_count));
         Generator::line(&mut out, "    HlFrame frame;");
@@ -494,12 +587,24 @@ fn function_definition(
         Generator::line(&mut out, "    HlFrame frame = { NULL, 0 };");
     }
     for (index, parameter) in function.params.iter().enumerate() {
-        let slot = activation.frame_slots.get(parameter).ok_or_else(|| format!(
-            "MemoryPlan incompleto: el parámetro BindingId {} de FunctionId {id} no tiene slot de frame",
-            parameter.0
-        ))?;
+        if let Some(slot) = activation.frame_slots.get(parameter) {
+            Generator::line(&mut out, format!(
+                "    hl_frame_write_or_fail(env, &frame, {slot}, hl_clone_value(env, fn_args[{index}]));"
+            ));
+            continue;
+        }
+        // Captured parameters need a stable, name-addressable binding so a
+        // closure created inside this activation can share their cell.
+        if !activation.cell_slots.contains_key(parameter) {
+            return Err(format!(
+                "MemoryPlan incompleto: el parámetro BindingId {} de FunctionId {id} no tiene slot de frame ni celda",
+                parameter.0
+            ));
+        }
+        let site = activation.ownership_tokens.get(parameter).map_or(0, |token| token.0);
         Generator::line(&mut out, format!(
-            "    hl_frame_write_or_fail(env, &frame, {slot}, hl_clone_value(env, fn_args[{index}]));"
+            "    hl_define_planned_site(env, {}, hl_clone_value(env, fn_args[{index}]), HL_STORAGE_OWNED, UINT64_C({site}));",
+            Generator::binding(program, *parameter)?
         ));
     }
     Generator::line(&mut out, format!("    HlValue {result_slot} = hl_number(0);"));
@@ -525,7 +630,7 @@ fn call_dispatcher(reachable: &[crate::hir::FunctionId]) -> String {
     Generator::line(&mut out, "        hl_fail(fn_caller, \"solo se pueden llamar valores de función\");");
     Generator::line(&mut out, "    switch (fn_callee.as.closure->function_id) {");
     for id in reachable {
-        Generator::line(&mut out, format!("        case {}: return hl_fn_{}(fn_caller, fn_args, fn_arg_count);", id.0, id.0));
+        Generator::line(&mut out, format!("        case {}: return hl_fn_{}(fn_caller, fn_callee, fn_args, fn_arg_count);", id.0, id.0));
     }
     Generator::line(&mut out, "        default: break;");
     Generator::line(&mut out, "    }");
@@ -567,6 +672,7 @@ pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, Stri
     // and closure cells exist, but generated function bodies/activation frames
     // are not wired into this backend yet.
     validate_native_statements(&program.statements)?;
+    validate_capture_creation_order(program)?;
     for function in &program.functions {
         if let Some(expression) = &function.body.expression {
             validate_native_expr(expression)?;
@@ -599,8 +705,13 @@ pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, Stri
     let layout = crate::memory::frame_layout(program, memory)?;
     let inline_stack = crate::memory::DataStackId(u32::MAX);
     let inline_count = layout.stacks.get(&inline_stack).map_or(0, |slots| slots.len());
+    // Module bindings captured by a closure keep a name-addressable environment
+    // binding instead of a module frame slot, so capture creation can attach a
+    // shared cell to it.
+    let cell_bindings: std::collections::HashSet<_> = memory.module_cells.iter().copied().collect();
     let inline_slots: HashMap<_, _> = memory.binding_slots.iter()
         .filter(|(_, assignment)| assignment.stack == inline_stack)
+        .filter(|(binding, _)| !cell_bindings.contains(binding))
         .map(|(binding, assignment)| (*binding, assignment.slot))
         .collect();
     let owned_bindings = memory.bindings.iter()
@@ -624,7 +735,7 @@ pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, Stri
         source.push_str("\n/* Generated function bodies and activation frames. */\n");
         for id in &reachable {
             source.push_str(&format!(
-                "static HlValue hl_fn_{}(HlEnv *fn_parent, const HlValue *fn_args, size_t fn_arg_count);\n",
+                "static HlValue hl_fn_{}(HlEnv *fn_parent, HlValue fn_closure, const HlValue *fn_args, size_t fn_arg_count);\n",
                 id.0
             ));
         }
@@ -972,15 +1083,88 @@ mod tests {
         let c = generate_c(&lowered, &memory).unwrap();
         assert!(c.contains("static HlValue hl_fn_0(HlEnv *fn_parent"));
         assert!(c.contains("hl_frame_write_or_fail(env, &frame, 0, hl_clone_value(env, fn_args[0]));"));
-        assert!(c.contains("case 0: return hl_fn_0(fn_caller, fn_args, fn_arg_count);"));
+        assert!(c.contains("case 0: return hl_fn_0(fn_caller, fn_callee, fn_args, fn_arg_count);"));
         assert!(c.contains("hl_call(env,"));
+        assert!(c.contains("(void)fn_closure;"));
     }
 
     #[test]
-    fn native_backend_rejects_calls_to_capturing_functions() {
+    fn native_backend_installs_capture_cells_in_generated_bodies() {
+        use crate::ast::{Expression as A, LetStatement, Program as AstProgram, Statement as AstStmt};
+        let ast = AstProgram { statements: vec![
+            AstStmt::Let(LetStatement {
+                name: "base".into(), value: A::NumberLiteral(2.0),
+            }),
+            AstStmt::Let(LetStatement {
+                name: "add".into(),
+                value: A::Lambda {
+                    params: vec!["x".into()],
+                    body: Box::new(A::Infix {
+                        operator: crate::lexer::Token::Plus,
+                        left: Box::new(A::Identifier("x".into())),
+                        right: Box::new(A::Identifier("base".into())),
+                    }),
+                },
+            }),
+            AstStmt::Print(PrintStatement {
+                value: A::FunctionCall {
+                    func: Box::new(A::Identifier("add".into())),
+                    args: vec![A::NumberLiteral(3.0)],
+                },
+            }),
+        ]};
+        let lowered = hir::lower(&ast).unwrap();
+        let memory = crate::memory::plan(&lowered);
+        let c = generate_c(&lowered, &memory).unwrap();
+        assert!(c.contains("hl_binding_alias_cell(env, \"base\", hl_closure_capture_cell(fn_closure, 0));"));
+        let main = c.split("int main(void) {").last().unwrap();
+        assert!(main.contains("hl_define_planned_site(env, \"base\""));
+        assert!(main.contains("hl_closure_new(env, UINT32_C(0), (const char *[]){ \"base\" }, 1)"));
+    }
+
+    #[test]
+    fn native_backend_keeps_captured_parameters_in_environment_bindings() {
+        use crate::ast::{Expression as A, LetStatement, Program as AstProgram, Statement as AstStmt};
+        let ast = AstProgram { statements: vec![
+            AstStmt::Let(LetStatement {
+                name: "outer".into(),
+                value: A::Lambda {
+                    params: vec!["x".into()],
+                    body: Box::new(A::Block(vec![
+                        AstStmt::Let(LetStatement {
+                            name: "inner".into(),
+                            value: A::Lambda {
+                                params: vec!["y".into()],
+                                body: Box::new(A::Infix {
+                                    operator: crate::lexer::Token::Plus,
+                                    left: Box::new(A::Identifier("x".into())),
+                                    right: Box::new(A::Identifier("y".into())),
+                                }),
+                            },
+                        }),
+                        AstStmt::Return(A::Identifier("x".into())),
+                    ])),
+                },
+            }),
+            AstStmt::Print(PrintStatement {
+                value: A::FunctionCall {
+                    func: Box::new(A::Identifier("outer".into())),
+                    args: vec![A::NumberLiteral(4.0)],
+                },
+            }),
+        ]};
+        let lowered = hir::lower(&ast).unwrap();
+        let memory = crate::memory::plan(&lowered);
+        let c = generate_c(&lowered, &memory).unwrap();
+        assert!(c.contains("hl_define_planned_site(env, \"x\", hl_clone_value(env, fn_args[0])"));
+        assert!(c.contains("hl_closure_new(env, UINT32_C(1), (const char *[]){ \"x\" }, 1)"));
+    }
+
+    #[test]
+    fn native_backend_rejects_recursive_calls_before_codegen() {
         use crate::ast::{Expression as A, LetStatement, Program as AstProgram, Statement as AstStmt};
         // The recursive lambda captures its own module binding, so its
-        // activation needs module cells and a lifetime contract not yet built.
+        // activation needs root cells with cycle tracing, which is not built.
         let ast = AstProgram { statements: vec![
             AstStmt::Let(LetStatement {
                 name: "factorial".into(),
@@ -1002,7 +1186,7 @@ mod tests {
         let lowered = hir::lower(&ast).unwrap();
         let memory = crate::memory::plan(&lowered);
         let error = generate_c(&lowered, &memory).unwrap_err();
-        assert!(error.contains("captura variables de su entorno"), "{error}");
+        assert!(error.contains("recursiva"), "{error}");
     }
 
 

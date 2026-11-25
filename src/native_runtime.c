@@ -897,6 +897,12 @@ static HlValue hl_length(HlEnv *environment, HlValue value) {
     hl_fail(environment, "len() requiere string, array o map");
     return hl_number(0);
 }
+/* A captured binding keeps its canonical value in a root-owned cell. Index
+ * mutation happens in place on the binding value, so the shared cell must be
+ * refreshed before the binding goes out of lexical scope. */
+static void hl_binding_sync_cell(HlBinding *binding) {
+    if (binding && binding->cell) hl_cell_write(binding->cell, binding->value);
+}
 static void hl_index_assign_path(HlEnv *environment, const char *name,
                                  const HlValue *indices, size_t index_count,
                                  HlValue value) {
@@ -924,6 +930,7 @@ static void hl_index_assign_path(HlEnv *environment, const char *name,
             size_t position = hl_map_find_key(slot->as.map, indices[depth]);
             if (is_last) {
                 hl_map_set(binding, slot->as.map, indices[depth], value);
+                hl_binding_sync_cell(binding);
                 return;
             }
             if (position == SIZE_MAX) hl_fail(environment, "Clave no encontrada en mapa");
@@ -932,6 +939,7 @@ static void hl_index_assign_path(HlEnv *environment, const char *name,
         }
         hl_fail(environment, "no se puede asignar por índice a un valor que no sea colección");
     }
+    hl_binding_sync_cell(binding);
 }
 
 /* Index assignment on activation storage (parameters, locals and temporaries

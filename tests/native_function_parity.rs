@@ -181,11 +181,70 @@ print base["x"];
 }
 
 #[test]
-fn capture_recursion_and_dynamic_callees_stay_rejected() {
+fn module_and_activation_captures_match_interpreter() {
+    assert_interpreter_native_parity(
+        "captures",
+        r#"
+let base = 10;
+let add = |x| (x + base);
+print add(5);
+print add(0);
+let total = 0;
+let bump = |n| (total = total + n);
+print bump(2);
+print bump(3);
+print total;
+let counter = 0;
+let inc = |n| (counter = counter + n);
+let dec = |n| (counter = counter - n);
+inc(10);
+dec(3);
+print counter;
+let items = [1, 2];
+let set_first = |v| (items[0] = v);
+set_first(9);
+print items[0];
+print items[1];
+let outer = |x| (
+    let show = || (print x);
+    print x;
+);
+outer(4);
+outer(7);
+"#,
+    );
+}
+
+#[test]
+fn captured_parameters_and_nested_scopes_match_interpreter() {
+    assert_interpreter_native_parity(
+        "captured_parameters",
+        r#"
+let factor = 3;
+let scale = |value| (
+    let keep = || (print value);
+    if (value > 0) (
+        print value * factor;
+    )
+    return value;
+);
+print scale(2);
+print scale(0);
+"#,
+    );
+}
+
+#[test]
+fn recursion_and_dynamic_callees_stay_rejected() {
     assert_native_build_failure(
-        "capturing_function",
+        "recursive_function",
         "let factorial = |n| ((n < 2) ? 1 : n * factorial(n - 1));\nprint factorial(5);\n",
-        "captura variables de su entorno",
+        "recursiva",
+    );
+    assert_native_build_failure(
+        "uncalled_recursive_closure",
+        "let f = |n| f(n);\nprint 1;\n",
+        "antes de que exista",
     );
     assert_native_build_failure(
         "higher_order_callee",

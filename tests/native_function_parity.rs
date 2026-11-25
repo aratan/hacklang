@@ -303,6 +303,35 @@ print consume(make(40), churn(8));
     );
 }
 
+
+#[test]
+fn returns_from_nested_scopes_preserve_dynamic_values() {
+    assert_interpreter_native_parity(
+        "nested_scope_returns",
+        r#"
+let return_text = |flag| (
+    if (flag) (
+        let value = "nested";
+        return value;
+    )
+    return "fallback";
+);
+print return_text(1);
+print return_text(0);
+let return_array = |flag| (
+    if (flag) (
+        let values = [7, 8];
+        return values;
+    )
+    return [0];
+);
+let result = return_array(1);
+print result[0];
+print result[1];
+"#,
+    );
+}
+
 #[test]
 fn higher_order_argument_errors_match_interpreter() {
     assert_native_build_failure(

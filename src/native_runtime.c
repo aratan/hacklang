@@ -896,8 +896,17 @@ static void hl_define_planned_site(HlEnv *environment, const char *name, HlValue
         HlStorageClass storage, uint64_t ownership_site) {
     HlBinding *item = hl_find_local(environment, name);
     if (item) {
-        item->value = hl_store_value(item, value, storage);
-        if (item->cell) hl_cell_write(item->cell, item->value);
+        if (item->cell) {
+            /* The capture cell is the canonical owner of a captured binding.
+             * Clone directly into its root lifetime; first storing through the
+             * activation-local alias can leave an intermediate aggregate in a
+             * lane that is about to be rewound. */
+            if (!hl_cell_write(item->cell, value))
+                hl_fail(environment, "no se pudo actualizar la celda capturada");
+            item->value = item->cell->value;
+        } else {
+            item->value = hl_store_value(item, value, storage);
+        }
         return;
     }
     item = (HlBinding *)hl_alloc(environment, sizeof(HlBinding));
@@ -928,8 +937,15 @@ static void hl_assign_planned_site(HlEnv *environment, const char *name, HlValue
     }
     if (ownership_site && item->ownership_site != ownership_site)
         hl_fail(environment, "site de propiedad incoherente en asignación planificada");
-    item->value = hl_store_value(item, value, storage);
-    if (item->cell) hl_cell_write(item->cell, item->value);
+    if (item->cell) {
+        /* Captured aliases may outlive this activation. Their shared cell,
+         * not the short-lived alias binding, owns the value graph. */
+        if (!hl_cell_write(item->cell, value))
+            hl_fail(environment, "no se pudo actualizar la celda capturada");
+        item->value = item->cell->value;
+    } else {
+        item->value = hl_store_value(item, value, storage);
+    }
 }
 static void hl_assign_planned(HlEnv *environment, const char *name, HlValue value, HlStorageClass storage) {
     hl_assign_planned_site(environment, name, value, storage, 0);

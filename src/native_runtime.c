@@ -200,8 +200,13 @@ static HlValue hl_frame_read_or_fail(HlEnv *env, const HlFrame *frame, size_t sl
     return value;
 }
 
+static HlValue hl_clone_value(HlEnv *environment, HlValue value);
+
 static void hl_frame_write_or_fail(HlEnv *env, HlFrame *frame, size_t slot, HlValue value) {
-    if (!hl_frame_write(frame, slot, value))
+    /* Frame slots live for the whole activation, while the expression being
+     * assigned may have been allocated in a shorter lexical-scope lane. */
+    HlValue stable = hl_clone_value(env, value);
+    if (!hl_frame_write(frame, slot, stable))
         hl_fail(env, "escritura de slot de frame fuera de rango");
 }
 
@@ -896,17 +901,8 @@ static void hl_define_planned_site(HlEnv *environment, const char *name, HlValue
         HlStorageClass storage, uint64_t ownership_site) {
     HlBinding *item = hl_find_local(environment, name);
     if (item) {
-        if (item->cell) {
-            /* The capture cell is the canonical owner of a captured binding.
-             * Clone directly into its root lifetime; first storing through the
-             * activation-local alias can leave an intermediate aggregate in a
-             * lane that is about to be rewound. */
-            if (!hl_cell_write(item->cell, value))
-                hl_fail(environment, "no se pudo actualizar la celda capturada");
-            item->value = item->cell->value;
-        } else {
-            item->value = hl_store_value(item, value, storage);
-        }
+        item->value = hl_store_value(item, value, storage);
+        if (item->cell) hl_cell_write(item->cell, item->value);
         return;
     }
     item = (HlBinding *)hl_alloc(environment, sizeof(HlBinding));
@@ -937,15 +933,8 @@ static void hl_assign_planned_site(HlEnv *environment, const char *name, HlValue
     }
     if (ownership_site && item->ownership_site != ownership_site)
         hl_fail(environment, "site de propiedad incoherente en asignación planificada");
-    if (item->cell) {
-        /* Captured aliases may outlive this activation. Their shared cell,
-         * not the short-lived alias binding, owns the value graph. */
-        if (!hl_cell_write(item->cell, value))
-            hl_fail(environment, "no se pudo actualizar la celda capturada");
-        item->value = item->cell->value;
-    } else {
-        item->value = hl_store_value(item, value, storage);
-    }
+    item->value = hl_store_value(item, value, storage);
+    if (item->cell) hl_cell_write(item->cell, item->value);
 }
 static void hl_assign_planned(HlEnv *environment, const char *name, HlValue value, HlStorageClass storage) {
     hl_assign_planned_site(environment, name, value, storage, 0);

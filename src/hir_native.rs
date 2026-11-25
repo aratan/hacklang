@@ -1013,7 +1013,7 @@ mod tests {
         let memory = crate::memory::plan(&lowered);
         let c = generate_c(&lowered, &memory).unwrap();
         assert!(c.contains("HlFrameSlot frame_slots["));
-        assert!(c.contains("hl_frame_write_or_fail(env, &frame,"));
+        assert!(c.contains("hl_frame_write_or_fail(env, module_activation, &frame,"));
         assert!(c.contains("hl_frame_read_or_fail(env, &frame,"));
         assert!(!c.contains("hl_define(env, \"x\""));
         assert!(!c.contains("hl_get(env, \"x\""));
@@ -1107,7 +1107,7 @@ mod tests {
         let lowered = hir::lower(&ast).unwrap();
         let memory = crate::memory::plan(&lowered);
         let c = generate_c(&lowered, &memory).unwrap();
-        assert!(c.contains("hl_frame_write_or_fail(env, &frame,"));
+        assert!(c.contains("hl_frame_write_or_fail(env, module_activation, &frame,"));
         assert!(c.contains("hl_frame_read_or_fail(env, &frame,"));
     }
 

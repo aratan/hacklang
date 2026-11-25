@@ -7,6 +7,7 @@ struct Generator {
     temp: usize,
     temp_declarations: Vec<String>,
     temp_roots: Vec<String>,
+    frame_owner: Option<String>,
     scope: usize,
     loop_id: usize,
     scopes: Vec<String>,
@@ -187,7 +188,7 @@ impl Generator {
                 }
                 let v = self.expr(p, value, out)?;
                 if let Some(slot) = self.inline_slots.get(binding) {
-                    Self::line(out, format!("hl_frame_write_or_fail(env, &frame, {slot}, {v});"));
+                    Self::line(out, format!("hl_frame_write_or_fail(env, {}, &frame, {slot}, {v});", self.frame_owner.as_deref().unwrap_or("env")));
                 } else {
                     let storage = if self.owned_bindings.contains(binding) { "HL_STORAGE_OWNED" } else { "HL_STORAGE_SCOPE" };
                     let site = self.ownership_sites.get(binding).copied().unwrap_or(0);
@@ -229,7 +230,7 @@ impl Generator {
                         "{updated} = hl_index_assign_value(env, hl_frame_read_or_fail(env, &frame, {slot}), {index_values}, {}, {value});",
                         indices.len()
                     ));
-                    Self::line(out, format!("hl_frame_write_or_fail(env, &frame, {slot}, {updated});"));
+                    Self::line(out, format!("hl_frame_write_or_fail(env, {}, &frame, {slot}, {updated});", self.frame_owner.as_deref().unwrap_or("env")));
                 } else if indices.len() == 1 {
                     Self::line(out, format!(
                         "hl_index_assign(env, {}, {}, {value});",
@@ -613,7 +614,7 @@ fn function_definition(
     let mut generator = Generator {
         inline_slots, owned_bindings, ownership_sites, scope_lanes, promotion_sites,
         function_return: Some((end_label.clone(), result_slot.clone())),
-        cell_bindings, collect,
+        cell_bindings, collect, frame_owner: Some("fn_activation".into()),
         ..Generator::default()
     };
     let mut out = String::new();
@@ -647,7 +648,7 @@ fn function_definition(
     for (index, parameter) in function.params.iter().enumerate() {
         if let Some(slot) = activation.frame_slots.get(parameter) {
             Generator::line(&mut out, format!(
-                "    hl_frame_write_or_fail(env, &frame, {slot}, fn_args[{index}]);"
+                "    hl_frame_write_or_fail(env, fn_activation, &frame, {slot}, fn_args[{index}]);"
             ));
             continue;
         }
@@ -793,7 +794,7 @@ pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, Stri
     let mut generator = Generator {
         inline_slots, owned_bindings, ownership_sites: ownership_sites.clone(),
         scope_lanes: scope_lanes.clone(), promotion_sites,
-        cell_bindings: cell_bindings.clone(), collect,
+        cell_bindings: cell_bindings.clone(), collect, frame_owner: Some("module_activation".into()),
         ..Generator::default()
     };
     // Module capture cells are root-owned and must exist before any module
@@ -860,6 +861,7 @@ pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, Stri
     } else {
         source.push_str("    HlFrame frame = { NULL, 0 };\n");
     }
+    source.push_str("    HlEnv *module_activation = env;\n");
     source.push_str("    hl_root_frame_push(env, &frame);\n");
     source.push_str(&temp_declarations);
     source.push_str(&body); source.push_str("    hl_env_free(env);\n");
@@ -1162,7 +1164,7 @@ mod tests {
         let memory = crate::memory::plan(&lowered);
         let c = generate_c(&lowered, &memory).unwrap();
         assert!(c.contains("static HlValue hl_fn_0(HlEnv *fn_parent"));
-        assert!(c.contains("hl_frame_write_or_fail(env, &frame, 0, hl_clone_value(env, fn_args[0]));"));
+        assert!(c.contains("hl_frame_write_or_fail(env, fn_activation, &frame, 0, fn_args[0]);"));
         assert!(c.contains("case 0: return hl_fn_0(fn_caller, fn_callee, fn_args, fn_arg_count);"));
         assert!(c.contains("hl_call(env,"));
         assert!(c.contains("(void)fn_closure;"));

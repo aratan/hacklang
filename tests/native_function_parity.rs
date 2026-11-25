@@ -262,6 +262,47 @@ print pick(0, 2);
     );
 }
 
+
+#[test]
+fn nested_calls_and_binary_operands_preserve_left_to_right_evaluation() {
+    assert_interpreter_native_parity(
+        "left_to_right_evaluation",
+        r#"
+let sequence = 0;
+let mark = |n| (
+    sequence = sequence * 10 + n;
+    return n;
+);
+let pair = |a, b| (a * 10 + b);
+print pair(mark(1), mark(2));
+print sequence;
+sequence = 0;
+print mark(3) + mark(4);
+print sequence;
+"#,
+    );
+}
+
+#[test]
+fn temporary_closure_arguments_survive_collection_during_later_arguments() {
+    assert_interpreter_native_parity(
+        "temporary_closure_root",
+        r#"
+let make = |value| (|| (value));
+let churn = |count| (
+    let i = 0;
+    while (i < count) (
+        let inner = |k| ((k < 1) ? i : inner(k - 1));
+        i = i + 1;
+    );
+    return count;
+);
+let consume = |func, extra| (func() + extra);
+print consume(make(40), churn(8));
+"#,
+    );
+}
+
 #[test]
 fn higher_order_argument_errors_match_interpreter() {
     assert_native_build_failure(

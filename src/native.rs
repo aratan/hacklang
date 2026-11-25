@@ -1676,6 +1676,25 @@ let churn = |count| (
 );
 let consume = |func, extra| (func() + extra);
 print consume(make(40), churn(8));
+let return_text = |flag| (
+    if (flag) (
+        let value = "nested";
+        return value;
+    )
+    return "fallback";
+);
+print return_text(1);
+print return_text(0);
+let return_array = |flag| (
+    if (flag) (
+        let values = [7, 8];
+        return values;
+    )
+    return [0];
+);
+let returned = return_array(1);
+print returned[0];
+print returned[1];
 "#,
             &directory,
             "sanitized_expression_temporaries",
@@ -1688,7 +1707,7 @@ print consume(make(40), churn(8));
             "sanitized expression temporary program failed: {}",
             String::from_utf8_lossy(&run.stderr)
         );
-        assert_eq!(String::from_utf8_lossy(&run.stdout), "12\n12\n7\n34\n48\n");
+        assert_eq!(String::from_utf8_lossy(&run.stdout), "12\n12\n7\n34\n48\nnested\nfallback\n7\n8\n");
         assert_no_sanitizer_report(&run.stderr, "expression_temporaries");
 
         let _ = fs::remove_dir_all(directory);

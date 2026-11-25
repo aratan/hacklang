@@ -426,7 +426,14 @@ static int hl_cell_read(const HlCell *cell, HlValue *out) {
 static int hl_cell_write(HlCell *cell, HlValue value) {
     if (!cell) return 0;
     if (!cell->owner || cell->owner->closing) return 0;
-    cell->value = hl_clone_value(cell->owner, value);
+    HlValue cloned = hl_clone_value(cell->owner, value);
+    if (value.tag == HL_ARRAY || value.tag == HL_MAP)
+        fprintf(stderr, "CELL_WRITE cell=%p owner=%p lane=%p source=%p cloned=%p tag=%d\\n",
+            (void *)cell, (void *)cell->owner, (void *)cell->owner->lane,
+            value.tag == HL_ARRAY ? (void *)value.as.array : (void *)value.as.map,
+            cloned.tag == HL_ARRAY ? (void *)cloned.as.array : (void *)cloned.as.map,
+            (int)value.tag);
+    cell->value = cloned;
     cell->initialized = 1;
     return 1;
 }

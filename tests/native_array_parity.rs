@@ -402,6 +402,43 @@ print len(@());
 }
 
 #[test]
+fn string_indexing_matches_interpreter_for_ascii_and_unicode() {
+    assert_interpreter_native_parity(
+        "string_indexing_unicode",
+        r#"
+let text = "mañana";
+print text[0];
+print text[2];
+print text[5];
+let emoji = "A🌍B";
+print emoji[1];
+print emoji[2];
+print len(emoji);
+print text[1][0];
+"#,
+    );
+}
+
+#[test]
+fn invalid_string_indices_match_interpreter_error_classification() {
+    assert_interpreter_native_failure(
+        "string_index_out_of_range",
+        "let text = \"hola\";\\nprint text[9];\\n",
+        "índice de cadena fuera de rango",
+    );
+    assert_interpreter_native_failure(
+        "string_index_fractional",
+        "let text = \"hola\";\\nprint text[1.5];\\n",
+        "índice de una cadena debe ser entero no negativo",
+    );
+    assert_interpreter_native_failure(
+        "string_index_negative",
+        "let text = \"hola\";\\nprint text[-1];\\n",
+        "índice de una cadena debe ser entero no negativo",
+    );
+}
+
+#[test]
 fn printing_nested_arrays_and_maps_matches_interpreter_debug_format() {
     assert_interpreter_native_parity(
         "aggregate_debug_print",

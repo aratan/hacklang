@@ -702,9 +702,8 @@ fn validate_native_statements(statements: &[Statement]) -> Result<(), String> {
 }
 
 pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, String> {
-    // Never emit a call to an absent C runtime dispatcher. Function metadata
-    // and closure cells exist, but generated function bodies/activation frames
-    // are not wired into this backend yet.
+    // Validate every function body before emitting C. The backend below emits
+    // reachable function bodies, activation frames and the call dispatcher.
     validate_native_statements(&program.statements)?;
     for function in &program.functions {
         if let Some(expression) = &function.body.expression {

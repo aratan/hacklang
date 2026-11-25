@@ -5,6 +5,8 @@ use std::collections::HashMap;
 #[derive(Default)]
 struct Generator {
     temp: usize,
+    temp_declarations: Vec<String>,
+    temp_roots: Vec<String>,
     scope: usize,
     loop_id: usize,
     scopes: Vec<String>,
@@ -25,7 +27,17 @@ struct Generator {
 
 impl Generator {
     fn line(out: &mut String, value: impl AsRef<str>) { out.push_str(value.as_ref()); out.push('\n'); }
-    fn temp(&mut self) -> String { let value = format!("v{}", self.temp); self.temp += 1; value }
+    fn temp(&mut self) -> String {
+        let value = format!("v{}", self.temp);
+        self.temp += 1;
+        self.temp_declarations.push(format!("    HlValue {value};\n"));
+        value
+    }
+    fn release_temps(&mut self, out: &mut String) {
+        for value in self.temp_roots.drain(..).rev() {
+            Self::line(out, format!("hl_root_value_pop(env, &{value});"));
+        }
+    }
     fn c_string(value: &str) -> String {
         let mut out = String::from("\"");
         for byte in value.bytes() {
@@ -117,15 +129,22 @@ impl Generator {
             },
             ExprKind::Ternary { condition, when_true, when_false } => {
                 let c = self.expr(p, condition, out)?;
-                Self::line(out, format!("HlValue {v};"));
+                // All generated temporaries are declared at function scope so their
+                // addresses remain valid while registered as GC roots.
                 Self::line(out, format!("if (hl_truthy({c})) {{"));
                 let a = self.expr(p, when_true, out)?; Self::line(out, format!("{v} = {a};"));
                 Self::line(out, "} else {");
                 let b = self.expr(p, when_false, out)?; Self::line(out, format!("{v} = {b};"));
-                Self::line(out, "}"); return Ok(v);
+                Self::line(out, "}");
+                Self::line(out, format!("hl_root_value_push(env, &{v});"));
+                self.temp_roots.push(v.clone());
+                return Ok(v);
             }
         };
-        Self::line(out, format!("HlValue {v} = {rhs};")); Ok(v)
+        Self::line(out, format!("{v} = {rhs};"));
+        Self::line(out, format!("hl_root_value_push(env, &{v});"));
+        self.temp_roots.push(v.clone());
+        Ok(v)
     }
     fn enter_scope_env(&self, scope: ScopeId, out: &mut String) {
         if let Some(lane) = self.scope_lanes.get(&scope) {
@@ -146,7 +165,8 @@ impl Generator {
     }
     /// A statement boundary has no live evaluator temporary, so it is a safe
     /// point to sweep unreachable closure/cell cycles.
-    fn collect_point(&self, out: &mut String) {
+    fn collect_point(&mut self, out: &mut String) {
+        self.release_temps(out);
         if self.collect { Self::line(out, "hl_collect(env);"); }
     }
     fn statements(&mut self, p: &Program, statements: &[Statement], out: &mut String) -> Result<(), String> {
@@ -229,6 +249,7 @@ impl Generator {
             StmtKind::Block { scope, statements } => self.block(p, *scope, statements, out)?,
             StmtKind::If { condition, then_scope, then_body, else_scope, else_body } => {
                 let c = self.expr(p, condition, out)?;
+                self.release_temps(out);
                 Self::line(out, format!("if (hl_truthy({c}))")); self.block(p, *then_scope, then_body, out)?;
                 if !else_body.is_empty() {
                     Self::line(out, "else");
@@ -248,6 +269,7 @@ impl Generator {
                 Self::line(out, format!("HlEnv *{iter_prev} = env;"));
                 self.enter_scope_env(*scope, out); self.scopes.push(iter_prev.clone());
                 let c = self.expr(p, condition, out)?;
+                self.release_temps(out);
                 Self::line(out, format!("if (!hl_truthy({c})) {{ hl_env_free(env); env = {iter_prev}; goto {end}; }}"));
                 self.statements(p, body, out)?;
                 self.scopes.pop();
@@ -259,17 +281,18 @@ impl Generator {
             }
             StmtKind::Break => {
                 let (_, end, depth) = self.loops.last().cloned().ok_or("break fuera de bucle en HIR")?;
-                self.restore(out, depth); Self::line(out, format!("goto {end};"));
+                self.release_temps(out); self.restore(out, depth); Self::line(out, format!("goto {end};"));
             }
             StmtKind::Continue => {
                 let (cond, _, depth) = self.loops.last().cloned().ok_or("continue fuera de bucle en HIR")?;
-                self.restore(out, depth); Self::line(out, format!("goto {cond};"));
+                self.release_temps(out); self.restore(out, depth); Self::line(out, format!("goto {cond};"));
             },
             StmtKind::Return(value) => {
                 let (label, result) = self.function_return.clone()
                     .ok_or("return fuera de una función durante codegen nativo")?;
                 let value = self.expr(p, value, out)?;
                 Self::line(out, format!("{result} = {value};"));
+                self.release_temps(out);
                 self.restore(out, 0);
                 Self::line(out, format!("goto {label};"));
             }
@@ -642,11 +665,15 @@ fn function_definition(
     }
     Generator::line(&mut out, format!("    HlValue {result_slot} = hl_number(0);"));
     Generator::line(&mut out, format!("    hl_root_value_push(env, &{result_slot});"));
+    let body_start = out.len();
     if let Some(expression) = &function.body.expression {
         let value = generator.expr(program, expression, &mut out)?;
         Generator::line(&mut out, format!("    {result_slot} = {value};"));
+        generator.collect_point(&mut out);
     }
     generator.statements(program, &function.body.statements, &mut out)?;
+    let declarations = generator.temp_declarations.concat();
+    out.insert_str(body_start, &declarations);
     Generator::line(&mut out, format!("{end_label}: ;"));
     Generator::line(&mut out, format!("    hl_root_value_pop(env, &{result_slot});"));
     Generator::line(&mut out, "    hl_root_frame_pop(env);");
@@ -778,6 +805,7 @@ pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, Stri
         ));
     }
     generator.statements(program, &program.statements, &mut body)?;
+    let temp_declarations = generator.temp_declarations.concat();
     let mut source = include_str!("native_runtime.c").to_string();
     if !reachable.is_empty() || has_dynamic_calls {
         source.push_str("\n/* Generated function bodies and activation frames. */\n");
@@ -831,6 +859,7 @@ pub fn generate_c(program: &Program, memory: &MemoryPlan) -> Result<String, Stri
         source.push_str("    HlFrame frame = { NULL, 0 };\n");
     }
     source.push_str("    hl_root_frame_push(env, &frame);\n");
+    source.push_str(&temp_declarations);
     source.push_str(&body); source.push_str("    hl_env_free(env);\n");
     if lane_count > 0 {
         for lane in 0..lane_count {

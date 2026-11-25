@@ -1,6 +1,6 @@
 # HackLang
 
-Lenguaje de programación con front-end e intérprete en Rust y backend de compilación nativa a C. El subconjunto nativo ya incluye arrays, mapas, indexación y `len`; la invocación de funciones/closures sigue pendiente.
+Lenguaje de programación con frontend e intérprete en Rust y backend de compilación nativa a C. El backend nativo ya ejecuta arrays, mapas, indexación, `len`, funciones, closures, capturas mutables, llamadas de orden superior y recursión. La paridad completa con el intérprete sigue siendo un objetivo incremental.
 
 ## Arquitectura
 
@@ -160,7 +160,7 @@ cargo run -- run --format programa.hl
 cargo run -- check --diagnostics-json programa.hl
 ```
 
-`hl build programa.hl [-o ejecutable]` genera un ejecutable nativo mediante GCC o Clang. El subconjunto nativo incluye números, booleanos, cadenas, variables, operadores, ternarios, `if`, `while`, `break`/`continue`, `print`, arrays, mapas, lectura y asignación indexada (también anidada) y `len(x)` para strings, arrays y mapas. Las llamadas a funciones y la invocación de closures se rechazan explícitamente; `len` es el builtin implementado.
+`hl build programa.hl [-o ejecutable]` genera un ejecutable nativo mediante GCC o Clang. El subconjunto nativo incluye números, booleanos, cadenas, variables, operadores, ternarios, `if`, `while`, `break`/`continue`, `print`, arrays, mapas, lectura y asignación indexada (también anidada) y `len(x)` para strings, arrays y mapas. Las llamadas directas y dinámicas a funciones/closures están soportadas, incluidas capturas, llamadas de orden superior y recursión. `len` es el builtin de colecciones implementado actualmente.
 
 Para generar el ejecutable optimizado `hl`:
 
@@ -217,9 +217,9 @@ En esta primera versión se compactan las declaraciones (`:=`), los bloques (`{}
 
 La CLI dispone de `hl run`, `hl build` y `hl check`; `hl archivo.hl` sigue siendo el alias de interpretación. `build` reutiliza el mismo lexer, parser y AST, lo reduce a HIR con bindings y ámbitos resueltos, y genera C desde HIR mediante GCC o Clang.
 
-El backend admite literales numéricos, booleanos y cadenas; variables y asignación; operadores aritméticos/comparativos, truthiness y ternario; bloques, `if`, `while`, `break`, `continue`, `print`, arrays, mapas, lectura y asignación indexada (incluidas rutas anidadas) y `len(x)`. Las llamadas a funciones se rechazan durante la validación previa porque todavía no se emiten cuerpos ni activaciones nativas. HIR resuelve identificadores a `BindingId` y es la entrada del generador C.
+El backend admite literales, variables, operadores, control de flujo, arrays, mapas, indexación (incluida la de cadenas), `len(x)` y funciones/closures con cuerpos de expresión o bloque, parámetros, `return`, capturas compartidas mutables, llamadas de orden superior y recursión. HIR resuelve identificadores a `BindingId`, contiene el análisis de capturas y el plan lógico de almacenamiento; es la entrada del generador C.
 
-El runtime C usa valores etiquetados y arenas bump por ámbito. `MemoryPlan.scope_stacks` se materializa como lanes físicas reutilizables; los ámbitos anidados usan lanes distintas y los hermanos pueden reutilizar la misma. Los bindings escalares `Inline` usan slots físicos de `HlFrame`; los valores dinámicos se almacenan en regiones o en buffers/lanes propiedad del binding cuando necesitan sobrevivir al ámbito de origen. Arrays y mapas se copian recursivamente al asignarlos a otro binding, conservando su semántica de valor. Los ámbitos, iteraciones, `break`, `continue` y los errores fatales restauran/liberan las regiones activas. Esto es una integración parcial del plan de memoria, no un análisis de escape completo ni una implementación general de propiedad para closures y llamadas. Los errores fatales siguen terminando el proceso con `exit(1)`, después de limpiar los entornos activos. No se crea un parser ni un AST alternativo, y el checker estático no es requisito para compilar. Diseño y límites: [docs/NATIVE_COMPILER_DESIGN.md](docs/NATIVE_COMPILER_DESIGN.md).
+El runtime C usa valores etiquetados, arenas bump por ámbito/lane y slots físicos `HlFrame` para escalares. `MemoryPlan.scope_stacks` se materializa como lanes reutilizables; arrays y mapas se clonan recursivamente para preservar semántica de valor. Las llamadas crean entornos y frames de activación; los bindings capturados viven en celdas estables compartidas, incluso cuando escapan de la activación creadora. Un registro de frames activos y raíces temporales permite trazar celdas y closures, incluidas las anidadas en arrays/mapas, y recoger ciclos de closures inalcanzables. Es un recolector especializado para el grafo de celdas/closures, no un GC general de todos los objetos. La integración del plan de memoria es parcial: aún falta completar el análisis transitivo de escapes y demostrar todos los contratos de propiedad/liberación. Los errores fatales limpian los entornos activos y terminan con código 1. No se crea un parser ni un AST alternativo, y el checker estático no es requisito para compilar. Diseño y límites: [docs/NATIVE_COMPILER_DESIGN.md](docs/NATIVE_COMPILER_DESIGN.md).
 
 ## Metodología
 
@@ -345,7 +345,7 @@ Cada decisión de diseño se tomó preguntando "¿esto añade complejidad sin ne
 
 ### YAGNI (You Aren't Gonna Need It)
 
-El intérprete Rust implementa funciones, closures léxicas, arrays, mapas e indexación. El backend nativo ya cubre arrays, mapas e indexación; también puede materializar descriptores de closure y celdas capturadas, pero todavía rechaza las llamadas porque no genera cuerpos de función ni activa frames de llamada. Las características no soportadas deben fallar explícitamente, nunca simularse con valores por defecto.
+El intérprete Rust y el backend C ejecutan funciones y closures. El backend genera cuerpos y frames de activación, conserva celdas capturadas compartidas y despacha llamadas directas o dinámicas. Las características todavía no soportadas deben fallar explícitamente, nunca simularse con valores por defecto.
 
 ### DRY — con límites
 
@@ -377,9 +377,9 @@ El CLI se construye como el ejecutable `hl`. En desarrollo se invoca con `cargo 
 | **Evaluador** | ✅ Evaluación de expresiones, booleanos, sentencias, ámbitos léxicos y colecciones |
 | **Funciones** | ✅ Lambdas, closures léxicas, recursividad, llamadas de primera clase y aridad |
 | **Control de flujo** | ✅ `return`, `break` y `continue` |
-| **Memoria actual** | Evaluador Rust: arena mark-and-sweep de frames. Runtime C: arenas bump por ámbito/lane, slots físicos para escalares inline, almacenamiento dinámico por binding y limpieza en cierre de ámbitos y rutas fatales probadas. Integración parcial; sin análisis de escape completo ni llamadas nativas |
+| **Memoria actual** | Rust: mark-and-sweep de entornos. C: arenas bump, slots de activación, celdas capturadas estables y tracing especializado de ciclos de closures/celdas. Integración parcial; escape analysis transitiva y propiedad general aún incompletas |
 | **Análisis de tipos** | ✅ Primera pasada no bloqueante: tipos primitivos, retornos explícitos, arrays/mapas con tipos de elemento/clave/valor, indexación, asignaciones, operadores y aridad de llamadas |
-| **Compilador nativo** | Backend C con arrays, mapas, indexación y `len`; funciones/closures invocables aún pendientes. Paridad solo para el subconjunto probado |
+| **Compilador nativo** | Backend HIR→C con arrays, mapas, indexación, strings, `len`, funciones, closures, capturas, llamadas de orden superior y recursión. Paridad diferencial en expansión |
 | **Tests** | Tests Rust, ejecución de todos los ejemplos y smoke diferencial intérprete/nativo, incluida división por cero; falta ampliar la matriz de conformidad |
 
 
@@ -394,7 +394,7 @@ El CLI se construye como el ejecutable `hl`. En desarrollo se invoca con `cargo 
 - La indexación de cadenas devuelve el carácter solicitado.
 - Los errores al evaluar condiciones de `while` se propagan; ya no se convierten silenciosamente en una condición falsa.
 
-Limitaciones actuales: los mapas se representan como pares ordenados y su búsqueda es lineal. El comprobador estático inicial es deliberadamente no bloqueante: informa de incompatibilidades demostrables y deja como `unknown` los casos que aún no puede inferir. La indexación de strings existe en el intérprete, pero no forma parte del runtime nativo actual. Las comparaciones numéricas producen `true` o `false`, no `1` o `0`.
+Limitaciones actuales: los mapas se representan como pares ordenados y su búsqueda es lineal. El comprobador estático inicial es deliberadamente no bloqueante: informa de incompatibilidades demostrables y deja como `unknown` los casos que aún no puede inferir. La indexación de strings está implementada en ambos runtimes y debe mantenerse bajo paridad diferencial. Las comparaciones numéricas producen `true` o `false`, no `1` o `0`.
 
 
 ## Modelo de memoria y ejecución
@@ -413,7 +413,7 @@ El lexer expone `tokenize() -> Result<Vec<Token>, String>` y el parser `parse_pr
 
 ## Modelo de memoria objetivo
 
-Se ha especificado un modelo **stack-first, sin GC y sin gestión manual del usuario**. La implementación actual es parcial: el evaluador Rust conserva su arena mark-and-sweep de frames. En C, `MemoryPlan` ya dirige lanes regionales y slots inline físicos; el runtime usa arenas bump, buffers propiedad de bindings y promoción por copia para valores dinámicos, con limpieza en cierres normales y errores fatales. Arrays y mapas están soportados en el backend nativo, con pruebas diferenciales para arrays. No hay análisis de escape completo ni ABI de llamadas/activaciones nativas; la captura y construcción de closures no equivale a poder invocarlas. La matriz de diseño y su cobertura están en [docs/MEMORY_MODEL.md](docs/MEMORY_MODEL.md).
+El objetivo sigue siendo un modelo **stack-first, sin GC general y sin gestión manual del usuario**. El evaluador Rust conserva su recolector de entornos. En C, `MemoryPlan` dirige lanes regionales y slots inline; las activaciones usan frames, y las capturas viven en celdas estables. Un tracing collector limitado al grafo de celdas/closures rompe ciclos inalcanzables; no gestiona de forma general todos los objetos. Arrays, mapas, strings indexables, llamadas y closures ya tienen soporte nativo con pruebas diferenciales. La integración del modelo de memoria sigue siendo parcial: falta completar escape analysis transitiva, la propiedad de todos los valores dinámicos y la validación exhaustiva con sanitizers. La matriz de diseño y su cobertura están en [docs/MEMORY_MODEL.md](docs/MEMORY_MODEL.md).
 
 ## Biblioteca estándar inicial
 

@@ -226,7 +226,7 @@ impl Generator {
                     };
                     let updated = self.temp();
                     Self::line(out, format!(
-                        "HlValue {updated} = hl_index_assign_value(env, hl_frame_read_or_fail(env, &frame, {slot}), {index_values}, {}, {value});",
+                        "{updated} = hl_index_assign_value(env, hl_frame_read_or_fail(env, &frame, {slot}), {index_values}, {}, {value});",
                         indices.len()
                     ));
                     Self::line(out, format!("hl_frame_write_or_fail(env, &frame, {slot}, {updated});"));

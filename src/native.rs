@@ -1461,4 +1461,85 @@ int main(void) {
         let _ = fs::remove_dir_all(directory);
     }
 
+    /// Builds a fixture through the real HIR pipeline and the sanitizers so
+    /// runtime memory errors surface as a failing stderr instead of silently.
+    fn sanitized_native_build(source_text: &str, directory: &Path, name: &str) -> PathBuf {
+        let mut lexer = crate::lexer::Lexer::new(source_text.to_string());
+        let tokens = lexer.tokenize_spanned().expect("tokenize fixture");
+        let mut parser = crate::parser::Parser::new_spanned(tokens);
+        let program = parser.parse_program().expect("parse fixture");
+        let hir = crate::hir::lower(&program).expect("lower fixture");
+        let memory_plan = crate::memory::plan(&hir);
+        let c_source = crate::hir_native::generate_c(&hir, &memory_plan).expect("generate C");
+        let c_file = directory.join(format!("{name}.c"));
+        let executable = directory.join(name);
+        fs::write(&c_file, c_source).expect("write generated C");
+        let compiler = select_c_compiler().expect("C compiler");
+        let build = Command::new(&compiler)
+            .args([
+                "-std=c11",
+                "-O1",
+                "-g",
+                "-fsanitize=address,undefined",
+                "-fno-omit-frame-pointer",
+            ])
+            .arg(&c_file)
+            .arg("-o")
+            .arg(&executable)
+            .arg("-lm")
+            .output()
+            .expect("compile sanitized native program");
+        assert!(
+            build.status.success(),
+            "sanitized native compilation failed: {}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        executable
+    }
+
+    fn assert_no_sanitizer_report(stderr: &[u8], case: &str) {
+        let text = String::from_utf8_lossy(stderr);
+        assert!(
+            !text.contains("AddressSanitizer")
+                && !text.contains("LeakSanitizer")
+                && !text.contains("runtime error:"),
+            "{case}: sanitizer reported: {text}"
+        );
+    }
+
+    #[test]
+    fn sanitized_string_indexing_accepts_unicode_and_rejects_invalid_indices() {
+        let directory = temporary_directory().expect("temporary directory");
+        let success = sanitized_native_build(
+            "let text = \"mañana🙂\";\nprint text[0];\nprint text[2];\nprint text[6];\nprint len(text);\n",
+            &directory,
+            "sanitized_string_success",
+        );
+        let run = Command::new(&success)
+            .output()
+            .expect("run sanitized string index program");
+        assert!(
+            run.status.success(),
+            "sanitized string index program failed: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&run.stdout), "m\nñ\n🙂\n7\n");
+        assert_no_sanitizer_report(&run.stderr, "string_index_success");
+
+        for (name, fixture) in [
+            ("negative", "let text = \"mañana🙂\";\nlet i = 0 - 1;\nprint text[i];\n"),
+            ("fractional", "let text = \"mañana🙂\";\nprint text[1.5];\n"),
+            ("out_of_range", "let text = \"mañana🙂\";\nprint text[7];\n"),
+        ] {
+            let executable = sanitized_native_build(fixture, &directory, &format!("sanitized_string_{name}"));
+            let run = Command::new(&executable)
+                .output()
+                .expect("run sanitized string index failure program");
+            assert!(!run.status.success(), "{name}: invalid index unexpectedly succeeded");
+            assert_no_sanitizer_report(&run.stderr, name);
+        }
+
+        let _ = fs::remove_dir_all(directory);
+    }
+
 }

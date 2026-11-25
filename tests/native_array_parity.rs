@@ -433,7 +433,9 @@ fn invalid_string_indices_match_interpreter_error_classification() {
     );
     assert_interpreter_native_failure(
         "string_index_negative",
-        "let text = \"hola\";\nprint text[-1];\n",
+        // The parser has no unary minus, so the negative index is produced at
+        // runtime; this exercises the index contract instead of the lexer.
+        "let text = \"hola\";\nlet i = 0 - 1;\nprint text[i];\n",
         "índice de una cadena debe ser entero no negativo",
     );
 }

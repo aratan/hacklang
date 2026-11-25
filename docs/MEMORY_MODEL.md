@@ -191,7 +191,7 @@ El planificador actual es deliberadamente conservador:
 
 Incluye pruebas unitarias para escalares inline, strings locales, concatenación y promoción tras asignación.
 
-**Estado del planificador:** `MemoryPlan` ya clasifica bindings y calcula `scope_stacks`: asigna una lane determinista por profundidad léxica a los ámbitos que contienen valores `ScopeRegion`. Los ámbitos hermanos reutilizan lane y los ámbitos anidados reciben lanes distintas. Este es un primer plan conservador de reutilización, no un análisis de intervalos de vida ni una asignación física optimizada. El backend y el runtime todavía no consumen `scope_stacks`. El runtime C sí ha avanzado: cada `HlEnv` mantiene una lista de las asignaciones dinámicas que posee y las libera al cerrar el ámbito. Las strings se copian al entorno propietario en `hl_define` y `hl_assign`; así, una asignación desde un bloque interior a una variable exterior sobrevive al cierre del bloque. Los bucles crean una región por iteración, también para temporales de la condición. Esta implementación es un **registro de asignaciones por región**, no una arena contigua ni una asignación real en stack. La copia conservadora puede duplicar strings y acumular reasignaciones hasta cerrar la región propietaria. No hay todavía análisis de escape operativo, promoción transitiva ni soporte nativo para arrays/maps/closures.
+**Estado actual del planificador y runtime:** `MemoryPlan` clasifica bindings, calcula CFG/liveness, interferencias, slots, lanes por profundidad y operaciones de promoción. `hir_native.rs` consume `scope_stacks` y crea lanes físicas en el runtime C; los ámbitos hermanos pueden reutilizar una lane y los anidados usan lanes distintas. Los bindings `Inline` del módulo se materializan en slots físicos de `HlFrame`. Los valores dinámicos usan arenas bump regionales y, cuando necesitan sobrevivir al ámbito de origen, almacenamiento propiedad del binding y promoción por copia. El runtime clona recursivamente arrays y mapas para preservar su semántica de valor. La limpieza se ejecuta al cerrar entornos y en las rutas de `break`, `continue` y error fatal cubiertas por pruebas. Esto es una integración operativa para el subconjunto actual, no una escape analysis transitiva completa ni un sistema general de movimiento/propiedad para todos los grafos y closures.
 
 **Slots planificados en el C generado:** el generador emite ahora, junto a la clase de almacenamiento de cada binding, su `DataStackId` y slot cuando existe una asignación en `MemoryPlan.binding_slots`. También rechaza asignaciones de slots para bindings inexistentes. Las pruebas verifican la emisión y el rechazo de metadatos huérfanos. Sigue siendo información de compilación: los slots aún no determinan direcciones ni asignaciones físicas del runtime.
 
@@ -203,7 +203,7 @@ Incluye pruebas unitarias para escalares inline, strings locales, concatenación
 
 Cada binding HIR registra ahora posiciones de declaración, primer uso, último uso y última escritura. El recorrido asigna índices de evento monotónicos; los accesos dentro de bucles prolongan conservadoramente la vida hasta el límite de salida del bucle y se marcan como `loop_carried`. Los recorridos de ramas se serializan en el orden del HIR, lo que puede alargar intervalos, pero no acortarlos deliberadamente.
 
-Esto **no es todavía liveness de CFG ni prueba de no-aliasing**. No modela con precisión caminos de ejecución, cortocircuitos, retornos, destrucción de recursos, ni escapes transitivos. Los intervalos son metadata de análisis y no se usan para reutilizar memoria ni para alterar la clase de almacenamiento. El siguiente paso será validar el modelo contra un CFG explícito o un análisis estructurado equivalente antes de permitir decisiones físicas de asignación.
+Los intervalos de uso siguen siendo metadata conservadora y no constituyen por sí solos una prueba de no-aliasing ni de escape. El planificador ya construye además un CFG explícito, resuelve liveness hasta punto fijo y deriva un grafo de interferencia y asignaciones de slots. Esas decisiones se validan antes de codegen; las lanes regionales y los slots inline del módulo sí se consumen físicamente. El análisis todavía no modela escapes transitivos generales ni todos los efectos de futuras llamadas nativas.
 
 ### 7.3 CFG y análisis de variables vivas (primera implementación)
 
@@ -218,7 +218,7 @@ live_in[B]  = use[B] ∪ (live_out[B] - def[B])
 
 El resultado se expone en `MemoryPlan.cfg`. Se han añadido pruebas de propagación por ramas/uniones y de aristas de retroceso de bucles.
 
-**Límite actual:** el CFG es una representación inicial para liveness de bindings; no modela aún `return` (no está admitido por este HIR), excepciones, efectos de llamadas, destrucción de temporales ni escapes transitivos. La construcción de `if` y bucles se mantiene deliberadamente conservadora. No se usa todavía para asignar físicamente lanes ni para liberar memoria.
+**Límite actual:** el CFG modela `return`, `break` y `continue` en el HIR estructurado del módulo, además de ramas y retrocesos de bucles. No construye todavía CFG independientes para cada activación de función ni modela efectos de llamadas (que siguen rechazadas por el backend), destrucción de todos los temporales tipados o escapes transitivos. La asignación de slots se valida; el backend materializa slots inline y lanes regionales, pero no todos los slots planificados corresponden a ubicaciones físicas independientes.
 
 ### 7.4 Interferencia y asignación de slots (metadata)
 
@@ -231,7 +231,7 @@ La reutilización está particionada por pila:
 
 El resultado se expone como `MemoryPlan.interference`, `binding_slots` y `stack_slot_counts`. Hay pruebas para vidas no solapadas, bindings simultáneamente vivos y temporales de ramas mutuamente excluyentes.
 
-Esta asignación sigue siendo **metadata del compilador**. No cambia offsets, reservas, destructores ni liberaciones del runtime C/Rust. El CFG y el análisis de liveness deben ampliarse antes de consumir físicamente estos slots; cualquier clase de vida desconocida permanece fuera de la reutilización.
+La asignación de slots sigue siendo metadata para las lanes regionales y los valores dinámicos, pero los slots `Inline` del módulo ya se materializan en un `HlFrame` C y las `ScopeStackPlan` se convierten en lanes bump físicas. Los valores de vida desconocida quedan conservadoramente fuera de la reutilización corta y se asignan a `OwnedRegion`.
 
 ### 7.5 Simulador seguro de regiones bump (Rust)
 
@@ -284,20 +284,20 @@ Se añaden pruebas para promoción transitiva, ciclos, destinos inválidos, inva
 | Área | Estado actual | Objetivo |
 |---|---|---|
 | Evaluador Rust | Arena de entornos con mark-and-sweep de frames; String/Vec/HashMap son gestionados por Rust | Propiedad/ámbitos deterministas y escape analysis; sin GC general |
-| Runtime C | Regiones de ámbito con lista de asignaciones `malloc`; libera strings y bindings al cerrar bloques, ramas, iteraciones y proceso. `hl_define`/`hl_assign` copian strings al propietario del binding para evitar referencias colgantes | Arenas contiguas, stack-first, análisis de escape y promoción sin copias cuando sea seguro |\n| Planificador HIR | `src/memory.rs` clasifica bindings conservadoramente y promueve lecturas/asignaciones de vida desconocida a `OwnedRegion`; se ejecuta durante `hl build` | Análisis transitivo completo y asignación/liberación real por regiones |
-| Closures | ID estable de entorno capturado | Entorno con propietario explícito y ciclos resueltos estáticamente |
-| Arrays / Maps C | Aún no implementados | Buffers ligados a regiones propietarias |
+| Runtime C | Arenas bump por lanes/ámbitos, slots físicos `HlFrame` para bindings inline, buffers reutilizables propiedad de bindings, copia profunda de arrays/maps y promoción por copia en los casos conectados; limpieza LIFO en cierres y errores fatales probados | Ampliar propiedad/escape de todos los tipos y temporales, y habilitar movimiento solo con pruebas de vida y aliasing |\n| Planificador HIR | `src/memory.rs` calcula CFG/liveness, interferencias, slots, lanes, tokens y promociones; el backend consume lanes y slots inline y valida el plan | Escape analysis transitiva/path-sensitive y planificación de todos los temporales/activaciones |
+| Closures | HIR, análisis de capturas, celdas compartidas y descriptores runtime; invocación nativa deshabilitada y celdas retenidas conservadoramente hasta teardown raíz | ABI de llamadas, activaciones, raíces temporales y recolección segura de ciclos |
+| Arrays / Maps C | Implementados en runtime; clonación recursiva, indexación y asignación anidada; paridad diferencial de arrays presente, cobertura de mapas por ampliar | Completar paridad, errores y garantías de vida/propiedad en todos los caminos |
 | Análisis de escape | No existe | Fase del compilador compartida por backend y futuras optimizaciones |
 
 No describir el sistema actual como si ya implementara el modelo objetivo.
 
 ## 9. Secuencia de implementación
 
-1. **Contrato y pruebas de diseño**: cerrar casos de ámbitos, escapes, mutabilidad, closures, recursividad, arrays/maps y errores. Sin cambios en runtime.
-2. **Representación interna**: diseñar regiones, propietarios, descriptores y referencias; documentar invariantes y operaciones de promoción.
-3. **Análisis conservador**: calcular escapes y emitir diagnósticos internos explicables. Sin optimizaciones agresivas.
-4. **Evaluador Rust**: introducir el modelo como implementación de referencia y comparar resultados con el evaluador actual.
-5. **Runtime C**: completar instrumentación y pruebas de liberación en todos los caminos de control; después sustituir el registro de asignaciones por arenas cuando las mediciones lo justifiquen y añadir arrays/maps/indexación.
+1. **Contrato y pruebas de diseño — en curso:** mantener las pruebas semánticas del intérprete y ampliar paridad nativa, especialmente mapas, errores y casos de vida útil.
+2. **Representación interna — parcial:** HIR, `MemoryPlan`, lanes, slots, tokens y operaciones de promoción ya existen; los modelos `RegionTable`/`OwnershipLedger` siguen siendo prototipos Rust y no deben confundirse con el runtime productivo.
+3. **Análisis conservador — parcial:** CFG/liveness, interferencias y decisiones de almacenamiento están conectados; falta escape analysis transitiva y sensible a caminos para todos los tipos/temporales.
+4. **Runtime C — integrado para el subconjunto actual:** arenas bump, lanes físicas, slots inline, almacenamiento owned y limpieza de ámbitos/salidas probadas. No hay todavía propiedad general de grafos ni GC de ciclos de closures.
+5. **Funciones y closures invocables:** implementar ABI, cuerpos C, activaciones y retorno; resolver vida de capturas/ciclos y añadir pruebas diferenciales/sanitizers antes de habilitarlas.
 6. **Closures y recursividad nativas**: solo cuando los ciclos y la propiedad tengan pruebas específicas.
 7. **Optimización**: reducir promociones y asignaciones tras medir; añadir una futura orden `hl explain-memory` para explicar decisiones stack/region/owned.
 
@@ -413,7 +413,7 @@ El planificador ahora emite `MemoryOperation::Promote` para asignaciones dinámi
 
 El análisis evita emitir promoción cuando el valor leído ya pertenece a un ámbito que vive al menos tanto como el destino. Se añaden pruebas para ambos escapes, asignaciones dentro del mismo ámbito y lecturas desde un ámbito exterior. La clasificación de expresiones también propaga hechos conocidos de bindings a través de `Read`, concatenaciones `+` y ramas ternarias: una lectura de un binding `Inline` se considera escalar; una lectura de un binding con almacenamiento dinámico conserva esa condición dentro de la expresión. Los bindings con origen directo en otro binding dinámico siguen en `OwnedRegion`, porque esta fase aún no representa alias/propietario compartido ni realiza transferencia física. La propagación es conservadora y depende de las clases inferidas en el recorrido HIR; no es todavía un análisis SSA sensible a caminos ni un sistema completo de tipos.
 
-**Límite:** estas operaciones son metadata explicable de `MemoryPlan`; ni el backend C ni el evaluador Rust las consumen todavía. El subconjunto HIR actual solo representa escalares, strings, lecturas, operaciones binarias y ternarios. No es aún un análisis de escape transitivo para arrays, mapas, closures, retornos o llamadas. Las asignaciones dinámicas siguen clasificándose conservadoramente en `OwnedRegion`; la promoción no cambia todavía el runtime ni implica transferencia física sin copia.
+**Límite:** `MemoryOperation::Promote` se valida y el codegen la conecta con el runtime C para las asignaciones cubiertas. La promoción actual es por copia, no movimiento ni transferencia general de grafos. El análisis no es todavía transitivo ni path-sensitive para todas las combinaciones de arrays, mapas, closures, retornos y llamadas; las llamadas nativas siguen deshabilitadas. El evaluador Rust no consume estas operaciones como un allocator alternativo.
 
 
 ### 2.6.2 Modelo verificable del ciclo de vida del propietario

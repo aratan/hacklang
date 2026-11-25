@@ -186,25 +186,22 @@ Aceptación: contrato escrito y tests Rust que lo fijan.
 
 Aceptación: pruebas CLI de uso, argumentos inválidos, archivo inexistente y ausencia de toolchain.
 
-### N2 — Runtime C mínimo (implementado inicialmente)
+### N2 — Runtime C (subconjunto ampliado)
 
-- `HlValue` etiquetado para Number, Bool y String; entornos léxicos, variables, truthiness, operadores y salida.
+- `HlValue` etiquetado para Number, Bool, String, Array, Map y Closure; entornos léxicos, variables, truthiness, operadores, colecciones, indexación, `len` e impresión.
 - El runtime está embebido con `include_str!` y enlazado en cada build.
-- La memoria asignada vive hasta finalizar el proceso; no hay todavía GC ni liberación por ámbito.
+- Usa arenas bump por lane/ámbito, registros LIFO de limpieza y buffers propiedad de bindings. `hl_fail` limpia los entornos activos antes de terminar con código 1.
+- Los arrays y mapas se clonan recursivamente al almacenarse en otro binding, conservando la semántica de valor del intérprete.
 
-Pendiente: gestión de memoria acotada, pruebas de estrés y conformidad completa de formato numérico/strings.
+Pendiente: ampliar las pruebas diferenciales de mapas y errores, ejecutar sanitizers y completar las garantías de propiedad para recursos/grafos que escapan.
 
-### N3 — Backend por subconjuntos (primer corte implementado)
+### N3 — Backend por HIR (subconjunto ampliado)
 
-`src/hir_native.rs` genera C desde HIR para literales Number/Bool/String, variables y asignación, operadores soportados, ternario, bloques, if, while, break, continue y print.
+`src/hir_native.rs` genera C desde HIR para Number/Bool/String, variables y asignación, operadores, ternario, bloques, `if`, `while`, `break`, `continue`, `print`, arrays, mapas, lectura e indexación anidada, asignación indexada anidada y `len`.
 
-Pendiente, en este orden:
-1. pruebas diferenciales y cerrar divergencias semánticas del subconjunto actual;
-2. arrays, mapas e indexación;
-3. funciones, closures, recursividad y return;
-4. builtins y errores restantes.
+La HIR ya representa funciones, parámetros, llamadas, `return`, capturas y closures. El runtime C puede construir descriptores de closure y celdas capturadas con identidad compartida, pero `generate_c` rechaza las llamadas porque todavía no emite cuerpos de función ni activaciones/frames nativos. Por tanto, construir una closure no significa que pueda invocarse desde un ejecutable nativo.
 
-Cada ampliación debe reutilizar el AST actual y añadir pruebas diferenciales contra el intérprete.
+Pendiente: ampliar paridad diferencial (especialmente mapas y errores), cubrir indexación de strings si se incorpora al contrato nativo, y diseñar/empezar el ABI de llamadas y activaciones solo después de cerrar las pruebas de memoria.
 
 ### N4 — Build y pruebas diferenciales (build operativo; conformidad pendiente)
 
@@ -238,9 +235,9 @@ Nunca anunciar «compilación nativa completa» mientras exista una variante AST
 
 La arquitectura objetivo está especificada en [MEMORY_MODEL.md](MEMORY_MODEL.md). Define almacenamiento stack-first, regiones por ámbito, promoción por escape analysis y destrucción determinista, sin GC general ni gestión manual del usuario. También fija los requisitos de seguridad para closures mutables, recursividad, ciclos, colecciones y limpieza ante errores.
 
-**Importante: no está implementado todavía.** El evaluador Rust actual mantiene una arena de entornos con mark-and-sweep de frames; los valores dinámicos siguen bajo gestión de Rust. El runtime C actual usa asignaciones `malloc` que no se liberan individualmente durante la ejecución. No se debe modificar ni ampliar esa gestión como si ya fuese el modelo objetivo.
+**Estado: integración parcial ya operativa.** El evaluador Rust mantiene su arena de entornos con mark-and-sweep de frames. En C, `MemoryPlan` se consume durante codegen: `scope_stacks` selecciona lanes físicas, los slots `Inline` se materializan en `HlFrame` y los valores dinámicos usan arenas/buffers propiedad de sus bindings. Las promociones integradas son por copia para preservar la vida de valores que escapan; no existe todavía análisis de escape transitivo completo ni un sistema general de movimiento/propiedad para grafos y closures.
 
-La matriz MEM-001..MEM-022 de `MEMORY_MODEL.md` es el contrato de pruebas. Antes de cambiar los runtimes hay que automatizar los casos semánticos sobre el evaluador actual y diseñar la representación de regiones/propietarios. La implementación nativa de arrays, mapas y closures queda condicionada a demostrar liberación determinista y ausencia de referencias colgantes.
+La matriz MEM de `MEMORY_MODEL.md` sigue siendo el contrato de pruebas. Arrays, mapas e indexación ya están implementados en el backend nativo, pero la cobertura diferencial de mapas y los casos de propiedad/escape deben ampliarse. La invocación nativa de funciones y closures sigue bloqueada hasta demostrar la vida de capturas, ciclos, retornos y limpieza de activaciones.
 
 
 ### Planificación de memoria previa al backend
@@ -255,9 +252,9 @@ AST → HIR → análisis de vida/escape → plan de propietarios y data stacks
                               backend (C inicialmente)
 ```
 
-El análisis será independiente del backend: no generará C ni reservará memoria. Su resultado describirá, como mínimo, para cada binding y temporal dinámico, el propietario, clase de almacenamiento, lane, ámbito de vida, posibles escapes y acciones de transferencia/promoción.
+El análisis se ejecuta antes de codegen y produce clases de almacenamiento, lanes por ámbito, slots, interferencias y operaciones de promoción. El backend C consume las lanes y slots inline, y valida los metadatos antes de generar código. El análisis sigue siendo conservador y no equivale a una escape analysis transitiva completa.
 
-**No se añadirá todavía una MIR ni se cambiará el ABI del runtime C.** Primero se ampliará el análisis HIR existente con metadatos explícitos y pruebas unitarias. El backend actual seguirá ignorando esos metadatos hasta que el planificador pueda demostrar los invariantes de MEMORY_MODEL.md. Esta frontera evita mezclar una propuesta de asignación física con el comportamiento operativo actual.
+**No se añadirá todavía una MIR ni se cambiará el ABI de llamadas del runtime C.** Se mantendrá HIR como frontera semántica y se ampliará el plan solo cuando existan invariantes y pruebas que justifiquen nuevas decisiones físicas.
 
 ## Representación intermedia
 

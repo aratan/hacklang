@@ -1,6 +1,6 @@
 # HackLang
 
-Lenguaje de programación con front-end e intérprete en Rust y un primer backend de compilación nativa a C. El backend inicial admite un subconjunto explícito del lenguaje; arrays, mapas, indexación y funciones/closures siguen pendientes.
+Lenguaje de programación con front-end e intérprete en Rust y backend de compilación nativa a C. El subconjunto nativo ya incluye arrays, mapas, indexación y `len`; la invocación de funciones/closures sigue pendiente.
 
 ## Arquitectura
 
@@ -160,7 +160,7 @@ cargo run -- run --format programa.hl
 cargo run -- check --diagnostics-json programa.hl
 ```
 
-`hl build programa.hl [-o ejecutable]` genera un ejecutable nativo mediante GCC o Clang. El primer subconjunto incluye números, booleanos, cadenas, variables, operadores, ternarios, if, while, break/continue y print. Arrays, mapas, indexación, llamadas, builtins y funciones/closures se rechazan explícitamente hasta que se implementen.
+`hl build programa.hl [-o ejecutable]` genera un ejecutable nativo mediante GCC o Clang. El subconjunto nativo incluye números, booleanos, cadenas, variables, operadores, ternarios, `if`, `while`, `break`/`continue`, `print`, arrays, mapas, lectura y asignación indexada (también anidada) y `len(x)` para strings, arrays y mapas. Las llamadas a funciones y la invocación de closures se rechazan explícitamente; `len` es el builtin implementado.
 
 Para generar el ejecutable optimizado `hl`:
 
@@ -217,9 +217,9 @@ En esta primera versión se compactan las declaraciones (`:=`), los bloques (`{}
 
 La CLI dispone de `hl run`, `hl build` y `hl check`; `hl archivo.hl` sigue siendo el alias de interpretación. `build` reutiliza el mismo lexer, parser y AST, lo reduce a HIR con bindings y ámbitos resueltos, y genera C desde HIR mediante GCC o Clang.
 
-El backend inicial admite literales numéricos, booleanos y cadenas; variables y asignación; operadores aritméticos/comparativos, truthiness y ternario; bloques, if, while, break, continue y print. Rechaza con diagnóstico las construcciones que todavía no implementa: arrays, mapas, indexación, llamadas/builtins y funciones/closures. El lowering AST→HIR resuelve identificadores a `BindingId`; HIR es la entrada del generador C.
+El backend admite literales numéricos, booleanos y cadenas; variables y asignación; operadores aritméticos/comparativos, truthiness y ternario; bloques, `if`, `while`, `break`, `continue`, `print`, arrays, mapas, lectura y asignación indexada (incluidas rutas anidadas) y `len(x)`. Las llamadas a funciones se rechazan durante la validación previa porque todavía no se emiten cuerpos ni activaciones nativas. HIR resuelve identificadores a `BindingId` y es la entrada del generador C.
 
-El runtime C usa valores dinámicos etiquetados y regiones de ámbito implementadas como listas de asignaciones `malloc` propiedad de cada `HlEnv`. Al cerrar bloques, ramas, iteraciones y el ámbito raíz, libera las asignaciones de esa región. Las cadenas se copian al entorno propietario de cada binding en `hl_define` y `hl_assign`, evitando referencias colgantes cuando un valor se asigna desde un ámbito interior a uno exterior. Las iteraciones tienen regiones temporales propias, incluida la evaluación de la condición. Esto no es todavía una arena contigua ni asignación stack-first: `MemoryPlan` se calcula pero aún no dirige la ubicación física; tampoco existe análisis de escape operativo ni soporte nativo para arrays, mapas o closures. Los errores fatales terminan el proceso mediante `exit(1)`, por lo que la limpieza de regiones en rutas de error sigue pendiente como garantía interna. No se crea un parser ni un AST alternativo, y el checker estático no es requisito para compilar. Diseño y límites: [docs/NATIVE_COMPILER_DESIGN.md](docs/NATIVE_COMPILER_DESIGN.md).
+El runtime C usa valores etiquetados y arenas bump por ámbito. `MemoryPlan.scope_stacks` se materializa como lanes físicas reutilizables; los ámbitos anidados usan lanes distintas y los hermanos pueden reutilizar la misma. Los bindings escalares `Inline` usan slots físicos de `HlFrame`; los valores dinámicos se almacenan en regiones o en buffers/lanes propiedad del binding cuando necesitan sobrevivir al ámbito de origen. Arrays y mapas se copian recursivamente al asignarlos a otro binding, conservando su semántica de valor. Los ámbitos, iteraciones, `break`, `continue` y los errores fatales restauran/liberan las regiones activas. Esto es una integración parcial del plan de memoria, no un análisis de escape completo ni una implementación general de propiedad para closures y llamadas. Los errores fatales siguen terminando el proceso con `exit(1)`, después de limpiar los entornos activos. No se crea un parser ni un AST alternativo, y el checker estático no es requisito para compilar. Diseño y límites: [docs/NATIVE_COMPILER_DESIGN.md](docs/NATIVE_COMPILER_DESIGN.md).
 
 ## Metodología
 
@@ -345,7 +345,7 @@ Cada decisión de diseño se tomó preguntando "¿esto añade complejidad sin ne
 
 ### YAGNI (You Aren't Gonna Need It)
 
-El intérprete Rust implementa funciones, closures léxicas, arrays, mapas e indexación. El backend nativo C todavía no cubre esas construcciones y debe rechazarlas explícitamente. Las características que aún no existen deben fallar explícitamente; no deben simularse con valores por defecto ni con resultados silenciosos.
+El intérprete Rust implementa funciones, closures léxicas, arrays, mapas e indexación. El backend nativo ya cubre arrays, mapas e indexación; también puede materializar descriptores de closure y celdas capturadas, pero todavía rechaza las llamadas porque no genera cuerpos de función ni activa frames de llamada. Las características no soportadas deben fallar explícitamente, nunca simularse con valores por defecto.
 
 ### DRY — con límites
 
@@ -377,9 +377,9 @@ El CLI se construye como el ejecutable `hl`. En desarrollo se invoca con `cargo 
 | **Evaluador** | ✅ Evaluación de expresiones, booleanos, sentencias, ámbitos léxicos y colecciones |
 | **Funciones** | ✅ Lambdas, closures léxicas, recursividad, llamadas de primera clase y aridad |
 | **Control de flujo** | ✅ `return`, `break` y `continue` |
-| **Memoria actual** | Evaluador Rust: arena mark-and-sweep de frames. Runtime C: regiones por ámbito con asignaciones `malloc` registradas y liberadas al cerrar el entorno; strings copiadas al propietario del binding. Sin arena contigua ni limpieza garantizada en errores fatales |
+| **Memoria actual** | Evaluador Rust: arena mark-and-sweep de frames. Runtime C: arenas bump por ámbito/lane, slots físicos para escalares inline, almacenamiento dinámico por binding y limpieza en cierre de ámbitos y rutas fatales probadas. Integración parcial; sin análisis de escape completo ni llamadas nativas |
 | **Análisis de tipos** | ✅ Primera pasada no bloqueante: tipos primitivos, retornos explícitos, arrays/mapas con tipos de elemento/clave/valor, indexación, asignaciones, operadores y aridad de llamadas |
-| **Compilador nativo** | Primer backend C operativo para un subconjunto; sin paridad completa ni soporte de colecciones/funciones |
+| **Compilador nativo** | Backend C con arrays, mapas, indexación y `len`; funciones/closures invocables aún pendientes. Paridad solo para el subconjunto probado |
 | **Tests** | Tests Rust, ejecución de todos los ejemplos y smoke diferencial intérprete/nativo, incluida división por cero; falta ampliar la matriz de conformidad |
 
 
@@ -394,7 +394,7 @@ El CLI se construye como el ejecutable `hl`. En desarrollo se invoca con `cargo 
 - La indexación de cadenas devuelve el carácter solicitado.
 - Los errores al evaluar condiciones de `while` se propagan; ya no se convierten silenciosamente en una condición falsa.
 
-Limitaciones actuales: la asignación por índice solo admite como destino una variable identificada directamente (no indexación anidada); los mapas se representan como pares ordenados. El comprobador estático inicial es deliberadamente no bloqueante: informa de incompatibilidades demostrables y deja como `unknown` los casos que aún no puede inferir. El runtime mantiene la conversión dinámica de números, cadenas y colecciones en condiciones por compatibilidad. Las comparaciones numéricas producen `true` o `false`, no `1` o `0`.
+Limitaciones actuales: los mapas se representan como pares ordenados y su búsqueda es lineal. El comprobador estático inicial es deliberadamente no bloqueante: informa de incompatibilidades demostrables y deja como `unknown` los casos que aún no puede inferir. La indexación de strings existe en el intérprete, pero no forma parte del runtime nativo actual. Las comparaciones numéricas producen `true` o `false`, no `1` o `0`.
 
 
 ## Modelo de memoria y ejecución
@@ -413,7 +413,7 @@ El lexer expone `tokenize() -> Result<Vec<Token>, String>` y el parser `parse_pr
 
 ## Modelo de memoria objetivo
 
-Se ha especificado un modelo **stack-first, sin GC y sin gestión manual del usuario**. La implementación actual es parcial: el evaluador Rust conserva su arena mark-and-sweep de frames; el runtime C ya libera asignaciones registradas por ámbito y por iteración, y copia strings al entorno propietario del binding para preservar escapes entre ámbitos. El planificador HIR clasifica bindings de forma conservadora, pero todavía no controla la ubicación física. No hay aún arenas contiguas, análisis de escape completo, arrays/maps/closures nativos ni limpieza instrumentada de todos los errores. La matriz de diseño y su cobertura están en [docs/MEMORY_MODEL.md](docs/MEMORY_MODEL.md).
+Se ha especificado un modelo **stack-first, sin GC y sin gestión manual del usuario**. La implementación actual es parcial: el evaluador Rust conserva su arena mark-and-sweep de frames. En C, `MemoryPlan` ya dirige lanes regionales y slots inline físicos; el runtime usa arenas bump, buffers propiedad de bindings y promoción por copia para valores dinámicos, con limpieza en cierres normales y errores fatales. Arrays y mapas están soportados en el backend nativo, con pruebas diferenciales para arrays. No hay análisis de escape completo ni ABI de llamadas/activaciones nativas; la captura y construcción de closures no equivale a poder invocarlas. La matriz de diseño y su cobertura están en [docs/MEMORY_MODEL.md](docs/MEMORY_MODEL.md).
 
 ## Biblioteca estándar inicial
 

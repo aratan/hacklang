@@ -1704,6 +1704,21 @@ let return_functions = |base| (
 );
 let functions = return_functions(13);
 print functions[0]();
+let saved = [];
+let save = |flag| (
+    if (flag) (
+        let captured_text = "closure-survives-scope";
+        let nested = @(
+            "payload": ["scope-text", ["deeper-text"]],
+            "call": || (captured_text)
+        );
+        saved = [nested];
+    )
+);
+save(1);
+print saved[0]["payload"][0];
+print saved[0]["payload"][1][0];
+print saved[0]["call"]();
 "#,
             &directory,
             "sanitized_expression_temporaries",
@@ -1716,7 +1731,7 @@ print functions[0]();
             "sanitized expression temporary program failed: {}",
             String::from_utf8_lossy(&run.stderr)
         );
-        assert_eq!(String::from_utf8_lossy(&run.stdout), "12\n12\n7\n34\n48\nnested\nfallback\n7\n8\n13\n");
+        assert_eq!(String::from_utf8_lossy(&run.stdout), "12\n12\n7\n34\n48\nnested\nfallback\n7\n8\n13\nscope-text\ndeeper-text\nclosure-survives-scope\n");
         assert_no_sanitizer_report(&run.stderr, "expression_temporaries");
 
         let _ = fs::remove_dir_all(directory);

@@ -37,9 +37,9 @@ pub fn compile_to_executable(
     // HIR es la única entrada del backend nativo.
     let hir = crate::hir::lower(program)
         .map_err(|error| format!("No se pudo construir HIR: {error}"))?;
-    // Closure descriptors and captures can be materialized now. Calls remain
-    // rejected by HIR codegen until function bodies and activation frames exist.
-    // Plan conservador: ningún valor se acorta de vida si el análisis no lo demuestra.
+    // HIR codegen emits function bodies, activation frames, capture cells and
+    // the runtime dispatcher. Memory planning remains conservative: no value
+    // is assigned a shorter lifetime unless the analysis proves it safe.
     let memory_plan = crate::memory::plan(&hir);
     let source_absolute = source_path.canonicalize()
         .map_err(|error| format!("No se pudo resolver el archivo fuente: {error}"))?;

@@ -1716,6 +1716,8 @@ let save = |flag| (
     )
 );
 save(1);
+saved[0]["payload"][1][0] = "mutated-deeper";
+print saved[0]["payload"][1][0];
 save(1);
 print len(saved);
 print len(saved[0]);
@@ -1735,7 +1737,7 @@ print saved[0]["call"]();
             "sanitized expression temporary program failed: stderr={} stdout={}",
             String::from_utf8_lossy(&run.stderr), String::from_utf8_lossy(&run.stdout)
         );
-        assert_eq!(String::from_utf8_lossy(&run.stdout), "12\n12\n7\n34\n48\nnested\nfallback\n7\n8\n13\n1\n2\n2\nscope-text\ndeeper-text\nclosure-survives-scope\n");
+        assert_eq!(String::from_utf8_lossy(&run.stdout), "12\n12\n7\n34\n48\nnested\nfallback\n7\n8\n13\nmutated-deeper\n1\n2\n2\nscope-text\ndeeper-text\nclosure-survives-scope\n");
         assert_no_sanitizer_report(&run.stderr, "expression_temporaries");
 
         let _ = fs::remove_dir_all(directory);

@@ -291,7 +291,8 @@ impl Generator {
                 let (label, result) = self.function_return.clone()
                     .ok_or("return fuera de una función durante codegen nativo")?;
                 let value = self.expr(p, value, out)?;
-                Self::line(out, format!("{result} = {value};"));
+                // Preserve values produced in a nested lexical scope before restore() frees it.
+                Self::line(out, format!("{result} = hl_clone_value(fn_activation, {value});"));
                 self.release_temps(out);
                 self.restore(out, 0);
                 Self::line(out, format!("goto {label};"));
@@ -622,6 +623,7 @@ fn function_definition(
         function.params.len()
     ));
     Generator::line(&mut out, "    HlEnv *env = hl_env_new(fn_parent);");
+    Generator::line(&mut out, "    HlEnv *fn_activation = env;");
     if function.captures.is_empty() {
         Generator::line(&mut out, "    (void)fn_closure;");
     } else {

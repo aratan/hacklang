@@ -625,11 +625,22 @@ static void hl_collect(HlEnv *environment) {
     for (HlRootFrame *node = root->frame_roots; node; node = node->next) {
         HlFrame *frame = node->frame;
         if (!frame || !frame->slots) continue;
-        for (size_t i = 0; i < frame->slot_count; ++i)
-            if (frame->slots[i].initialized) hl_trace_value(frame->slots[i].value);
+        for (size_t i = 0; i < frame->slot_count; ++i) {
+            if (frame->slots[i].initialized) {
+                HlValue value = frame->slots[i].value;
+                fprintf(stderr, "FRAME_ROOT frame=%p slot=%zu tag=%d\\n",
+                    (void *)frame, i, (int)value.tag);
+                hl_trace_value(value);
+            }
+        }
     }
-    for (HlRootValue *node = root->value_roots; node; node = node->next)
-        if (node->slot) hl_trace_value(*node->slot);
+    for (HlRootValue *node = root->value_roots; node; node = node->next) {
+        if (node->slot) {
+            HlValue value = *node->slot;
+            fprintf(stderr, "VALUE_ROOT slot=%p tag=%d\\n", (void *)node->slot, (int)value.tag);
+            hl_trace_value(value);
+        }
+    }
 
     HlCell **cell_link = &root->cells;
     while (*cell_link) {

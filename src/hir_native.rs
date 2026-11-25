@@ -647,7 +647,7 @@ fn function_definition(
     for (index, parameter) in function.params.iter().enumerate() {
         if let Some(slot) = activation.frame_slots.get(parameter) {
             Generator::line(&mut out, format!(
-                "    hl_frame_write_or_fail(env, &frame, {slot}, hl_clone_value(env, fn_args[{index}]));"
+                "    hl_frame_write_or_fail(env, &frame, fn_args[{index}]);"
             ));
             continue;
         }

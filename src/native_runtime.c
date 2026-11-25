@@ -534,6 +534,10 @@ static void hl_trace_cell(HlCell *cell);
 static void hl_trace_closure(HlClosure *closure);
 
 static void hl_trace_value(HlValue value) {
+    if (value.tag == HL_ARRAY)
+        fprintf(stderr, "TRACE array=%p\\n", (void *)value.as.array);
+    else if (value.tag == HL_MAP)
+        fprintf(stderr, "TRACE map=%p\\n", (void *)value.as.map);
     switch (value.tag) {
         case HL_CLOSURE: hl_trace_closure(value.as.closure); break;
         case HL_ARRAY:
@@ -602,11 +606,15 @@ static void hl_root_value_pop(HlEnv *environment, HlValue *slot) {
 static void hl_collect(HlEnv *environment) {
     HlEnv *root = hl_env_root(environment);
     if (!root || root->closing) return;
-    for (HlEnv *scope = environment; scope; scope = scope->parent)
+    for (HlEnv *scope = environment; scope; scope = scope->parent) {
+        fprintf(stderr, "SCOPE env=%p lane=%p\\n", (void *)scope, (void *)scope->lane);
         for (HlBinding *binding = scope->bindings; binding; binding = binding->next) {
+            fprintf(stderr, "BIND env=%p name=%s binding=%p value_tag=%d\\n",
+                (void *)scope, binding->name, (void *)binding, (int)binding->value.tag);
             hl_trace_cell(binding->cell);
             hl_trace_value(binding->value);
         }
+    }
     for (HlRootFrame *node = root->frame_roots; node; node = node->next) {
         HlFrame *frame = node->frame;
         if (!frame || !frame->slots) continue;

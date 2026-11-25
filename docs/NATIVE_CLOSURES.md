@@ -1,6 +1,6 @@
 # Native functions and closures: runtime contract
 
-This document defines the compatibility contract for adding user functions and closures to the native backend. It is a design boundary, not a claim that native closures are implemented.
+This document records the compatibility contract and current implementation of native functions and closures. The backend now supports direct and dynamic calls, captures, higher-order calls, recursion, and targeted tracing of closure/cell cycles; the remaining gaps are listed below.
 
 ## Existing language semantics
 

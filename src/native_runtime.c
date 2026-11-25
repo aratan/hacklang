@@ -202,10 +202,11 @@ static HlValue hl_frame_read_or_fail(HlEnv *env, const HlFrame *frame, size_t sl
 
 static HlValue hl_clone_value(HlEnv *environment, HlValue value);
 
-static void hl_frame_write_or_fail(HlEnv *env, HlFrame *frame, size_t slot, HlValue value) {
-    /* Frame slots live for the whole activation, while the expression being
-     * assigned may have been allocated in a shorter lexical-scope lane. */
-    HlValue stable = hl_clone_value(env, value);
+static void hl_frame_write_or_fail(HlEnv *env, HlEnv *frame_owner,
+        HlFrame *frame, size_t slot, HlValue value) {
+    /* Frame slots live for the whole activation, not the current lexical
+     * scope. Promote into the activation's lane before storing the value. */
+    HlValue stable = hl_clone_value(frame_owner, value);
     if (!hl_frame_write(frame, slot, stable))
         hl_fail(env, "escritura de slot de frame fuera de rango");
 }
@@ -426,14 +427,7 @@ static int hl_cell_read(const HlCell *cell, HlValue *out) {
 static int hl_cell_write(HlCell *cell, HlValue value) {
     if (!cell) return 0;
     if (!cell->owner || cell->owner->closing) return 0;
-    HlValue cloned = hl_clone_value(cell->owner, value);
-    if (value.tag == HL_ARRAY || value.tag == HL_MAP)
-        fprintf(stderr, "CELL_WRITE cell=%p owner=%p lane=%p source=%p cloned=%p tag=%d\\n",
-            (void *)cell, (void *)cell->owner, (void *)cell->owner->lane,
-            value.tag == HL_ARRAY ? (void *)value.as.array : (void *)value.as.map,
-            cloned.tag == HL_ARRAY ? (void *)cloned.as.array : (void *)cloned.as.map,
-            (int)value.tag);
-    cell->value = cloned;
+    cell->value = hl_clone_value(cell->owner, value);
     cell->initialized = 1;
     return 1;
 }
@@ -541,10 +535,6 @@ static void hl_trace_cell(HlCell *cell);
 static void hl_trace_closure(HlClosure *closure);
 
 static void hl_trace_value(HlValue value) {
-    if (value.tag == HL_ARRAY)
-        fprintf(stderr, "TRACE array=%p\\n", (void *)value.as.array);
-    else if (value.tag == HL_MAP)
-        fprintf(stderr, "TRACE map=%p\\n", (void *)value.as.map);
     switch (value.tag) {
         case HL_CLOSURE: hl_trace_closure(value.as.closure); break;
         case HL_ARRAY:
@@ -613,34 +603,19 @@ static void hl_root_value_pop(HlEnv *environment, HlValue *slot) {
 static void hl_collect(HlEnv *environment) {
     HlEnv *root = hl_env_root(environment);
     if (!root || root->closing) return;
-    for (HlEnv *scope = environment; scope; scope = scope->parent) {
-        fprintf(stderr, "SCOPE env=%p lane=%p\\n", (void *)scope, (void *)scope->lane);
+    for (HlEnv *scope = environment; scope; scope = scope->parent)
         for (HlBinding *binding = scope->bindings; binding; binding = binding->next) {
-            fprintf(stderr, "BIND env=%p name=%s binding=%p value_tag=%d\\n",
-                (void *)scope, binding->name, (void *)binding, (int)binding->value.tag);
             hl_trace_cell(binding->cell);
             hl_trace_value(binding->value);
         }
-    }
     for (HlRootFrame *node = root->frame_roots; node; node = node->next) {
         HlFrame *frame = node->frame;
         if (!frame || !frame->slots) continue;
-        for (size_t i = 0; i < frame->slot_count; ++i) {
-            if (frame->slots[i].initialized) {
-                HlValue value = frame->slots[i].value;
-                fprintf(stderr, "FRAME_ROOT frame=%p slot=%zu tag=%d\\n",
-                    (void *)frame, i, (int)value.tag);
-                hl_trace_value(value);
-            }
-        }
+        for (size_t i = 0; i < frame->slot_count; ++i)
+            if (frame->slots[i].initialized) hl_trace_value(frame->slots[i].value);
     }
-    for (HlRootValue *node = root->value_roots; node; node = node->next) {
-        if (node->slot) {
-            HlValue value = *node->slot;
-            fprintf(stderr, "VALUE_ROOT slot=%p tag=%d\\n", (void *)node->slot, (int)value.tag);
-            hl_trace_value(value);
-        }
-    }
+    for (HlRootValue *node = root->value_roots; node; node = node->next)
+        if (node->slot) hl_trace_value(*node->slot);
 
     HlCell **cell_link = &root->cells;
     while (*cell_link) {

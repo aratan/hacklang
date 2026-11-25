@@ -197,7 +197,7 @@ Incluye pruebas unitarias para escalares inline, strings locales, concatenación
 
 **Validación previa del plan:** antes de generar C, `validate_slot_plan` comprueba que cada binding interferente tenga slot, que la pila coincida con su clase de almacenamiento, que bindings interferentes no compartan slot en la misma pila y que los conteos declarados coincidan con las asignaciones. Esta validación detecta inconsistencias del planificador; no constituye todavía una asignación física en el runtime.
 
-**Conexión del planificador con generación C (incremental):** `compile_to_executable` pasa ahora el `MemoryPlan` a `hir_native::generate_c`. El generador exige una clasificación para cada binding HIR y emite metadatos diagnósticos `inline`, `scope-region` u `owned-region` en el C generado. Las pruebas verifican las clasificaciones y el rechazo de un plan incompleto. Esto conecta el análisis con la fase de generación y evita descartar el plan, pero todavía no selecciona almacenamiento físico ni cambia la estrategia de asignación del runtime.
+**Conexión del planificador con generación C (integración parcial):** `compile_to_executable` pasa `MemoryPlan` a `hir_native::generate_c`. El generador valida las clasificaciones y consume `scope_stacks` para crear lanes físicas; los bindings `Inline` del módulo se asignan a slots reales de `HlFrame`. Los valores dinámicos usan las políticas de ámbito/propietario del runtime. No todos los slots regionales se materializan como slots individuales, ni existe todavía un frame ABI para activaciones de funciones.
 
 ### 7.2 Intervalos de uso conservadores (implementación inicial)
 
@@ -570,7 +570,7 @@ La implementación se hará por etapas verificables:
 - Al cerrar el entorno se ejecutan primero los finalizadores explícitos LIFO y después se liberan todos sus bloques de arena.
 - El registro `hl_env_defer` se conserva separado para recursos con finalizador; ya no se crea una entrada de limpieza por cada asignación interna de la arena.
 - La promoción entre ámbitos sigue siendo conservadora por copia al entorno propietario del binding. No se transfieren punteros entre arenas.
-- Esto implementa arenas regionales bump en el runtime C para el subconjunto actual. El `MemoryPlan` todavía no elige físicamente slots ni clases de arena; tampoco se ha implementado un frame allocator basado en esos slots.
+- Esto implementa arenas regionales bump en el runtime C para el subconjunto actual. `MemoryPlan.scope_stacks` elige las lanes físicas por profundidad y el backend las materializa en el C generado; los slots `Inline` del módulo también se conectan a `HlFrame`. Los frames/slots de activaciones de funciones todavía no se emiten porque las llamadas nativas siguen deshabilitadas.
 
 
 ### Frame de activación (runtime C)

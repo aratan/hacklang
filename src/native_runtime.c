@@ -805,6 +805,38 @@ static size_t hl_array_index(HlEnv *environment, HlValue index) {
         hl_fail(environment, "el índice de un array debe ser entero no negativo");
     return (size_t)index.as.number;
 }
+/* Strings are indexed by Unicode scalar value, matching Rust str::chars(). */
+static size_t hl_string_index(HlEnv *environment, HlValue index) {
+    if (index.tag != HL_NUMBER || !isfinite(index.as.number)
+        || index.as.number < 0.0 || floor(index.as.number) != index.as.number
+        || index.as.number > (double)SIZE_MAX)
+        hl_fail(environment, "el índice de una cadena debe ser entero no negativo");
+    return (size_t)index.as.number;
+}
+static HlValue hl_string_at(HlEnv *environment, const char *value, size_t position) {
+    const unsigned char *cursor = (const unsigned char *)value;
+    size_t current = 0;
+    while (*cursor && current < position) {
+        unsigned char lead = *cursor;
+        size_t width = (lead < 0x80u) ? 1u
+            : ((lead & 0xE0u) == 0xC0u) ? 2u
+            : ((lead & 0xF0u) == 0xE0u) ? 3u
+            : ((lead & 0xF8u) == 0xF0u) ? 4u : 1u;
+        cursor += width;
+        ++current;
+    }
+    if (!*cursor)
+        hl_fail(environment, "índice de cadena fuera de rango");
+    unsigned char lead = *cursor;
+    size_t width = (lead < 0x80u) ? 1u
+        : ((lead & 0xE0u) == 0xC0u) ? 2u
+        : ((lead & 0xF0u) == 0xE0u) ? 3u
+        : ((lead & 0xF8u) == 0xF0u) ? 4u : 1u;
+    char character[5] = {0, 0, 0, 0, 0};
+    for (size_t i = 0; i < width && cursor[i]; ++i)
+        character[i] = (char)cursor[i];
+    return hl_string(environment, character);
+}
 static HlValue hl_index(HlEnv *environment, HlValue target, HlValue index) {
     if (target.tag == HL_ARRAY && target.as.array) {
         size_t position = hl_array_index(environment, index);
@@ -816,6 +848,10 @@ static HlValue hl_index(HlEnv *environment, HlValue target, HlValue index) {
         size_t position = hl_map_find_key(target.as.map, index);
         if (position == SIZE_MAX) hl_fail(environment, "Clave no encontrada en mapa");
         return hl_clone_value(environment, target.as.map->entries[position].value);
+    }
+    if (target.tag == HL_STRING && target.as.string) {
+        size_t position = hl_string_index(environment, index);
+        return hl_string_at(environment, target.as.string, position);
     }
     hl_fail(environment, "no se puede indexar el valor indicado");
     return hl_number(0);

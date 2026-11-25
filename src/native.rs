@@ -1648,4 +1648,50 @@ int main(void) {
         let _ = fs::remove_dir_all(directory);
     }
 
+
+    #[test]
+    fn sanitized_temporaries_preserve_order_and_root_returned_closures() {
+        let directory = temporary_directory().expect("temporary directory");
+        let executable = sanitized_native_build(
+            r#"
+let sequence = 0;
+let mark = |n| (
+    sequence = sequence * 10 + n;
+    return n;
+);
+let pair = |a, b| (a * 10 + b);
+print pair(mark(1), mark(2));
+print sequence;
+sequence = 0;
+print mark(3) + mark(4);
+print sequence;
+let make = |value| (|| (value));
+let churn = |count| (
+    let i = 0;
+    while (i < count) (
+        let inner = |k| ((k < 1) ? i : inner(k - 1));
+        i = i + 1;
+    );
+    return count;
+);
+let consume = |func, extra| (func() + extra);
+print consume(make(40), churn(8));
+"#,
+            &directory,
+            "sanitized_expression_temporaries",
+        );
+        let run = Command::new(&executable)
+            .output()
+            .expect("run sanitized expression temporary program");
+        assert!(
+            run.status.success(),
+            "sanitized expression temporary program failed: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&run.stdout), "12\\n12\\n7\\n34\\n48\\n");
+        assert_no_sanitizer_report(&run.stderr, "expression_temporaries");
+
+        let _ = fs::remove_dir_all(directory);
+    }
+
 }

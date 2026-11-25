@@ -423,17 +423,17 @@ print text[1][0];
 fn invalid_string_indices_match_interpreter_error_classification() {
     assert_interpreter_native_failure(
         "string_index_out_of_range",
-        "let text = \"hola\";\\nprint text[9];\\n",
+        "let text = \"hola\";\nprint text[9];\n",
         "índice de cadena fuera de rango",
     );
     assert_interpreter_native_failure(
         "string_index_fractional",
-        "let text = \"hola\";\\nprint text[1.5];\\n",
+        "let text = \"hola\";\nprint text[1.5];\n",
         "índice de una cadena debe ser entero no negativo",
     );
     assert_interpreter_native_failure(
         "string_index_negative",
-        "let text = \"hola\";\\nprint text[-1];\\n",
+        "let text = \"hola\";\nprint text[-1];\n",
         "índice de una cadena debe ser entero no negativo",
     );
 }

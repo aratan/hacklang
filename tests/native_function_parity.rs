@@ -328,6 +328,15 @@ let return_array = |flag| (
 let result = return_array(1);
 print result[0];
 print result[1];
+let return_functions = |base| (
+    if (base > 0) (
+        let functions = [|| (base)];
+        return functions;
+    )
+    return [];
+);
+let functions = return_functions(13);
+print functions[0]();
 "#,
     );
 }

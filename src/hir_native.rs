@@ -203,7 +203,7 @@ impl Generator {
                     }
                     Self::line(out, format!("hl_assign_planned_site(env, {}, {v}, HL_STORAGE_OWNED, UINT64_C({site}));", Self::binding(p, *binding)?));
                 } else if let Some(slot) = self.inline_slots.get(binding) {
-                    Self::line(out, format!("hl_frame_write_or_fail(env, &frame, {slot}, {v});"));
+                    Self::line(out, format!("hl_frame_write_or_fail(env, {}, &frame, {slot}, {v});", self.frame_owner.as_deref().unwrap_or("env")));
                 } else {
                     let storage = if self.owned_bindings.contains(binding) { "HL_STORAGE_OWNED" } else { "HL_STORAGE_SCOPE" };
                     Self::line(out, format!("hl_assign_planned(env, {}, {v}, {storage});", Self::binding(p, *binding)?));

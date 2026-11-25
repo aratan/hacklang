@@ -358,6 +358,8 @@ let save = |flag| (
     )
 );
 save(1);
+saved[0]["payload"][1][0] = "mutated-deeper";
+print saved[0]["payload"][1][0];
 save(1);
 print saved[0]["payload"][0];
 print saved[0]["payload"][1][0];

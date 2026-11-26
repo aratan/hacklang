@@ -7,6 +7,8 @@ pub enum DiagnosticPhase {
     Lexing,
     Parsing,
     TypeChecking,
+    Lowering,
+    NativeCodegen,
 }
 
 impl DiagnosticPhase {
@@ -15,6 +17,8 @@ impl DiagnosticPhase {
             Self::Lexing => "lexing",
             Self::Parsing => "parsing",
             Self::TypeChecking => "type_check",
+            Self::Lowering => "lowering",
+            Self::NativeCodegen => "native_codegen",
         }
     }
 }

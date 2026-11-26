@@ -167,7 +167,7 @@ cargo run -- build --max-parse-depth 512 programa.hl
 
 ### Diagnósticos estructurados
 
-`--diagnostics-json` emite un array JSON. Cada elemento contiene `code` (identificador estable), `phase` (`lexing`, `parsing` o `type_check`), `severity` (`error` o `warning`), `message` y `range` (objeto con offsets/línea/columna o `null`). Los errores del lexer y parser también usan este formato cuando se solicita JSON; la salida textual tradicional se conserva por defecto.
+`--diagnostics-json` emite un array JSON. Cada elemento contiene `code` (identificador estable), `phase` (`lexing`, `parsing`, `type_check`, `lowering` o `native_codegen`), `severity` (`error` o `warning`), `message` y `range` (objeto con offsets/línea/columna o `null`). Los errores del lexer, parser, lowering HIR y compilación nativa usan este formato cuando se solicita JSON; la salida textual tradicional se conserva por defecto.
 
 Ejemplo de forma:
 

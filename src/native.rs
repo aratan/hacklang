@@ -1,4 +1,5 @@
 use crate::ast::Program;
+use crate::diagnostic::{Diagnostic, DiagnosticPhase, DiagnosticSeverity};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -48,14 +49,48 @@ pub fn compile_to_executable_with_spans(
     source_path: &Path,
     requested_output: Option<&Path>,
 ) -> Result<PathBuf, String> {
-    // HIR es la única entrada del backend nativo. AST→HIR errors retain the
-    // source range of the statement/expression that caused the lowering failure.
     let hir = crate::hir::lower_with_spans(program, source_spans)
         .map_err(|error| format!("No se pudo construir HIR: {error}"))?;
-    // HIR codegen emits function bodies, activation frames, capture cells and
-    // the runtime dispatcher. Memory planning remains conservative: no value
-    // is assigned a shorter lifetime unless the analysis proves it safe.
-    let memory_plan = crate::memory::plan(&hir);
+    compile_hir_to_executable(&hir, source_path, requested_output)
+}
+
+/// Structured counterpart to the legacy String-returning API.
+pub fn compile_to_executable_with_spans_diagnostic(
+    program: &Program,
+    source_spans: &crate::ast::AstSpanMap,
+    source_path: &Path,
+    requested_output: Option<&Path>,
+) -> Result<PathBuf, Diagnostic> {
+    let hir = crate::hir::lower_with_spans(program, source_spans).map_err(|error| {
+        let range = error.range;
+        Diagnostic::new(
+            "HL-HIR-001",
+            DiagnosticPhase::Lowering,
+            DiagnosticSeverity::Error,
+            format!("No se pudo construir HIR: {error}"),
+            range,
+        )
+    })?;
+
+    compile_hir_to_executable(&hir, source_path, requested_output).map_err(|message| {
+        Diagnostic::new(
+            "HL-NATIVE-001",
+            DiagnosticPhase::NativeCodegen,
+            DiagnosticSeverity::Error,
+            message,
+            None,
+        )
+    })
+}
+
+fn compile_hir_to_executable(
+    hir: &crate::hir::Program,
+    source_path: &Path,
+    requested_output: Option<&Path>,
+) -> Result<PathBuf, String> {
+    // HIR is the sole input to native code generation. C compiler diagnostics
+    // describe generated C and deliberately carry no HackLang source range.
+    let memory_plan = crate::memory::plan(hir);
     let source_absolute = source_path.canonicalize()
         .map_err(|error| format!("No se pudo resolver el archivo fuente: {error}"))?;
     let output = requested_output
@@ -73,7 +108,7 @@ pub fn compile_to_executable_with_spans(
         return Err(format!("El destino '{}' ya existe; no se sobrescribirá", output.display()));
     }
 
-    let c_source = crate::hir_native::generate_c(&hir, &memory_plan)?;
+    let c_source = crate::hir_native::generate_c(hir, &memory_plan)?;
     let compiler = select_c_compiler()?;
     let temporary = temporary_directory()?;
     let c_file = temporary.join("program.c");
@@ -110,6 +145,46 @@ mod tests {
         AssignStatement, Expression, IfStatement, LetStatement, PrintStatement, Statement,
         WhileStatement,
     };
+
+    #[test]
+    fn native_compilation_returns_typed_hir_error_with_real_source_range() {
+        let mut lexer = crate::lexer::Lexer::new("print missing;".to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = crate::parser::Parser::new_spanned(tokens);
+        let (program, spans) = parser.parse_program_with_spans().unwrap();
+
+        let diagnostic = compile_to_executable_with_spans_diagnostic(
+            &program,
+            &spans,
+            Path::new("/nonexistent/hacklang-source.hl"),
+            None,
+        ).unwrap_err();
+
+        assert_eq!(diagnostic.code, "HL-HIR-001");
+        assert_eq!(diagnostic.phase, DiagnosticPhase::Lowering);
+        assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
+        assert!(diagnostic.range.is_some());
+    }
+
+    #[test]
+    fn native_compilation_errors_have_codegen_phase_without_fake_source_range() {
+        let mut lexer = crate::lexer::Lexer::new(String::new());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = crate::parser::Parser::new_spanned(tokens);
+        let (program, spans) = parser.parse_program_with_spans().unwrap();
+
+        let diagnostic = compile_to_executable_with_spans_diagnostic(
+            &program,
+            &spans,
+            Path::new("/nonexistent/hacklang-source.hl"),
+            None,
+        ).unwrap_err();
+
+        assert_eq!(diagnostic.code, "HL-NATIVE-001");
+        assert_eq!(diagnostic.phase, DiagnosticPhase::NativeCodegen);
+        assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
+        assert_eq!(diagnostic.range, None);
+    }
 
     #[test]
     fn c_runtime_cleanup_callbacks_run_lifo_and_transfer_without_duplication() {

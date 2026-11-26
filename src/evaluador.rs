@@ -217,13 +217,18 @@ impl Evaluator {
         }
     }
 
-    fn consume_step(&mut self) -> Result<(), String> {
+    fn check_time_budget(&self) -> Result<(), String> {
         if self.eval_started_at.elapsed() >= self.max_eval_duration {
             return Err(format!(
                 "Presupuesto de tiempo de evaluación excedido ({} ms)",
                 self.max_eval_duration.as_millis()
             ));
         }
+        Ok(())
+    }
+
+    fn consume_step(&mut self) -> Result<(), String> {
+        self.check_time_budget()?;
         if self.eval_steps >= self.max_eval_steps {
             return Err(format!("Límite de instrucciones de evaluación excedido ({})", self.max_eval_steps));
         }
@@ -415,6 +420,9 @@ impl Evaluator {
                 let parent = self.current_env;
                 self.with_environment(parent, |this| {
                     'while_loop: loop {
+                        // Count loop iterations even when the body is empty, matching
+                        // the native runtime and preventing resource-limit bypasses.
+                        this.consume_step()?;
                         // Each iteration gets its own lexical environment. Closures
                         // created in the body must retain that iteration's bindings,
                         // rather than observing the next iteration's redefinitions.

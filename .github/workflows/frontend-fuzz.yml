@@ -1,0 +1,38 @@
+name: Frontend coverage-guided fuzzing
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "fuzz/**"
+      - ".github/workflows/frontend-fuzz.yml"
+  workflow_dispatch:
+  schedule:
+    - cron: "23 3 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: Bounded libFuzzer campaign
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install nightly Rust
+        uses: dtolnay/rust-toolchain@nightly
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Fuzz lexer (pull request smoke)
+        if: github.event_name == 'pull_request'
+        run: cargo fuzz run lexer -- -max_total_time=5 -max_len=4096 -timeout=2
+      - name: Fuzz parser (pull request smoke)
+        if: github.event_name == 'pull_request'
+        run: cargo fuzz run parser -- -max_total_time=5 -max_len=4096 -timeout=2
+      - name: Fuzz lexer (scheduled campaign)
+        if: github.event_name != 'pull_request'
+        run: cargo fuzz run lexer -- -max_total_time=30 -max_len=4096 -timeout=2
+      - name: Fuzz parser (scheduled campaign)
+        if: github.event_name != 'pull_request'
+        run: cargo fuzz run parser -- -max_total_time=30 -max_len=4096 -timeout=2

@@ -350,13 +350,20 @@ impl TypeChecker {
     }
 
     fn merge_return_types(&mut self, returns: Vec<Type>) -> Type {
-        let Some(first) = returns.first().cloned() else { return Type::Unknown; };
-        if returns.iter().all(|ty| *ty == first) {
-            first
-        } else {
-            self.report("una función devuelve tipos incompatibles en distintas ramas");
-            Type::Unknown
+        let mut known = Type::Unknown;
+        for returned in returns {
+            known = match (known, returned) {
+                (Type::Unknown, other) | (other, Type::Unknown) => other,
+                (left, right) if left == right => left,
+                (left, right) => {
+                    self.report(format!(
+                        "una función devuelve tipos incompatibles en distintas ramas: {left} y {right}"
+                    ));
+                    return Type::Unknown;
+                }
+            };
         }
+        known
     }
 
     fn infer_binary(&mut self, op: &Token, lhs: &Type, rhs: &Type) -> Type {
@@ -470,6 +477,14 @@ mod tests {
     fn infers_explicit_return_type_from_function_block() {
         let diagnostics = check_source("let make = |x| (return 7;); let n = make(1); n = false;");
         assert!(diagnostics.iter().any(|d| d.message.contains("asignación") && d.message.contains("number")));
+    }
+
+    #[test]
+    fn unknown_function_return_branch_does_not_create_false_positive() {
+        let diagnostics = check_source(
+            "let choose = |x| (if (x) (return missing_name;) else (return 1;));"
+        );
+        assert!(!diagnostics.iter().any(|d| d.message.contains("tipos incompatibles")), "{diagnostics:?}");
     }
 
     #[test]

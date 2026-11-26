@@ -21,6 +21,7 @@ static int hl_is_aggregate_tag(HlTag tag) { return tag == HL_ARRAY || tag == HL_
 typedef struct {
     HlTag tag;
     union { double number; int boolean; const char *string; HlArray *array; HlMap *map; HlClosure *closure; } as;
+    size_t string_length; /* UTF-8 byte length; strings may contain embedded NUL bytes. */
 } HlValue;
 struct HlArray {
     size_t length;
@@ -692,7 +693,7 @@ static HlValue hl_closure_new(HlEnv *environment, uint32_t function_id,
         closure->captures[i] = hl_binding_capture(environment, capture_names[i]);
     closure->next = root->closures;
     root->closures = closure;
-    HlValue result; result.tag = HL_CLOSURE; result.as.closure = closure; return result;
+    HlValue result = {0}; result.tag = HL_CLOSURE; result.as.closure = closure; return result;
 }
 static int hl_closure_capture_read(const HlValue value, size_t index, HlValue *out) {
     if (value.tag != HL_CLOSURE || !value.as.closure
@@ -821,21 +822,29 @@ static void hl_collect(HlEnv *environment) {
     }
 }
 
-static char *hl_copy_string(HlEnv *environment, const char *value) {
-    size_t size = strlen(value) + 1;
-    char *copy = (char *)hl_alloc(environment, size);
-    memcpy(copy, value, size);
+static char *hl_copy_string_n(HlEnv *environment, const char *value, size_t length) {
+    if (length == SIZE_MAX) hl_fail(environment, "cadena demasiado grande");
+    char *copy = (char *)hl_alloc(environment, length + 1);
+    if (length) memcpy(copy, value, length);
+    copy[length] = '\0';
     return copy;
+}
+static char *hl_copy_string(HlEnv *environment, const char *value) {
+    return hl_copy_string_n(environment, value, strlen(value));
 }
 
 static HlValue hl_number(double value) {
-    HlValue result; result.tag = HL_NUMBER; result.as.number = value; return result;
+    HlValue result = {0}; result.tag = HL_NUMBER; result.as.number = value; return result;
 }
 static HlValue hl_bool(int value) {
-    HlValue result; result.tag = HL_BOOL; result.as.boolean = value != 0; return result;
+    HlValue result = {0}; result.tag = HL_BOOL; result.as.boolean = value != 0; return result;
 }
-static HlValue hl_string(HlEnv *environment, const char *value) {
-    HlValue result; result.tag = HL_STRING; result.as.string = hl_copy_string(environment, value); return result;
+static HlValue hl_string(HlEnv *environment, const char *value, size_t length) {
+    HlValue result = {0};
+    result.tag = HL_STRING;
+    result.as.string = hl_copy_string_n(environment, value, length);
+    result.string_length = length;
+    return result;
 }
 
 /* Aggregate storage is lane-owned. Cloning recursively duplicates the value
@@ -847,7 +856,9 @@ static int hl_map_key_equal(HlValue left, HlValue right) {
         case HL_BOOL: return left.as.boolean == right.as.boolean;
         case HL_STRING:
             return left.as.string && right.as.string
-                && strcmp(left.as.string, right.as.string) == 0;
+                && left.string_length == right.string_length
+                && (left.string_length == 0
+                    || memcmp(left.as.string, right.as.string, left.string_length) == 0);
         case HL_ARRAY:
             if (!left.as.array || !right.as.array
                 || left.as.array->length != right.as.array->length) return 0;
@@ -879,7 +890,7 @@ static HlValue hl_map(HlEnv *environment, const HlMapEntry *entries, size_t leng
     map->length = length;
     map->entries = length ? (HlMapEntry *)hl_alloc(environment, length * sizeof(HlMapEntry)) : NULL;
     if (length) memcpy(map->entries, entries, length * sizeof(HlMapEntry));
-    HlValue result; result.tag = HL_MAP; result.as.map = map; return result;
+    HlValue result = {0}; result.tag = HL_MAP; result.as.map = map; return result;
 }
 static HlValue hl_array(HlEnv *environment, const HlValue *items, size_t length) {
     if (length > SIZE_MAX / sizeof(HlValue))
@@ -889,13 +900,13 @@ static HlValue hl_array(HlEnv *environment, const HlValue *items, size_t length)
     array->items = length
         ? (HlValue *)hl_alloc(environment, length * sizeof(HlValue)) : NULL;
     for (size_t i = 0; i < length; ++i) array->items[i] = items[i];
-    HlValue result; result.tag = HL_ARRAY; result.as.array = array; return result;
+    HlValue result = {0}; result.tag = HL_ARRAY; result.as.array = array; return result;
 }
 static HlValue hl_clone_value(HlEnv *environment, HlValue value) {
     switch (value.tag) {
         case HL_NUMBER: return hl_number(value.as.number);
         case HL_BOOL: return hl_bool(value.as.boolean);
-        case HL_STRING: return hl_string(environment, value.as.string);
+        case HL_STRING: return hl_string(environment, value.as.string, value.string_length);
         case HL_ARRAY: {
             if (!value.as.array) hl_fail(environment, "array nulo");
             if (value.as.array->length > SIZE_MAX / sizeof(HlValue))
@@ -906,7 +917,7 @@ static HlValue hl_clone_value(HlEnv *environment, HlValue value) {
                 ? (HlValue *)hl_alloc(environment, copy->length * sizeof(HlValue)) : NULL;
             for (size_t i = 0; i < copy->length; ++i)
                 copy->items[i] = hl_clone_value(environment, value.as.array->items[i]);
-            HlValue result; result.tag = HL_ARRAY; result.as.array = copy; return result;
+            HlValue result = {0}; result.tag = HL_ARRAY; result.as.array = copy; return result;
         }
         case HL_CLOSURE: return value;
         case HL_MAP: {
@@ -921,7 +932,7 @@ static HlValue hl_clone_value(HlEnv *environment, HlValue value) {
                 copy->entries[i].key = hl_clone_value(environment, value.as.map->entries[i].key);
                 copy->entries[i].value = hl_clone_value(environment, value.as.map->entries[i].value);
             }
-            HlValue result; result.tag = HL_MAP; result.as.map = copy; return result;
+            HlValue result = {0}; result.tag = HL_MAP; result.as.map = copy; return result;
         }
     }
     hl_fail(environment, "tipo de valor desconocido al copiar");
@@ -1082,7 +1093,7 @@ static HlValue hl_store_value(HlBinding *binding, HlValue value, HlStorageClass 
         /* ScopeRegion strings are copied into the lexical owner's arena. */
         if (storage == HL_STORAGE_SCOPE) {
             hl_release_binding_resource(binding, "no se pudo liberar la propiedad anterior de cadena");
-            char *scoped = hl_copy_string(binding->owner, value.as.string);
+            char *scoped = hl_copy_string_n(binding->owner, value.as.string, value.string_length);
             hl_heap_free(binding->string_storage);
             binding->string_storage = NULL;
             binding->string_capacity = 0;
@@ -1099,7 +1110,7 @@ static HlValue hl_store_value(HlBinding *binding, HlValue value, HlStorageClass 
                 hl_fail(binding->owner, "registro de propiedad de cadena inconsistente");
         }
 
-        const size_t size = strlen(value.as.string) + 1;
+        const size_t size = value.string_length + 1;
         char *incoming = (char *)hl_heap_alloc(binding->owner, size);
         if (!incoming) hl_fail(binding->owner, "memoria agotada al copiar una cadena");
         memcpy(incoming, value.as.string, size);
@@ -1212,29 +1223,31 @@ static size_t hl_string_index(HlEnv *environment, HlValue index) {
     if (index.as.number >= (double)SIZE_MAX) return SIZE_MAX;
     return (size_t)index.as.number;
 }
-static HlValue hl_string_at(HlEnv *environment, const char *value, size_t position) {
-    const unsigned char *cursor = (const unsigned char *)value;
+static HlValue hl_string_at(HlEnv *environment, const char *value, size_t length, size_t position) {
+    const unsigned char *bytes = (const unsigned char *)value;
+    size_t offset = 0;
     size_t current = 0;
-    while (*cursor && current < position) {
-        unsigned char lead = *cursor;
+    while (offset < length && current < position) {
+        unsigned char lead = bytes[offset];
         size_t width = (lead < 0x80u) ? 1u
             : ((lead & 0xE0u) == 0xC0u) ? 2u
             : ((lead & 0xF0u) == 0xE0u) ? 3u
             : ((lead & 0xF8u) == 0xF0u) ? 4u : 1u;
-        cursor += width;
+        if (width > length - offset) width = 1u;
+        offset += width;
         ++current;
     }
-    if (!*cursor)
+    if (offset >= length || current != position)
         hl_fail(environment, "índice de cadena fuera de rango");
-    unsigned char lead = *cursor;
+    unsigned char lead = bytes[offset];
     size_t width = (lead < 0x80u) ? 1u
         : ((lead & 0xE0u) == 0xC0u) ? 2u
         : ((lead & 0xF0u) == 0xE0u) ? 3u
         : ((lead & 0xF8u) == 0xF0u) ? 4u : 1u;
+    if (width > length - offset) width = 1u;
     char character[5] = {0, 0, 0, 0, 0};
-    for (size_t i = 0; i < width && cursor[i]; ++i)
-        character[i] = (char)cursor[i];
-    return hl_string(environment, character);
+    memcpy(character, bytes + offset, width);
+    return hl_string(environment, character, width);
 }
 static HlValue hl_index(HlEnv *environment, HlValue target, HlValue index) {
     if (target.tag == HL_ARRAY && target.as.array) {
@@ -1250,7 +1263,7 @@ static HlValue hl_index(HlEnv *environment, HlValue target, HlValue index) {
     }
     if (target.tag == HL_STRING && target.as.string) {
         size_t position = hl_string_index(environment, index);
-        return hl_string_at(environment, target.as.string, position);
+        return hl_string_at(environment, target.as.string, target.string_length, position);
     }
     hl_fail(environment, "no se puede indexar el valor indicado");
     return hl_number(0);
@@ -1286,10 +1299,9 @@ static HlValue hl_length(HlEnv *environment, HlValue value) {
         return hl_number((double)value.as.map->length);
     if (value.tag == HL_STRING && value.as.string) {
         size_t characters = 0;
-        const unsigned char *cursor = (const unsigned char *)value.as.string;
-        while (*cursor) {
-            if ((*cursor & 0xC0u) != 0x80u) ++characters;
-            ++cursor;
+        const unsigned char *bytes = (const unsigned char *)value.as.string;
+        for (size_t i = 0; i < value.string_length; ++i) {
+            if ((bytes[i] & 0xC0u) != 0x80u) ++characters;
         }
         return hl_number((double)characters);
     }
@@ -1404,7 +1416,7 @@ static int hl_truthy(HlValue value) {
     switch (value.tag) {
         case HL_BOOL: return value.as.boolean;
         case HL_NUMBER: return value.as.number != 0.0;
-        case HL_STRING: return value.as.string[0] != '\0';
+        case HL_STRING: return value.string_length != 0;
         case HL_ARRAY: return value.as.array != NULL;
         case HL_MAP: return value.as.map != NULL;
         case HL_CLOSURE: return value.as.closure != NULL;
@@ -1476,18 +1488,20 @@ static const char *hl_to_text(HlEnv *environment, HlValue value) {
     hl_number_text(value.as.number, buffer, sizeof(buffer));
     return hl_copy_string(environment, buffer);
 }
-static void hl_debug_string(const char *value) {
+static void hl_debug_string(const char *value, size_t length) {
     putchar('"');
-    for (const unsigned char *cursor = (const unsigned char *)value; cursor && *cursor; ++cursor) {
-        switch (*cursor) {
+    for (size_t i = 0; value && i < length; ++i) {
+        unsigned char byte = (unsigned char)value[i];
+        switch (byte) {
+            case 0: fputs("\\0", stdout); break;
             case '"': fputs("\\\"", stdout); break;
             case '\\': fputs("\\\\", stdout); break;
             case '\n': fputs("\\n", stdout); break;
             case '\r': fputs("\\r", stdout); break;
             case '\t': fputs("\\t", stdout); break;
             default:
-                if (*cursor < 0x20) printf("\\u{%x}", (unsigned)*cursor);
-                else putchar(*cursor);
+                if (byte < 0x20) printf("\\u{%x}", (unsigned)byte);
+                else putchar(byte);
         }
     }
     putchar('"');
@@ -1503,7 +1517,7 @@ static void hl_debug_value(HlValue value) {
             break;
         }
         case HL_BOOL: printf("Bool(%s)", value.as.boolean ? "true" : "false"); break;
-        case HL_STRING: fputs("String(", stdout); hl_debug_string(value.as.string ? value.as.string : ""); putchar(')'); break;
+        case HL_STRING: fputs("String(", stdout); hl_debug_string(value.as.string ? value.as.string : "", value.string_length); putchar(')'); break;
         case HL_ARRAY:
             fputs("Array([", stdout);
             if (value.as.array) for (size_t i = 0; i < value.as.array->length; ++i) {
@@ -1556,7 +1570,11 @@ static void hl_print(HlValue value) {
             break;
         }
         case HL_BOOL: puts(value.as.boolean ? "true" : "false"); break;
-        case HL_STRING: puts(value.as.string); break;
+        case HL_STRING:
+            if (value.as.string && value.string_length)
+                fwrite(value.as.string, 1, value.string_length, stdout);
+            putchar('\n');
+            break;
         case HL_ARRAY: hl_debug_print_array(value); putchar('\n'); break;
         case HL_MAP: hl_debug_print_map(value); putchar('\n'); break;
         case HL_CLOSURE: printf("<closure:%u>\\n", value.as.closure ? value.as.closure->function_id : 0); break;
@@ -1566,13 +1584,23 @@ static int hl_is_string_number_pair(HlValue left, HlValue right) {
     return (left.tag == HL_STRING && right.tag == HL_NUMBER)
         || (left.tag == HL_NUMBER && right.tag == HL_STRING);
 }
+static size_t hl_text_length(HlValue value, const char *text) {
+    return value.tag == HL_STRING ? value.string_length : strlen(text);
+}
 static HlValue hl_mixed_text(HlEnv *environment, HlValue left, HlValue right) {
     const char *left_text = hl_to_text(environment, left);
     const char *right_text = hl_to_text(environment, right);
-    size_t size = strlen(left_text) + strlen(right_text) + 3;
-    char *joined = (char *)hl_alloc(environment, size);
-    snprintf(joined, size, "%s(%s)", left_text, right_text);
-    return hl_string(environment, joined);
+    size_t left_length = hl_text_length(left, left_text);
+    size_t right_length = hl_text_length(right, right_text);
+    size_t result_length = left_length + right_length + 2;
+    if (result_length < left_length) hl_fail(environment, "cadena demasiado grande");
+    char *joined = (char *)hl_alloc(environment, result_length + 1);
+    memcpy(joined, left_text, left_length);
+    joined[left_length] = '(';
+    memcpy(joined + left_length + 1, right_text, right_length);
+    joined[left_length + right_length + 1] = ')';
+    joined[result_length] = '\0';
+    return hl_string(environment, joined, result_length);
 }
 static void hl_require_numbers(HlEnv *environment, HlValue left, HlValue right, const char *operation) {
     if (left.tag != HL_NUMBER || right.tag != HL_NUMBER) {
@@ -1586,17 +1614,24 @@ static HlValue hl_add(HlEnv *environment, HlValue left, HlValue right) {
         return hl_number(left.as.number + right.as.number);
     if (left.tag == HL_STRING && right.tag == HL_NUMBER) {
         const char *number = hl_to_text(environment, right);
-        size_t size = strlen(left.as.string) + strlen(number) + 1;
-        char *joined = (char *)hl_alloc(environment, size);
-        snprintf(joined, size, "%s%s", left.as.string, number);
-        return hl_string(environment, joined);
+        size_t number_length = strlen(number);
+        size_t result_length = left.string_length + number_length;
+        if (result_length < left.string_length) hl_fail(environment, "cadena demasiado grande");
+        char *joined = (char *)hl_alloc(environment, result_length + 1);
+        memcpy(joined, left.as.string, left.string_length);
+        memcpy(joined + left.string_length, number, number_length + 1);
+        return hl_string(environment, joined, result_length);
     }
     if (left.tag == HL_NUMBER && right.tag == HL_STRING) {
         const char *number = hl_to_text(environment, left);
-        size_t size = strlen(number) + strlen(right.as.string) + 1;
-        char *joined = (char *)hl_alloc(environment, size);
-        snprintf(joined, size, "%s%s", number, right.as.string);
-        return hl_string(environment, joined);
+        size_t number_length = strlen(number);
+        size_t result_length = number_length + right.string_length;
+        if (result_length < number_length) hl_fail(environment, "cadena demasiado grande");
+        char *joined = (char *)hl_alloc(environment, result_length + 1);
+        memcpy(joined, number, number_length);
+        memcpy(joined + number_length, right.as.string, right.string_length);
+        joined[result_length] = '\0';
+        return hl_string(environment, joined, result_length);
     }
     hl_fail(environment, "Type mismatch: valores incompatibles con el operador Plus");
     return hl_number(0);

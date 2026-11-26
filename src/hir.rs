@@ -673,7 +673,7 @@ mod tests {
 
     #[test]
     fn lambda_statement_does_not_shift_following_expression_span() {
-        let source = "\\n|x| x;\\nprint missing;";
+        let source = "\n|x| x;\nprint missing;";
         let mut lexer = crate::lexer::Lexer::new(source.to_string());
         let tokens = lexer.tokenize_spanned().unwrap();
         let mut parser = crate::parser::Parser::new_spanned(tokens);
@@ -687,7 +687,7 @@ mod tests {
 
     #[test]
     fn call_statement_uses_call_span_not_argument_span() {
-        let source = "\\nmissing(1);\\nprint 2;";
+        let source = "\nmissing(1);\nprint 2;";
         let mut lexer = crate::lexer::Lexer::new(source.to_string());
         let tokens = lexer.tokenize_spanned().unwrap();
         let mut parser = crate::parser::Parser::new_spanned(tokens);

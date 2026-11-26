@@ -143,16 +143,10 @@ jobs:
 
           cat > "$temp_dir/runtime-time-budget-nested.hl" <<'EOF'
           let spin = |limit| (
-            let index = 0;
-            while (index < limit) (
-              index = index + 1;
-            )
-            return index;
+            while (true) ();
+            return limit;
           );
-          let total = 0;
-          while (true) (
-            total = total + spin(1000);
-          )
+          let result = spin(1000);
           EOF
           cargo run --quiet -- build "$temp_dir/runtime-time-budget-nested.hl" -o "$temp_dir/runtime-time-budget-nested" > /dev/null
           set +e
@@ -203,3 +197,19 @@ jobs:
 
           HACKLANG_MAX_HEAP_BYTES=12288 "$temp_dir/runtime-string-heap-budget" > "$temp_dir/runtime-string-heap-budget.out" 2> "$temp_dir/runtime-string-heap-budget.err"
           grep -qx "1024" "$temp_dir/runtime-string-heap-budget.out"
+
+          cat > "$temp_dir/interpreter-time-budget-nested.hl" <<'EOF'
+          let spin = |limit| (
+            while (true) ();
+            return limit;
+          );
+          let result = spin(1000);
+          EOF
+          set +e
+          cargo run --quiet -- run --max-eval-steps 1000000000 --max-eval-millis 20 "$temp_dir/interpreter-time-budget-nested.hl" > "$temp_dir/interpreter-time-budget.out" 2> "$temp_dir/interpreter-time-budget.err"
+          interpreter_time_status=$?
+          set -e
+          echo "Interpreter time-budget exit status: $interpreter_time_status"
+          cat "$temp_dir/interpreter-time-budget.err"
+          test "$interpreter_time_status" -eq 1
+          grep -q "Presupuesto de tiempo de evaluación excedido" "$temp_dir/interpreter-time-budget.err"

@@ -4,6 +4,7 @@ use crate::ast::{AstSpanMap, AssignStatement, Expression, IndexAssignStatement, 
 use crate::diagnostic::{Diagnostic, DiagnosticPhase, DiagnosticSeverity};
 use crate::lexer::{SourceSpan, Token};
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 fn collect_statement_spans(program: &Program, spans: &AstSpanMap) -> HashMap<usize, SourceSpan> {
     fn visit_statements(statements: &[Statement], spans: &[Option<SourceSpan>], cursor: &mut usize, out: &mut HashMap<usize, SourceSpan>) {
@@ -153,6 +154,7 @@ struct Environment {
 
 const DEFAULT_MAX_EVAL_DEPTH: usize = 256;
 pub const DEFAULT_MAX_EVAL_STEPS: usize = 1_000_000;
+pub const DEFAULT_MAX_EVAL_MILLIS: u64 = 30_000;
 
 #[derive(Debug)]
 pub struct Evaluator {
@@ -165,6 +167,8 @@ pub struct Evaluator {
     max_eval_depth: usize,
     eval_steps: usize,
     max_eval_steps: usize,
+    eval_started_at: Instant,
+    max_eval_duration: Duration,
     // Values held only by an in-progress call must remain visible to mark-and-sweep.
     temporary_roots: Vec<Value>,
     statement_spans_by_ptr: HashMap<usize, SourceSpan>,
@@ -182,6 +186,18 @@ impl Evaluator {
     }
 
     pub fn new_with_limits(max_eval_depth: usize, max_eval_steps: usize) -> Self {
+        Self::new_with_resource_limits(
+            max_eval_depth,
+            max_eval_steps,
+            Duration::from_millis(DEFAULT_MAX_EVAL_MILLIS),
+        )
+    }
+
+    pub fn new_with_resource_limits(
+        max_eval_depth: usize,
+        max_eval_steps: usize,
+        max_eval_duration: Duration,
+    ) -> Self {
         assert!(max_eval_depth > 0, "max_eval_depth must be positive");
         assert!(max_eval_steps > 0, "max_eval_steps must be positive");
         Evaluator {
@@ -192,6 +208,8 @@ impl Evaluator {
             max_eval_depth,
             eval_steps: 0,
             max_eval_steps,
+            eval_started_at: Instant::now(),
+            max_eval_duration,
             temporary_roots: Vec::new(),
             statement_spans_by_ptr: HashMap::new(),
             current_statement_span: None,
@@ -199,7 +217,18 @@ impl Evaluator {
         }
     }
 
+    fn check_time_budget(&self) -> Result<(), String> {
+        if self.eval_started_at.elapsed() >= self.max_eval_duration {
+            return Err(format!(
+                "Presupuesto de tiempo de evaluación excedido ({} ms)",
+                self.max_eval_duration.as_millis()
+            ));
+        }
+        Ok(())
+    }
+
     fn consume_step(&mut self) -> Result<(), String> {
+        self.check_time_budget()?;
         if self.eval_steps >= self.max_eval_steps {
             return Err(format!("Límite de instrucciones de evaluación excedido ({})", self.max_eval_steps));
         }
@@ -308,6 +337,7 @@ impl Evaluator {
     }
 
     pub fn evaluate(&mut self, program: &Program) -> Result<(), String> {
+        self.eval_started_at = Instant::now();
         self.eval_steps = 0;
         self.last_error_range = None;
         self.current_statement_span = None;
@@ -390,6 +420,9 @@ impl Evaluator {
                 let parent = self.current_env;
                 self.with_environment(parent, |this| {
                     'while_loop: loop {
+                        // Count loop iterations even when the body is empty, matching
+                        // the native runtime and preventing resource-limit bypasses.
+                        this.consume_step()?;
                         // Each iteration gets its own lexical environment. Closures
                         // created in the body must retain that iteration's bindings,
                         // rather than observing the next iteration's redefinitions.
@@ -1099,6 +1132,32 @@ mod tests {
         let error = evaluator.evaluate(&program).unwrap_err();
         assert!(error.contains("Límite de instrucciones de evaluación"));
         assert!(error.contains("(40)"));
+    }
+
+    #[test]
+    fn instruction_budget_counts_empty_while_iterations() {
+        let mut lexer = crate::lexer::Lexer::new("while (true) ();".to_string());
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = crate::parser::Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+        let mut evaluator = Evaluator::new_with_limits(256, 20);
+        let error = evaluator.evaluate(&program).unwrap_err();
+        assert!(error.contains("Límite de instrucciones de evaluación"));
+    }
+
+    #[test]
+    fn zero_time_budget_stops_interpreter_before_first_statement() {
+        let mut lexer = crate::lexer::Lexer::new("print 1;".to_string());
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = crate::parser::Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+        let mut evaluator = Evaluator::new_with_resource_limits(
+            256,
+            DEFAULT_MAX_EVAL_STEPS,
+            Duration::ZERO,
+        );
+        let error = evaluator.evaluate(&program).unwrap_err();
+        assert!(error.contains("Presupuesto de tiempo de evaluación excedido"));
     }
 
     #[test]

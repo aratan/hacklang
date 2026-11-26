@@ -505,6 +505,12 @@ print text[1][0];
 }
 
 #[test]
+fn embedded_nul_strings_match_interpreter_length_index_truthiness_and_printing() {
+    let source = "let text = \"A\0B\";\nprint len(text);\nprint text[0];\nprint text[1];\nprint text[2];\nprint text;\nprint [text];\nlet entries = @(text: 7);\nprint entries[\"A\0B\"];\nlet joined = text + \"C\";\nprint len(joined);\nprint joined[3];\nlet flag = false;\nif (text[1]) (flag = true;);\nprint flag;\n";
+    assert_interpreter_native_parity("embedded_nul_string", source);
+}
+
+#[test]
 fn invalid_string_indices_match_interpreter_error_classification() {
     assert_interpreter_native_failure(
         "string_index_out_of_range",

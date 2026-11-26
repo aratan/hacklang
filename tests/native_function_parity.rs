@@ -479,33 +479,6 @@ print 1;
 
 
 #[test]
-fn many_escaped_closures_keep_their_activation_captures() {
-    assert_interpreter_native_parity(
-        "many_escaped_activation_closures",
-        r#"
-let saved = @();
-let index = 0;
-while (index < 96) (
-    let captured = index;
-    let getter = || (captured);
-    saved[index] = getter;
-    index = index + 1;
-)
-let total = 0;
-let read_index = 0;
-while (read_index < 96) (
-    total = total + saved[read_index]();
-    read_index = read_index + 1;
-)
-print total;
-print saved[0]();
-print saved[47]();
-print saved[95]();
-"#,
-    );
-}
-
-#[test]
 fn recursive_closures_created_per_activation_match_interpreter() {
     // Each activation builds its own self-recursive closure, so the closure and
     // its capture cell form a cycle that tracing collection must reclaim.

@@ -656,4 +656,19 @@ mod tests {
             if matches!(&target.kind, ExprKind::Index { .. }) && matches!(&index.kind, ExprKind::Number(0.0))));
     }
 
+    #[test]
+    fn lowering_error_uses_nested_statement_expression_span() {
+        let source = "\\nif (true) ( print missing; )";
+        let mut lexer = crate::lexer::Lexer::new(source.to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = crate::parser::Parser::new_spanned(tokens);
+        let (ast, spans) = parser.parse_program_with_spans().unwrap();
+
+        let error = lower_with_spans(&ast, &spans).unwrap_err();
+        let start = source.find("missing").unwrap();
+        let range = error.range.expect("lowering error must carry source span");
+        assert_eq!((range.start, range.end), (start, start + "missing".len()));
+        assert_eq!((range.line, range.column), (2, 21));
+    }
+
 }

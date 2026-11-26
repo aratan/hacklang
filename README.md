@@ -179,7 +179,13 @@ El runtime nativo también limita las reservas acumuladas de bloques de arena a 
 HACKLANG_MAX_ARENA_BYTES=67108864 ./hello
 ```
 
-Este límite contabiliza la capacidad reservada por las arenas administradas mediante `hl_alloc`; no representa un límite total de memoria del proceso ni incluye los descriptores y buffers auxiliares reservados directamente en el heap.
+Este límite contabiliza la capacidad reservada por las arenas administradas mediante `hl_alloc`. El runtime también contabiliza las asignaciones auxiliares de heap (closures, celdas capturadas, registros de ownership, raíces temporales y buffers de cadenas), incluyendo la sobrecarga de sus cabeceras. El presupuesto auxiliar predeterminado es de 256 MiB por ejecución y se puede ajustar con:
+
+```bash
+HACKLANG_MAX_HEAP_BYTES=67108864 ./hello
+```
+
+Los dos presupuestos son independientes: hasta 256 MiB de capacidad de arenas y 256 MiB de heap auxiliar por defecto. No constituyen un límite absoluto de RSS del proceso: quedan fuera pequeñas estructuras de control como el descriptor del entorno y del lane, las propias cabeceras del allocator del sistema y recursos internos de libc.
 
 
 ### Diagnósticos estructurados

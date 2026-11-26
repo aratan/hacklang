@@ -76,6 +76,54 @@ fn assert_interpreter_native_parity(name: &str, source_text: &str) {
     fs::remove_dir_all(directory).expect("remove isolated test directory");
 }
 
+fn assert_interpreter_native_runtime_error(
+    name: &str,
+    source_text: &str,
+    expected_message: &str,
+) {
+    let directory = case_directory();
+    let source = directory.join(format!("{name}.hl"));
+    let executable = directory.join(name);
+    fs::write(&source, source_text).expect("write HackLang runtime-error fixture");
+
+    let interpreter = Command::new(env!("CARGO_BIN_EXE_hl"))
+        .arg("run")
+        .arg(&source)
+        .output()
+        .expect("execute interpreter runtime-error fixture");
+    assert!(!interpreter.status.success(), "{name}: interpreter unexpectedly succeeded");
+    let interpreter_error = String::from_utf8_lossy(&interpreter.stderr);
+    assert!(
+        interpreter_error.contains(expected_message),
+        "{name}: interpreter error mismatch: {interpreter_error}"
+    );
+
+    let build = Command::new(env!("CARGO_BIN_EXE_hl"))
+        .arg("build")
+        .arg(&source)
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("build native runtime-error fixture");
+    assert!(
+        build.status.success(),
+        "{name}: native build failed unexpectedly: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let native = Command::new(&executable)
+        .output()
+        .expect("execute native runtime-error fixture");
+    assert!(!native.status.success(), "{name}: native executable unexpectedly succeeded");
+    let native_error = String::from_utf8_lossy(&native.stderr);
+    assert!(
+        native_error.contains(expected_message),
+        "{name}: native error mismatch: {native_error}"
+    );
+
+    fs::remove_dir_all(directory).expect("remove isolated runtime-error directory");
+}
+
 fn assert_native_build_failure(name: &str, source_text: &str, error_fragment: &str) {
     let directory = case_directory();
     let source = directory.join(format!("{name}.hl"));
@@ -368,6 +416,19 @@ print saved[0]["call"]();
     );
 }
 
+
+#[test]
+fn dynamic_call_arity_errors_match_interpreter() {
+    assert_interpreter_native_runtime_error(
+        "dynamic_call_arity",
+        r#"
+let invoke = |callable| callable(1);
+let add = |left, right| (left + right);
+print invoke(add);
+"#,
+        "La función esperaba 2 argumentos y recibió 1",
+    );
+}
 
 #[test]
 fn higher_order_argument_errors_match_interpreter() {

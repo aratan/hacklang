@@ -1,5 +1,6 @@
 // src/lexer.rs
 
+use crate::diagnostic::{Diagnostic, DiagnosticPhase, DiagnosticSeverity};
 use std::hash::{Hash, Hasher};
 
 // Tu struct `Number` y sus implementaciones de `Eq` y `Hash` son perfectas.
@@ -106,6 +107,10 @@ impl Lexer {
     }
 
     pub fn tokenize_spanned(&mut self) -> Result<Vec<SpannedToken>, String> {
+        self.tokenize_spanned_diagnostic().map_err(|diagnostic| diagnostic.to_string())
+    }
+
+    pub fn tokenize_spanned_diagnostic(&mut self) -> Result<Vec<SpannedToken>, Diagnostic> {
         let mut tokens = Vec::new();
 
         while self.position < self.chars.len() {
@@ -171,11 +176,29 @@ impl Lexer {
                     tokens.push(Self::spanned(token, token_start, self.position, &self.chars, &self.line_starts));
                 }
                 '0'..='9' => {
-                    let number = self.read_number().map_err(|error| Self::with_location(error, token_start, self.position, &self.line_starts))?;
+                    let number = self.read_number().map_err(|error| {
+                        let span = Self::spanned(Token::Eof, token_start, self.position, &self.chars, &self.line_starts).span;
+                        Diagnostic::new(
+                            "HL-LEX-003",
+                            DiagnosticPhase::Lexing,
+                            DiagnosticSeverity::Error,
+                            Self::with_location(error, token_start, self.position, &self.line_starts),
+                            Some(span),
+                        )
+                    })?;
                     tokens.push(Self::spanned(Token::Number(Number(number)), token_start, self.position, &self.chars, &self.line_starts));
                 }
                 '"' => {
-                    let string = self.read_string().map_err(|error| Self::with_location(error, token_start, self.position, &self.line_starts))?;
+                    let string = self.read_string().map_err(|error| {
+                        let span = Self::spanned(Token::Eof, token_start, self.position, &self.chars, &self.line_starts).span;
+                        Diagnostic::new(
+                            "HL-LEX-002",
+                            DiagnosticPhase::Lexing,
+                            DiagnosticSeverity::Error,
+                            Self::with_location(error, token_start, self.position, &self.line_starts),
+                            Some(span),
+                        )
+                    })?;
                     tokens.push(Self::spanned(Token::String(string), token_start, self.position, &self.chars, &self.line_starts));
                 }
                 '(' => {
@@ -239,7 +262,14 @@ impl Lexer {
                     self.position += 1;
                 }
                 _ => {
-                    return Err(Self::with_location(format!("Carácter inesperado: '{}'", c), token_start, token_start + 1, &self.line_starts));
+                    let span = Self::spanned(Token::Eof, token_start, token_start + 1, &self.chars, &self.line_starts).span;
+                    return Err(Diagnostic::new(
+                        "HL-LEX-001",
+                        DiagnosticPhase::Lexing,
+                        DiagnosticSeverity::Error,
+                        Self::with_location(format!("Carácter inesperado: '{}'", c), token_start, token_start + 1, &self.line_starts),
+                        Some(span),
+                    ));
                 }
             }
         }

@@ -1141,4 +1141,16 @@ mod tests {
         let error = parser.parse_program().unwrap_err();
         assert!(error.contains("nombre de variable"));
     }
+    #[test]
+    fn spanned_parser_reports_zero_width_eof_range() {
+        let mut lexer = crate::lexer::Lexer::new("\\nlet value = (1 + 2".to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = Parser::new_spanned(tokens);
+        let error = parser.parse_program().unwrap_err();
+
+        assert!(error.contains("Se esperaba ')' al cerrar la expresión agrupada"), "{error}");
+        assert!(error.contains("línea 2, columna 19"), "{error}");
+        assert!(error.contains("rango 19..19"), "{error}");
+    }
+
 }

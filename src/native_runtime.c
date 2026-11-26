@@ -979,17 +979,20 @@ static HlValue hl_get(HlEnv *environment, const char *name) {
  * index contract. Reads clone the selected value into the current lane. */
 static size_t hl_array_index(HlEnv *environment, HlValue index) {
     if (index.tag != HL_NUMBER || !isfinite(index.as.number)
-        || index.as.number < 0.0 || floor(index.as.number) != index.as.number
-        || index.as.number > (double)SIZE_MAX)
+        || index.as.number < 0.0 || floor(index.as.number) != index.as.number)
         hl_fail(environment, "El índice de un array debe ser entero no negativo");
+    /* A double cannot represent SIZE_MAX exactly on common 64-bit targets:
+     * (double)SIZE_MAX rounds up to 2^N. Reject that boundary before the
+     * floating-to-integer conversion, which would otherwise be undefined. */
+    if (index.as.number >= (double)SIZE_MAX) return SIZE_MAX;
     return (size_t)index.as.number;
 }
 /* Strings are indexed by Unicode scalar value, matching Rust str::chars(). */
 static size_t hl_string_index(HlEnv *environment, HlValue index) {
     if (index.tag != HL_NUMBER || !isfinite(index.as.number)
-        || index.as.number < 0.0 || floor(index.as.number) != index.as.number
-        || index.as.number > (double)SIZE_MAX)
+        || index.as.number < 0.0 || floor(index.as.number) != index.as.number)
         hl_fail(environment, "El índice de una cadena debe ser entero no negativo");
+    if (index.as.number >= (double)SIZE_MAX) return SIZE_MAX;
     return (size_t)index.as.number;
 }
 static HlValue hl_string_at(HlEnv *environment, const char *value, size_t position) {

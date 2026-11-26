@@ -622,3 +622,22 @@ fn type_errors_match_interpreter_error_classification() {
         "no se puede indexar por asignación",
     );
 }
+
+#[test]
+fn oversized_integer_indices_match_interpreter_without_native_cast_overflow() {
+    assert_interpreter_native_failure(
+        "array_index_at_size_t_boundary",
+        "let values = [1];\nprint values[18446744073709551616];\n",
+        "fuera de rango",
+    );
+    assert_interpreter_native_failure(
+        "array_write_index_at_size_t_boundary",
+        "let values = [1];\nvalues[18446744073709551616] = 2;\n",
+        "fuera de rango",
+    );
+    assert_interpreter_native_failure(
+        "string_index_at_size_t_boundary",
+        "let value = \"x\";\nprint value[18446744073709551616];\n",
+        "fuera de rango",
+    );
+}

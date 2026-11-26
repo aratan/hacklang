@@ -3,6 +3,7 @@
 use std::env;
 use std::fs;
 use std::process::ExitCode;
+use std::time::Duration;
 
 // Un único front-end compartido para run/check/build.
 mod lexer;
@@ -40,11 +41,12 @@ struct Cli {
     max_parse_depth: Option<usize>,
     max_eval_depth: Option<usize>,
     max_eval_steps: Option<usize>,
+    max_eval_millis: Option<u64>,
 }
 
 fn usage() -> &'static str {
     "Uso:
-  hl [run] [--compact] [--format] [--diagnostics-json] [--max-parse-depth N] [--max-eval-depth N] [--max-eval-steps N] <archivo.hl>
+  hl [run] [--compact] [--format] [--diagnostics-json] [--max-parse-depth N] [--max-eval-depth N] [--max-eval-steps N] [--max-eval-millis N] <archivo.hl>
   hl check [--compact] [--diagnostics-json] [--max-parse-depth N] <archivo.hl>
   hl build [--compact] [--max-parse-depth N] [--diagnostics-json] <archivo.hl> [-o <ejecutable>]
 
@@ -93,6 +95,13 @@ fn parse_args(args: &[String]) -> Result<Cli, String> {
                 if steps == 0 { return Err("--max-eval-steps debe ser mayor que cero".to_string()); }
                 cli.max_eval_steps = Some(steps);
             }
+            "--max-eval-millis" => {
+                index += 1;
+                let value = args.get(index).ok_or("Falta el valor de --max-eval-millis")?;
+                let millis = value.parse::<u64>().map_err(|_| "--max-eval-millis requiere un entero positivo")?;
+                if millis == 0 { return Err("--max-eval-millis debe ser mayor que cero".to_string()); }
+                cli.max_eval_millis = Some(millis);
+            }
             "-o" => {
                 index += 1;
                 let output = args.get(index).ok_or("Falta la ruta después de -o")?;
@@ -122,8 +131,8 @@ fn parse_args(args: &[String]) -> Result<Cli, String> {
     if cli.diagnostics_json && cli.format {
         return Err("--diagnostics-json y --format son modos excluyentes".to_string());
     }
-    if (cli.max_eval_depth.is_some() || cli.max_eval_steps.is_some()) && matches!(cli.command, Some(Command::Check | Command::Build)) {
-        return Err("--max-eval-depth y --max-eval-steps solo se admiten con 'run'".to_string());
+    if (cli.max_eval_depth.is_some() || cli.max_eval_steps.is_some() || cli.max_eval_millis.is_some()) && matches!(cli.command, Some(Command::Check | Command::Build)) {
+        return Err("--max-eval-depth, --max-eval-steps y --max-eval-millis solo se admiten con 'run'".to_string());
     }
     if cli.output.is_some() && cli.command != Some(Command::Build) {
         return Err("-o solo se admite con 'build'".to_string());
@@ -242,9 +251,15 @@ fn run() -> ExitCode {
     }
 
     println!("--- Ejecutando código Hacklang ---");
-    let mut evaluator = evaluador::Evaluator::new_with_limits(
+    let configured_eval_millis = env::var("HACKLANG_MAX_EVAL_MILLIS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(evaluador::DEFAULT_MAX_EVAL_MILLIS);
+    let mut evaluator = evaluador::Evaluator::new_with_resource_limits(
         cli.max_eval_depth.unwrap_or(256),
         cli.max_eval_steps.unwrap_or(evaluador::DEFAULT_MAX_EVAL_STEPS),
+        Duration::from_millis(cli.max_eval_millis.unwrap_or(configured_eval_millis)),
     );
     match evaluator.evaluate_with_spans_diagnostic(&ast, &source_spans) {
         Ok(()) => {

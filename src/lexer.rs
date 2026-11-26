@@ -171,11 +171,11 @@ impl Lexer {
                     tokens.push(Self::spanned(token, token_start, self.position, &self.chars, &self.line_starts));
                 }
                 '0'..='9' => {
-                    let number = self.read_number()?;
+                    let number = self.read_number().map_err(|error| with_location(error, token_start, &self.line_starts))?;
                     tokens.push(Self::spanned(Token::Number(Number(number)), token_start, self.position, &self.chars, &self.line_starts));
                 }
                 '"' => {
-                    let string = self.read_string()?;
+                    let string = self.read_string().map_err(|error| with_location(error, token_start, &self.line_starts))?;
                     tokens.push(Self::spanned(Token::String(string), token_start, self.position, &self.chars, &self.line_starts));
                 }
                 '(' => {
@@ -239,7 +239,7 @@ impl Lexer {
                     self.position += 1;
                 }
                 _ => {
-                    return Err(format!("Carácter inesperado: '{}' en posición {}", c, self.position));
+                    return Err(with_location(format!("Carácter inesperado: '{}'", c), token_start, &self.line_starts));
                 }
             }
         }
@@ -248,6 +248,13 @@ impl Lexer {
         Ok(tokens)
     }
 
+
+fn with_location(error: String, offset: usize, line_starts: &[usize]) -> String {
+    let line_index = line_starts.partition_point(|line_start| *line_start <= offset).saturating_sub(1);
+    let line = line_index + 1;
+    let column = offset - line_starts[line_index] + 1;
+    format!("{error} (línea {line}, columna {column})")
+}
 
 fn spanned(token: Token, start: usize, end: usize, chars: &[char], line_starts: &[usize]) -> SpannedToken {
     let locate = |offset: usize| {
@@ -336,6 +343,21 @@ fn spanned(token: Token, start: usize, end: usize, chars: &[char], line_starts: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lexical_errors_include_line_and_column() {
+        let mut unexpected = Lexer::new("\n  §".to_string());
+        let error = unexpected.tokenize_spanned().unwrap_err();
+        assert!(error.contains("línea 2, columna 3"), "{error}");
+
+        let mut unterminated = Lexer::new("let x = 1;\n  \"open".to_string());
+        let error = unterminated.tokenize_spanned().unwrap_err();
+        assert!(error.contains("línea 2, columna 3"), "{error}");
+
+        let mut exponent = Lexer::new("let x = 1e+".to_string());
+        let error = exponent.tokenize_spanned().unwrap_err();
+        assert!(error.contains("línea 1, columna 9"), "{error}");
+    }
 
     #[test]
     fn test_empty_input() {

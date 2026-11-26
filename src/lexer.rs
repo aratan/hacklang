@@ -375,6 +375,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn lexical_errors_expose_stable_codes_phases_and_ranges() {
+        let mut unexpected = Lexer::new("§".to_string());
+        let diagnostic = unexpected.tokenize_spanned_diagnostic().unwrap_err();
+        assert_eq!(diagnostic.code, "HL-LEX-001");
+        assert_eq!(diagnostic.phase, DiagnosticPhase::Lexing);
+        assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
+        assert_eq!(diagnostic.range.unwrap().start, 0);
+
+        let mut unterminated = Lexer::new("\\"open".to_string());
+        let diagnostic = unterminated.tokenize_spanned_diagnostic().unwrap_err();
+        assert_eq!(diagnostic.code, "HL-LEX-002");
+        assert_eq!(diagnostic.range.unwrap().end, 5);
+
+        let mut exponent = Lexer::new("1e+".to_string());
+        let diagnostic = exponent.tokenize_spanned_diagnostic().unwrap_err();
+        assert_eq!(diagnostic.code, "HL-LEX-003");
+        assert_eq!(diagnostic.range.unwrap().end, 3);
+    }
+
+    #[test]
     fn lexical_errors_include_line_and_column() {
         let mut unexpected = Lexer::new("\n  §".to_string());
         let error = unexpected.tokenize_spanned().unwrap_err();

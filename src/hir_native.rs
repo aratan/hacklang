@@ -893,7 +893,11 @@ mod tests {
     use crate::ast::{Program as AstProgram, Statement as AstStmt, LetStatement, PrintStatement};
     #[test]
     fn native_backend_charges_statements_and_loop_iterations() {
-        let ast = AstProgram { statements: vec![] };
+        let ast = AstProgram {
+            statements: vec![AstStmt::Print(PrintStatement {
+                value: crate::ast::Expression::NumberLiteral(1.0),
+            })],
+        };
         let lowered = hir::lower(&ast).unwrap();
         let memory = crate::memory::plan(&lowered);
         let c = generate_c(&lowered, &memory).unwrap();

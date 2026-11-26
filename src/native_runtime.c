@@ -90,6 +90,7 @@ typedef struct HlOwnershipRecord HlOwnershipRecord;
 typedef struct HlCell {
     HlValue value;
     HlEnv *owner;
+    HlArenaLane value_lane; /* reclaimable storage for the cell's current value graph */
     int initialized;
     int marked; /* tracing mark, reset by every collection */
     struct HlCell *next;
@@ -160,9 +161,6 @@ struct HlEnv {
 /* Binding-owned dynamic storage participates in the same exactly-once
  * cleanup registry as other runtime resources. The binding descriptor stays
  * alive until callbacks have run and its arena is rewound. */
-static void hl_lane_init(HlArenaLane *lane);
-static void hl_lane_destroy(HlArenaLane *lane);
-
 static void hl_cleanup_binding_string(void *context) {
     HlBinding *binding = (HlBinding *)context;
     if (!binding) return;
@@ -182,6 +180,8 @@ static void hl_cleanup_binding_aggregate(void *context) {
 }
 
 static void hl_env_free(HlEnv *environment);
+static void hl_lane_init(HlArenaLane *lane);
+static void hl_lane_destroy(HlArenaLane *lane);
 
 static void hl_fail(HlEnv *environment, const char *message) {
     fprintf(stderr, "Error en tiempo de ejecución: %s\n", message);
@@ -388,7 +388,7 @@ static void hl_env_free(HlEnv *environment) {
         while (closure) { HlClosure *next = closure->next; free(closure->captures); free(closure); closure = next; }
         environment->closures = NULL;
         HlCell *cell = environment->cells;
-        while (cell) { HlCell *next = cell->next; free(cell); cell = next; }
+        while (cell) { HlCell *next = cell->next; hl_lane_destroy(&cell->value_lane); free(cell); cell = next; }
         environment->cells = NULL;
         HlOwnershipRecord *record = environment->ownership_records;
         while (record) { HlOwnershipRecord *next = record->next; free(record); record = next; }
@@ -404,19 +404,24 @@ static void hl_env_free(HlEnv *environment) {
     free(environment);
 }
 static HlValue hl_clone_value(HlEnv *environment, HlValue value);
+static HlValue hl_clone_value_in_lane(HlEnv *environment, HlArenaLane *lane, HlValue value);
 
-/* Captured cells have stable heap identity and root lifetime. This deliberately
- * over-retains until root teardown; tracing collection is a later stage. */
+/* Captured cells have stable heap identity. Their current value graph has a
+ * private lane, so overwrites and tracing-GC sweeps reclaim it independently. */
 static HlCell *hl_cell_new(HlEnv *environment, HlValue initial, int initialized) {
     HlEnv *root = hl_env_root(environment);
     if (!root || root->closing) return NULL;
     HlCell *cell = (HlCell *)malloc(sizeof(HlCell));
     if (!cell) hl_fail(environment, "memoria agotada al crear celda capturada");
-    cell->value = initialized ? hl_clone_value(root, initial) : initial;
+    cell->value = initial;
     cell->owner = root;
+    hl_lane_init(&cell->value_lane);
     cell->initialized = initialized != 0;
+    cell->marked = 0;
     cell->next = root->cells;
     root->cells = cell;
+    if (initialized)
+        cell->value = hl_clone_value_in_lane(root, &cell->value_lane, initial);
     return cell;
 }
 static int hl_cell_read(const HlCell *cell, HlValue *out) {
@@ -427,7 +432,11 @@ static int hl_cell_read(const HlCell *cell, HlValue *out) {
 static int hl_cell_write(HlCell *cell, HlValue value) {
     if (!cell) return 0;
     if (!cell->owner || cell->owner->closing) return 0;
-    cell->value = hl_clone_value(cell->owner, value);
+    /* Replace the old graph as a unit. If cloning fails, the cell is already
+     * registered on the root and teardown can still reclaim its fresh lane. */
+    hl_lane_destroy(&cell->value_lane);
+    hl_lane_init(&cell->value_lane);
+    cell->value = hl_clone_value_in_lane(cell->owner, &cell->value_lane, value);
     cell->initialized = 1;
     return 1;
 }
@@ -620,7 +629,7 @@ static void hl_collect(HlEnv *environment) {
     HlCell **cell_link = &root->cells;
     while (*cell_link) {
         HlCell *cell = *cell_link;
-        if (!cell->marked) { *cell_link = cell->next; free(cell); continue; }
+        if (!cell->marked) { *cell_link = cell->next; hl_lane_destroy(&cell->value_lane); free(cell); continue; }
         cell->marked = 0;
         cell_link = &cell->next;
     }

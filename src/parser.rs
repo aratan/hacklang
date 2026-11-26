@@ -1100,6 +1100,7 @@ mod tests {
         let mut parser = Parser::new_spanned(tokens);
         let error = parser.parse_program().unwrap_err();
         assert!(error.contains("línea 2, columna 5"), "{}", error);
+        assert!(error.contains("rango 5..6"), "{}", error);
     }
 
     #[test]

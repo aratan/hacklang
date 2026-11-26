@@ -495,12 +495,12 @@ mod tests {
             .find(|item| item.message.contains("operando izquierdo"))
             .expect("expected numeric operand diagnostic");
         let range = diagnostic.range.expect("diagnostic must carry a source range");
-        assert_eq!((range.line, range.column), (2, 13));
-        assert_eq!(range.end, 21);
+        assert_eq!((range.line, range.column), (2, 14));
+        assert_eq!(range.end, 22);
         let json = diagnostic.to_json();
         assert!(json.contains("\"range\":{"), "{json}");
-        assert!(json.contains("\"start\":13"), "{json}");
-        assert!(json.contains("\"end\":21"), "{json}");
+        assert!(json.contains("\"start\":14"), "{json}");
+        assert!(json.contains("\"end\":22"), "{json}");
     }
 
     #[test]

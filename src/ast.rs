@@ -11,7 +11,7 @@ use crate::lexer::{SourceSpan, Token};
 pub struct AstSpanMap {
     /// Pre-order spans for statements, matching the AST's statement traversal.
     pub statements: Vec<Option<SourceSpan>>,
-    /// Pre-order spans for expressions, matching the AST's expression traversal.
+    /// Pre-order spans for expression roots parsed at statement level.
     pub expressions: Vec<Option<SourceSpan>>,
 }
 

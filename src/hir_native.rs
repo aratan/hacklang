@@ -172,6 +172,7 @@ impl Generator {
     }
     fn statements(&mut self, p: &Program, statements: &[Statement], out: &mut String) -> Result<(), String> {
         for statement in statements {
+            Self::line(out, "hl_eval_step(env);");
             self.stmt(p, statement, out)?;
             self.collect_point(out);
         }
@@ -276,6 +277,7 @@ impl Generator {
                 self.scopes.push(prev.clone()); let depth = self.scopes.len();
                 self.loops.push((cond.clone(), end.clone(), depth));
                 Self::line(out, format!("{cond}: ;"));
+                Self::line(out, "hl_eval_step(env);");
                 Self::line(out, format!("HlEnv *{iter_prev} = env;"));
                 self.enter_scope_env(*scope, out); self.scopes.push(iter_prev.clone());
                 let c = self.expr(p, condition, out)?;
@@ -889,6 +891,18 @@ mod tests {
     use super::*;
     use crate::hir;
     use crate::ast::{Program as AstProgram, Statement as AstStmt, LetStatement, PrintStatement};
+    #[test]
+    fn native_backend_charges_statements_and_loop_iterations() {
+        let ast = AstProgram { statements: vec![] };
+        let lowered = hir::lower(&ast).unwrap();
+        let memory = crate::memory::plan(&lowered);
+        let c = generate_c(&lowered, &memory).unwrap();
+        assert!(c.contains("static void hl_eval_step(HlEnv *environment)"));
+        assert!(c.contains("HACKLANG_MAX_EVAL_STEPS"));
+        assert!(c.contains("hl_eval_step(env);"));
+        assert!(c.contains("se agotó el presupuesto de instrucciones de ejecución nativa"));
+    }
+
     #[test]
     fn generated_runtime_exposes_single_lifo_cleanup_registry() {
         let ast = AstProgram { statements: vec![] };

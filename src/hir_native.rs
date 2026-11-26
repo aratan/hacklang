@@ -61,7 +61,10 @@ impl Generator {
             ExprKind::Number(n) if n.is_finite() => format!("hl_number({n:.17})"),
             ExprKind::Number(_) => return Err("NaN e infinito no backend nativo aún no están soportados".into()),
             ExprKind::Bool(b) => format!("hl_bool({})", if *b { 1 } else { 0 }),
-            ExprKind::String(s) => format!("hl_string(env, {})", Self::c_string(s)),
+            ExprKind::String(s) => {
+                let literal = Self::c_string(s);
+                format!("hl_string_n(env, {literal}, sizeof({literal}) - 1)")
+            },
             ExprKind::Read(id) => match self.inline_slots.get(id) {
                 Some(slot) => format!("hl_frame_read_or_fail(env, &frame, {slot})"),
                 // Cell-backed bindings live in an environment binding; hl_get

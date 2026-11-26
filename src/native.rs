@@ -784,12 +784,12 @@ int main(void) {
     HlEnv *root = hl_env_new(NULL);
     observed_root = root;
     HlEnv *activation = hl_env_new(root);
-    hl_define(activation, "captured", (HlValue){.tag=HL_STRING, .as.string="cell-live"});
+    hl_define(activation, "captured", (HlValue){.tag=HL_STRING, .as.string="cell-live", .string_length=sizeof("cell-live") - 1});
     const char *names[] = {"captured"};
     observed_temporary = hl_closure_new(activation, 7, names, 1);
     if (!hl_frame_init(&observed_frame, &observed_slot, 1)) return 10;
     if (!hl_frame_write(&observed_frame, 0,
-        (HlValue){.tag=HL_STRING, .as.string="frame-live"})) return 11;
+        (HlValue){.tag=HL_STRING, .as.string="frame-live", .string_length=sizeof("frame-live") - 1})) return 11;
     hl_root_frame_push(activation, &observed_frame);
     hl_root_value_push(activation, &observed_temporary);
     if (!hl_env_defer(root, verify_roots_during_cleanup, NULL)) return 12;

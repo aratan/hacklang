@@ -486,7 +486,7 @@ mod tests {
 
     #[test]
     fn type_diagnostics_include_precise_expression_source_ranges() {
-        let mut lexer = Lexer::new("\\nlet result = true + 2;".to_string());
+        let mut lexer = Lexer::new("\nlet result = true + 2;".to_string());
         let tokens = lexer.tokenize_spanned().unwrap();
         let mut parser = Parser::new_spanned(tokens);
         let (program, spans) = parser.parse_program_with_spans().unwrap();
@@ -498,9 +498,9 @@ mod tests {
         assert_eq!((range.line, range.column), (2, 13));
         assert_eq!(range.end, 21);
         let json = diagnostic.to_json();
-        assert!(json.contains("\\"range\\":{"), "{json}");
-        assert!(json.contains("\\"start\\":13"), "{json}");
-        assert!(json.contains("\\"end\\":21"), "{json}");
+        assert!(json.contains("\"range\":{"), "{json}");
+        assert!(json.contains("\"start\":13"), "{json}");
+        assert!(json.contains("\"end\":21"), "{json}");
     }
 
     #[test]

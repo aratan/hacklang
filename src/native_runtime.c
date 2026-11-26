@@ -1006,6 +1006,8 @@ static HlValue hl_get(HlEnv *environment, const char *name) {
     if (item->cell) {
         HlValue captured;
         if (!hl_cell_read(item->cell, &captured)) hl_fail(environment, "lectura de captura no inicializada");
+        if (getenv("HL_DEBUG_GC") && captured.tag == HL_NUMBER)
+            fprintf(stderr, "GET %s cell=%p number=%g\\n", name, (void *)item->cell, captured.as.number);
         return captured.tag == HL_ARRAY || captured.tag == HL_MAP ? hl_clone_value(environment, captured) : captured;
     }
     /* Arrays have value semantics: each read receives an independent

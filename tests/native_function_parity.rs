@@ -418,6 +418,24 @@ print saved[0]["call"]();
 
 
 #[test]
+fn invalid_array_index_type_errors_match_interpreter() {
+    assert_interpreter_native_runtime_error(
+        "invalid_array_index_type",
+        "let values = [1];\\nprint values[\"not-an-index\"];\\n",
+        "El índice de un array debe ser entero no negativo",
+    );
+}
+
+#[test]
+fn invalid_string_index_type_errors_match_interpreter() {
+    assert_interpreter_native_runtime_error(
+        "invalid_string_index_type",
+        "let value = \"hacklang\";\\nprint value[true];\\n",
+        "El índice de una cadena debe ser entero no negativo",
+    );
+}
+
+#[test]
 fn dynamic_call_arity_errors_match_interpreter() {
     assert_interpreter_native_runtime_error(
         "dynamic_call_arity",

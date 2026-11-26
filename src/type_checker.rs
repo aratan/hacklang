@@ -614,6 +614,7 @@ mod tests {
         let diagnostics = check_source("let result = true + 2;");
         let diagnostic = diagnostics.first().unwrap();
         assert_eq!(diagnostic.code, "HL-TYPE-001");
+        assert_eq!(diagnostic.phase, DiagnosticPhase::TypeChecking);
         assert_eq!(diagnostic.severity, DiagnosticSeverity::Warning);
         assert!(diagnostic.to_json().contains("\"range\":null"));
     }

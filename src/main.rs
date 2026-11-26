@@ -235,7 +235,7 @@ fn run() -> ExitCode {
 
     println!("--- Ejecutando código Hacklang ---");
     let mut evaluator = evaluador::Evaluator::new_with_max_depth(cli.max_eval_depth.unwrap_or(256));
-    match evaluator.evaluate_diagnostic(&ast) {
+    match evaluator.evaluate_with_spans_diagnostic(&ast, &source_spans) {
         Ok(()) => {
             println!("--------------------------------");
             println!("Programa finalizado sin errores.");

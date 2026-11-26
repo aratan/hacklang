@@ -1,9 +1,87 @@
 // src/evaluador.rs
 // Versión: rewrite applied
-use crate::ast::{AssignStatement, Expression, IndexAssignStatement, Program, Statement, LetStatement, PrintStatement};
+use crate::ast::{AstSpanMap, AssignStatement, Expression, IndexAssignStatement, Program, Statement, LetStatement, PrintStatement};
 use crate::diagnostic::{Diagnostic, DiagnosticPhase, DiagnosticSeverity};
-use crate::lexer::Token;
+use crate::lexer::{SourceSpan, Token};
 use std::collections::HashMap;
+
+fn collect_statement_spans(program: &Program, spans: &AstSpanMap) -> HashMap<usize, SourceSpan> {
+    fn visit_statements(statements: &[Statement], spans: &[Option<SourceSpan>], cursor: &mut usize, out: &mut HashMap<usize, SourceSpan>) {
+        for statement in statements {
+            visit_statement(statement, spans, cursor, out);
+        }
+    }
+
+    fn visit_statement(statement: &Statement, spans: &[Option<SourceSpan>], cursor: &mut usize, out: &mut HashMap<usize, SourceSpan>) {
+        let key = statement as *const Statement as usize;
+        if let Some(span) = spans.get(*cursor).copied().flatten() {
+            out.insert(key, span);
+        }
+        *cursor += 1;
+
+        match statement {
+            Statement::Let(stmt) => visit_expression(&stmt.value, spans, cursor, out),
+            Statement::Assign(stmt) => visit_expression(&stmt.value, spans, cursor, out),
+            Statement::IndexAssign(stmt) => {
+                for index in &stmt.indices { visit_expression(index, spans, cursor, out); }
+                visit_expression(&stmt.value, spans, cursor, out);
+            }
+            Statement::Print(stmt) => visit_expression(&stmt.value, spans, cursor, out),
+            Statement::Return(value) => visit_expression(value, spans, cursor, out),
+            Statement::Block(body) => visit_statements(body, spans, cursor, out),
+            Statement::While(stmt) => {
+                visit_expression(&stmt.condition, spans, cursor, out);
+                visit_statements(&stmt.body, spans, cursor, out);
+            }
+            Statement::If(stmt) => {
+                visit_expression(&stmt.condition, spans, cursor, out);
+                visit_statements(&stmt.true_body, spans, cursor, out);
+                if let Some(body) = &stmt.false_body { visit_statements(body, spans, cursor, out); }
+            }
+            Statement::Break | Statement::Continue => {}
+        }
+    }
+
+    fn visit_expression(expression: &Expression, spans: &[Option<SourceSpan>], cursor: &mut usize, out: &mut HashMap<usize, SourceSpan>) {
+        match expression {
+            Expression::Infix { left, right, .. } => {
+                visit_expression(left, spans, cursor, out);
+                visit_expression(right, spans, cursor, out);
+            }
+            Expression::Ternary { condition, true_branch, false_branch } => {
+                visit_expression(condition, spans, cursor, out);
+                visit_expression(true_branch, spans, cursor, out);
+                visit_expression(false_branch, spans, cursor, out);
+            }
+            Expression::Lambda { body, .. } => visit_expression(body, spans, cursor, out),
+            Expression::Block(body) => visit_statements(body, spans, cursor, out),
+            Expression::FunctionCall { func, args } => {
+                visit_expression(func, spans, cursor, out);
+                for argument in args { visit_expression(argument, spans, cursor, out); }
+            }
+            Expression::Array(items) => {
+                for item in items { visit_expression(item, spans, cursor, out); }
+            }
+            Expression::Map(items) => {
+                for (key, value) in items {
+                    visit_expression(key, spans, cursor, out);
+                    visit_expression(value, spans, cursor, out);
+                }
+            }
+            Expression::Index { target, index } => {
+                visit_expression(target, spans, cursor, out);
+                visit_expression(index, spans, cursor, out);
+            }
+            Expression::Identifier(_) | Expression::NumberLiteral(_) |
+            Expression::BoolLiteral(_) | Expression::StringLiteral(_) => {}
+        }
+    }
+
+    let mut output = HashMap::new();
+    let mut cursor = 0;
+    visit_statements(&program.statements, &spans.statements, &mut cursor, &mut output);
+    output
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -86,6 +164,9 @@ pub struct Evaluator {
     max_eval_depth: usize,
     // Values held only by an in-progress call must remain visible to mark-and-sweep.
     temporary_roots: Vec<Value>,
+    statement_spans_by_ptr: HashMap<usize, SourceSpan>,
+    current_statement_span: Option<SourceSpan>,
+    last_error_range: Option<SourceSpan>,
 }
 
 impl Evaluator {
@@ -101,6 +182,9 @@ impl Evaluator {
             eval_depth: 0,
             max_eval_depth,
             temporary_roots: Vec::new(),
+            statement_spans_by_ptr: HashMap::new(),
+            current_statement_span: None,
+            last_error_range: None,
         }
     }
 
@@ -205,32 +289,63 @@ impl Evaluator {
     }
 
     pub fn evaluate(&mut self, program: &Program) -> Result<(), String> {
+        self.last_error_range = None;
+        self.current_statement_span = None;
         for stmt in &program.statements {
             match self.run_stmt(stmt)? {
                 Flow::Continue => {}
-                Flow::LoopContinue => return Err("continue fuera de un bucle".to_string()),
-                Flow::Break => return Err("break fuera de un bucle".to_string()),
-                Flow::Return(_) => return Err("return fuera de una función".to_string()),
+                Flow::LoopContinue => {
+                    self.last_error_range = self.statement_span(stmt);
+                    return Err("continue fuera de un bucle".to_string());
+                }
+                Flow::Break => {
+                    self.last_error_range = self.statement_span(stmt);
+                    return Err("break fuera de un bucle".to_string());
+                }
+                Flow::Return(_) => {
+                    self.last_error_range = self.statement_span(stmt);
+                    return Err("return fuera de una función".to_string());
+                }
             }
         }
         Ok(())
     }
 
+    fn statement_span(&self, statement: &Statement) -> Option<SourceSpan> {
+        self.statement_spans_by_ptr.get(&(statement as *const Statement as usize)).copied()
+    }
+
+    fn runtime_diagnostic(&self, message: String) -> Diagnostic {
+        Diagnostic::new(
+            "HL-RUNTIME-001",
+            DiagnosticPhase::Runtime,
+            DiagnosticSeverity::Error,
+            message,
+            self.last_error_range,
+        )
+    }
+
     /// Structured counterpart to evaluate(); the legacy String API is preserved.
     pub fn evaluate_diagnostic(&mut self, program: &Program) -> Result<(), Diagnostic> {
-        self.evaluate(program).map_err(|message| {
-            Diagnostic::new(
-                "HL-RUNTIME-001",
-                DiagnosticPhase::Runtime,
-                DiagnosticSeverity::Error,
-                message,
-                None,
-            )
-        })
+        self.statement_spans_by_ptr.clear();
+        self.evaluate(program).map_err(|message| self.runtime_diagnostic(message))
+    }
+
+    /// Structured runtime diagnostics with statement-level source provenance.
+    pub fn evaluate_with_spans_diagnostic(
+        &mut self,
+        program: &Program,
+        spans: &AstSpanMap,
+    ) -> Result<(), Diagnostic> {
+        self.statement_spans_by_ptr = collect_statement_spans(program, spans);
+        self.evaluate(program).map_err(|message| self.runtime_diagnostic(message))
     }
 
     fn run_stmt(&mut self, stmt: &Statement) -> Result<Flow, String> {
-        let result = match stmt {
+        let previous_span = self.current_statement_span;
+        self.current_statement_span = self.statement_span(stmt).or(previous_span);
+        let result = (|| -> Result<Flow, String> {
+            match stmt {
             Statement::Let(l) => self.eval_let(l).map(|_| Flow::Continue),
             Statement::Assign(a) => self.eval_assign(a).map(|_| Flow::Continue),
             Statement::IndexAssign(a) => self.eval_index_assign(a).map(|_| Flow::Continue),
@@ -305,7 +420,11 @@ impl Evaluator {
                     Ok(Flow::Continue)
                 })
             }
-        };
+        }})();
+        if result.is_err() && self.last_error_range.is_none() {
+            self.last_error_range = self.current_statement_span;
+        }
+        self.current_statement_span = previous_span;
         let temporary_root = match &result {
             Ok(Flow::Return(value)) => Some(value),
             _ => None,
@@ -910,6 +1029,36 @@ mod tests {
         assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
         assert_eq!(diagnostic.range, None);
         assert!(diagnostic.message.contains("Division by zero"));
+    }
+
+    #[test]
+    fn runtime_diagnostics_use_statement_source_range_when_available() {
+        let source = "let value = 1;\nprint 1 / 0;";
+        let mut lexer = crate::lexer::Lexer::new(source.to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = crate::parser::Parser::new_spanned(tokens);
+        let (program, spans) = parser.parse_program_with_spans().unwrap();
+        let mut evaluator = Evaluator::new();
+
+        let diagnostic = evaluator.evaluate_with_spans_diagnostic(&program, &spans).unwrap_err();
+        let range = diagnostic.range.expect("runtime diagnostic should point to the failing statement");
+        assert_eq!(range.line, 2);
+        assert_eq!(range.column, 1);
+        assert_eq!(diagnostic.code, "HL-RUNTIME-001");
+    }
+
+    #[test]
+    fn runtime_diagnostics_prefer_the_innermost_failing_statement() {
+        let source = "if (true) (\n  print 1 / 0;\n)";
+        let mut lexer = crate::lexer::Lexer::new(source.to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = crate::parser::Parser::new_spanned(tokens);
+        let (program, spans) = parser.parse_program_with_spans().unwrap();
+        let mut evaluator = Evaluator::new();
+
+        let diagnostic = evaluator.evaluate_with_spans_diagnostic(&program, &spans).unwrap_err();
+        let range = diagnostic.range.expect("nested runtime error should retain its statement span");
+        assert_eq!((range.line, range.column), (2, 3));
     }
 
     #[test]

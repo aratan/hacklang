@@ -61,7 +61,7 @@ HackLang es un lenguaje de programación de propósito general. Debe permitir co
 ## Plan por etapas
 
 ### P0 — Fundamentos y seguridad del runtime
-- Source Spans: propagación parcial ya implementada en la PR #18 (lexer, parser, sidecar AST, checker y errores de lowering). Pendiente: validar Unicode/EOF y orden de cursores, y completar ubicaciones de diagnósticos nativos donde exista correspondencia fiable con el nodo fuente.
+- Source Spans: propagación parcial implementada en la PR #18 (lexer, parser, sidecar AST, checker y errores de lowering). CI #1201 validó offsets Unicode/EOF y rangos de lambdas/llamadas como sentencias; CI #1203 validó el orden de cursores en bloques, `if`, `while` y llamadas como sentencias, además de type-check, build, tests, ejemplos y paridad intérprete/nativo. Pendiente: diagnósticos del backend nativo solo donde exista correspondencia fiable con el nodo fuente, y revisión final de cobertura antes de cerrar #13.
 - Introducir errores tipados con código, fase, mensaje y ubicación; mantener mensajes legibles y salida JSON estable.
 - Definir límites configurables de profundidad, pasos/instrucciones, memoria y tiempo para ejecutar scripts no confiables.
 - Evaluador y parser: límites defensivos de 256 niveles ya implementados; añadir configuración, pruebas de estrés/fuzzing y evaluar una pila explícita/trampolín si las mediciones lo justifican.

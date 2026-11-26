@@ -139,7 +139,7 @@ jobs:
 
           : > "$temp_dir/runtime-heap-budget.hl"
           for index in $(seq 1 128); do
-            printf 'let f%s = |x| (x + %s);\\n' "$index" "$index" >> "$temp_dir/runtime-heap-budget.hl"
+            printf 'let f%s = |x| (x + %s);\n' "$index" "$index" >> "$temp_dir/runtime-heap-budget.hl"
           done
           cargo run --quiet -- build "$temp_dir/runtime-heap-budget.hl" -o "$temp_dir/runtime-heap-budget" > /dev/null
           set +e

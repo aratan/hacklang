@@ -839,12 +839,16 @@ static HlValue hl_number(double value) {
 static HlValue hl_bool(int value) {
     HlValue result = {0}; result.tag = HL_BOOL; result.as.boolean = value != 0; return result;
 }
-static HlValue hl_string(HlEnv *environment, const char *value, size_t length) {
+static HlValue hl_string_n(HlEnv *environment, const char *value, size_t length) {
     HlValue result = {0};
     result.tag = HL_STRING;
     result.as.string = hl_copy_string_n(environment, value, length);
     result.string_length = length;
     return result;
+}
+/* Keep the legacy C helper for runtime unit fixtures and ordinary C strings. */
+static HlValue hl_string(HlEnv *environment, const char *value) {
+    return hl_string_n(environment, value, strlen(value));
 }
 
 /* Aggregate storage is lane-owned. Cloning recursively duplicates the value
@@ -906,7 +910,7 @@ static HlValue hl_clone_value(HlEnv *environment, HlValue value) {
     switch (value.tag) {
         case HL_NUMBER: return hl_number(value.as.number);
         case HL_BOOL: return hl_bool(value.as.boolean);
-        case HL_STRING: return hl_string(environment, value.as.string, value.string_length);
+        case HL_STRING: return hl_string_n(environment, value.as.string, value.string_length);
         case HL_ARRAY: {
             if (!value.as.array) hl_fail(environment, "array nulo");
             if (value.as.array->length > SIZE_MAX / sizeof(HlValue))
@@ -1249,7 +1253,7 @@ static HlValue hl_string_at(HlEnv *environment, const char *value, size_t length
     if (width > length - offset) width = 1u;
     char character[5] = {0, 0, 0, 0, 0};
     memcpy(character, bytes + offset, width);
-    return hl_string(environment, character, width);
+    return hl_string_n(environment, character, width);
 }
 static HlValue hl_index(HlEnv *environment, HlValue target, HlValue index) {
     if (target.tag == HL_ARRAY && target.as.array) {
@@ -1603,7 +1607,7 @@ static HlValue hl_mixed_text(HlEnv *environment, HlValue left, HlValue right) {
     memcpy(joined + left_length + 1, right_text, right_length);
     joined[left_length + right_length + 1] = ')';
     joined[result_length] = '\0';
-    return hl_string(environment, joined, result_length);
+    return hl_string_n(environment, joined, result_length);
 }
 static void hl_require_numbers(HlEnv *environment, HlValue left, HlValue right, const char *operation) {
     if (left.tag != HL_NUMBER || right.tag != HL_NUMBER) {
@@ -1624,7 +1628,7 @@ static HlValue hl_add(HlEnv *environment, HlValue left, HlValue right) {
         char *joined = (char *)hl_alloc(environment, result_length + 1);
         memcpy(joined, left.as.string, left.string_length);
         memcpy(joined + left.string_length, number, number_length + 1);
-        return hl_string(environment, joined, result_length);
+        return hl_string_n(environment, joined, result_length);
     }
     if (left.tag == HL_NUMBER && right.tag == HL_STRING) {
         const char *number = hl_to_text(environment, left);
@@ -1637,7 +1641,7 @@ static HlValue hl_add(HlEnv *environment, HlValue left, HlValue right) {
         memcpy(joined, number, number_length);
         memcpy(joined + number_length, right.as.string, right.string_length);
         joined[result_length] = '\0';
-        return hl_string(environment, joined, result_length);
+        return hl_string_n(environment, joined, result_length);
     }
     hl_fail(environment, "Type mismatch: valores incompatibles con el operador Plus");
     return hl_number(0);

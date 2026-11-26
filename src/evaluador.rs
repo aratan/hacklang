@@ -234,14 +234,32 @@ impl Evaluator {
                 let parent = self.current_env;
                 self.with_environment(parent, |this| {
                     'while_loop: loop {
-                        if !this.condition_true(&ws.condition)? { break; }
-                        for statement in &ws.body {
-                            match this.run_stmt(statement)? {
-                                Flow::Continue => {}
-                                Flow::LoopContinue => continue 'while_loop,
-                                Flow::Break => break 'while_loop,
-                                flow @ Flow::Return(_) => return Ok(flow),
+                        // Each iteration gets its own lexical environment. Closures
+                        // created in the body must retain that iteration's bindings,
+                        // rather than observing the next iteration's redefinitions.
+                        let iteration = this.with_environment(this.current_env, |this| {
+                            if !this.condition_true(&ws.condition)? {
+                                return Ok(None);
                             }
+                            for statement in &ws.body {
+                                match this.run_stmt(statement)? {
+                                    Flow::Continue => {}
+                                    flow @ (Flow::LoopContinue | Flow::Break | Flow::Return(_)) =>
+                                        return Ok(Some(flow)),
+                                }
+                            }
+                            Ok(Some(Flow::Continue))
+                        })?;
+                        // Reclaim non-escaping iteration frames immediately, while
+                        // preserving a pending return value as a temporary GC root.
+                        match &iteration {
+                            Some(Flow::Return(value)) => this.collect_garbage(Some(value)),
+                            _ => this.collect_garbage(None),
+                        }
+                        match iteration {
+                            None | Some(Flow::Break) => break,
+                            Some(Flow::Continue) | Some(Flow::LoopContinue) => continue 'while_loop,
+                            Some(flow @ Flow::Return(_)) => return Ok(flow),
                         }
                     }
                     Ok(Flow::Continue)

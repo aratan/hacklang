@@ -71,7 +71,12 @@ fn assert_interpreter_native_parity(name: &str, source_text: &str) {
 
     let expected = interpreter_output(&interpreter.stdout);
     let actual = String::from_utf8(native.stdout).expect("native output must be UTF-8");
-    assert_eq!(actual, expected, "{name}: interpreter/native output differs");
+    assert_eq!(
+        actual,
+        expected,
+        "{name}: interpreter/native output differs; native stderr: {}",
+        String::from_utf8_lossy(&native.stderr)
+    );
 
     fs::remove_dir_all(directory).expect("remove isolated test directory");
 }
@@ -505,3 +510,31 @@ print tally;
 "#,
     );
 }
+
+#[test]
+fn many_escaped_closures_keep_distinct_loop_iteration_captures() {
+    assert_interpreter_native_parity(
+        "many_distinct_iteration_closures",
+        r#"
+let saved = @();
+let index = 0;
+while (index < 96) (
+    let captured = index;
+    let getter = || (captured);
+    saved[index] = getter;
+    index = index + 1;
+)
+let total = 0;
+let read_index = 0;
+while (read_index < 96) (
+    total = total + saved[read_index]();
+    read_index = read_index + 1;
+)
+print total;
+print saved[0]();
+print saved[47]();
+print saved[95]();
+"#,
+    );
+}
+

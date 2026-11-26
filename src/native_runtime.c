@@ -627,6 +627,34 @@ static void hl_collect(HlEnv *environment) {
     for (HlRootValue *node = root->value_roots; node; node = node->next)
         if (node->slot) hl_trace_value(*node->slot);
 
+    if (getenv("HL_DEBUG_GC")) {
+        fprintf(stderr, "GC root=%p current=%p\\n", (void *)root, (void *)environment);
+        for (HlEnv *scope = environment; scope; scope = scope->parent)
+            for (HlBinding *binding = scope->bindings; binding; binding = binding->next)
+                fprintf(stderr, "  binding %s tag=%d value=%p cell=%p\\n", binding->name,
+                    (int)binding->value.tag,
+                    binding->value.tag == HL_MAP ? (void *)binding->value.as.map :
+                    binding->value.tag == HL_CLOSURE ? (void *)binding->value.as.closure : NULL,
+                    (void *)binding->cell);
+        for (HlRootFrame *node = root->frame_roots; node; node = node->next) {
+            HlFrame *frame = node->frame;
+            if (!frame) continue;
+            for (size_t i = 0; i < frame->slot_count; ++i)
+                if (frame->slots[i].initialized)
+                    fprintf(stderr, "  frame slot %zu tag=%d map=%p\\n", i,
+                        (int)frame->slots[i].value.tag,
+                        frame->slots[i].value.tag == HL_MAP ? (void *)frame->slots[i].value.as.map : NULL);
+        }
+        for (HlClosure *closure = root->closures; closure; closure = closure->next)
+            fprintf(stderr, "  closure=%p marked=%d captures=%zu cell0=%p\\n",
+                (void *)closure, closure->marked, closure->capture_count,
+                closure->capture_count ? (void *)closure->captures[0] : NULL);
+        for (HlCell *cell = root->cells; cell; cell = cell->next)
+            fprintf(stderr, "  cell=%p marked=%d initialized=%d number=%g\\n",
+                (void *)cell, cell->marked, cell->initialized,
+                cell->initialized && cell->value.tag == HL_NUMBER ? cell->value.as.number : -999.0);
+    }
+
     HlCell **cell_link = &root->cells;
     while (*cell_link) {
         HlCell *cell = *cell_link;

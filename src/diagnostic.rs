@@ -9,6 +9,7 @@ pub enum DiagnosticPhase {
     TypeChecking,
     Lowering,
     NativeCodegen,
+    Runtime,
 }
 
 impl DiagnosticPhase {
@@ -19,6 +20,7 @@ impl DiagnosticPhase {
             Self::TypeChecking => "type_check",
             Self::Lowering => "lowering",
             Self::NativeCodegen => "native_codegen",
+            Self::Runtime => "runtime",
         }
     }
 }

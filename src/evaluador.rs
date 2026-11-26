@@ -1,6 +1,7 @@
 // src/evaluador.rs
 // Versión: rewrite applied
 use crate::ast::{AssignStatement, Expression, IndexAssignStatement, Program, Statement, LetStatement, PrintStatement};
+use crate::diagnostic::{Diagnostic, DiagnosticPhase, DiagnosticSeverity};
 use crate::lexer::Token;
 use std::collections::HashMap;
 
@@ -213,6 +214,19 @@ impl Evaluator {
             }
         }
         Ok(())
+    }
+
+    /// Structured counterpart to evaluate(); the legacy String API is preserved.
+    pub fn evaluate_diagnostic(&mut self, program: &Program) -> Result<(), Diagnostic> {
+        self.evaluate(program).map_err(|message| {
+            Diagnostic::new(
+                "HL-RUNTIME-001",
+                DiagnosticPhase::Runtime,
+                DiagnosticSeverity::Error,
+                message,
+                None,
+            )
+        })
     }
 
     fn run_stmt(&mut self, stmt: &Statement) -> Result<Flow, String> {
@@ -880,6 +894,22 @@ mod tests {
     fn test_recursive_lambda() {
         let ev = eval_program("let factorial = |n| n < 2 ? 1 : n * factorial(n - 1); let result = factorial(5);").unwrap();
         assert_eq!(ev.get_var("result"), Some(&Value::Number(120.0)));
+    }
+
+    #[test]
+    fn runtime_errors_expose_typed_diagnostics_without_fake_ranges() {
+        let mut lexer = crate::lexer::Lexer::new("print 1 / 0;".to_string());
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = crate::parser::Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+        let mut evaluator = Evaluator::new();
+
+        let diagnostic = evaluator.evaluate_diagnostic(&program).unwrap_err();
+        assert_eq!(diagnostic.code, "HL-RUNTIME-001");
+        assert_eq!(diagnostic.phase, DiagnosticPhase::Runtime);
+        assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
+        assert_eq!(diagnostic.range, None);
+        assert!(diagnostic.message.contains("Division by zero"));
     }
 
     #[test]

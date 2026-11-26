@@ -851,7 +851,7 @@ static HlEnv *hl_env_new_in_lane(HlEnv *parent, HlArenaLane *lane) {
     environment->max_eval_steps = UINT64_C(1000000);
     if (!parent) {
         const char *limit = getenv("HACKLANG_MAX_EVAL_STEPS");
-        if (limit && *limit) {
+        if (limit && *limit >= '0' && *limit <= '9') {
             char *end = NULL;
             unsigned long long parsed = strtoull(limit, &end, 10);
             if (end != limit && *end == '\0' && parsed > 0)

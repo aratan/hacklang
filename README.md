@@ -158,6 +158,11 @@ cargo run -- check examples/test.hl
 cargo run -- run --compact programa-compacto.hl
 cargo run -- run --format programa.hl
 cargo run -- check --diagnostics-json programa.hl
+
+# Límites defensivos configurables (256 por defecto)
+cargo run -- run --max-parse-depth 512 --max-eval-depth 128 programa.hl
+cargo run -- check --max-parse-depth 512 programa.hl
+cargo run -- build --max-parse-depth 512 programa.hl
 ```
 
 `hl build programa.hl [-o ejecutable]` genera un ejecutable nativo mediante GCC o Clang. El subconjunto nativo incluye números, booleanos, cadenas, variables, operadores, ternarios, `if`, `while`, `break`/`continue`, `print`, arrays, mapas, lectura y asignación indexada (también anidada) y `len(x)` para strings, arrays y mapas. Las llamadas directas y dinámicas a funciones/closures están soportadas, incluidas capturas, llamadas de orden superior y recursión. `len` es el builtin de colecciones implementado actualmente.
@@ -399,7 +404,7 @@ Limitaciones actuales: los mapas se representan como pares ordenados y su búsqu
 
 ## Modelo de memoria y ejecución
 
-- **Stack (pila):** la evaluación de expresiones y las llamadas a funciones usan recursión de Rust; por tanto, la pila de llamadas real es la pila nativa del proceso. El evaluador limita la profundidad a 256 niveles y devuelve un error controlado al superar el límite. Los bucles del lenguaje se ejecutan iterativamente. HackLang todavía no tiene una VM ni una pila de operandos propia. El parser también aplica límites de 256 niveles a expresiones y sentencias anidadas.
+- **Stack (pila):** la evaluación de expresiones y las llamadas a funciones usan recursión de Rust; por tanto, la pila de llamadas real es la pila nativa del proceso. El evaluador y el parser aplican límites defensivos de 256 niveles por defecto y devuelven errores controlados al superarlos. Se pueden ajustar con `--max-eval-depth N` (solo `run`) y `--max-parse-depth N` (`run`, `check` y `build`); ambos requieren enteros positivos. Estos límites no equivalen a límites de instrucciones, memoria o tiempo, que siguen pendientes. Los bucles del lenguaje se ejecutan iterativamente. HackLang todavía no tiene una VM ni una pila de operandos propia.
 - **Heap (montículo):** el AST usa `Box` para nodos recursivos y `Vec` para listas; cadenas, mapas y tablas de variables usan estructuras propiedad de Rust. El arena de entornos también vive en el heap. Un recolector mark-and-sweep recupera frames no alcanzables y reutiliza sus posiciones; no es un GC general de objetos, porque los valores los gestiona Rust.
 - **Closures:** guardan un ID de entorno, no una copia completa del `HashMap`. La cadena de entornos proporciona el alcance léxico y permite recursividad.
 - **Liberación:** Rust libera automáticamente los valores cuando se destruye el evaluador. El arena recolecta frames inalcanzables después de cada sentencia, incluyendo el seguimiento de closures contenidas en valores y de closures devueltas temporalmente. No hay un garbage collector general para todos los objetos: Rust gestiona la vida de cadenas, arrays, mapas y AST.

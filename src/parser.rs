@@ -1078,6 +1078,22 @@ mod tests {
     }
 
     #[test]
+    fn parser_returns_statement_and_expression_span_sidecar() {
+        let mut lexer = crate::lexer::Lexer::new("\nlet result = true + 2;".to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = Parser::new_spanned(tokens);
+        let (program, spans) = parser.parse_program_with_spans().unwrap();
+        assert_eq!(program.statements.len(), 1);
+        assert_eq!(spans.statements.len(), 1);
+        assert_eq!(spans.expressions.len(), 1);
+        let statement = spans.statements[0].unwrap();
+        let expression = spans.expressions[0].unwrap();
+        assert_eq!((statement.line, statement.column), (2, 1));
+        assert_eq!((expression.line, expression.column), (2, 13));
+        assert_eq!(expression.end, 21);
+    }
+
+    #[test]
     fn spanned_parser_reports_line_and_column() {
         let mut lexer = crate::lexer::Lexer::new("\nlet = 1;".to_string());
         let tokens = lexer.tokenize_spanned().unwrap();

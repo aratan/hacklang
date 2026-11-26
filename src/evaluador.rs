@@ -250,6 +250,12 @@ impl Evaluator {
                             }
                             Ok(Some(Flow::Continue))
                         })?;
+                        // Reclaim non-escaping iteration frames immediately, while
+                        // preserving a pending return value as a temporary GC root.
+                        match &iteration {
+                            Some(Flow::Return(value)) => this.collect_garbage(Some(value)),
+                            _ => this.collect_garbage(None),
+                        }
                         match iteration {
                             None | Some(Flow::Break) => break,
                             Some(Flow::Continue) | Some(Flow::LoopContinue) => continue 'while_loop,

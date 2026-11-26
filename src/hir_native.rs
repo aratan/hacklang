@@ -903,6 +903,9 @@ mod tests {
         let c = generate_c(&lowered, &memory).unwrap();
         assert!(c.contains("static void hl_eval_step(HlEnv *environment)"));
         assert!(c.contains("HACKLANG_MAX_EVAL_STEPS"));
+        assert!(c.contains("HACKLANG_MAX_ARENA_BYTES"));
+        assert!(c.contains("arena_bytes_reserved"));
+        assert!(c.contains("se agotó el presupuesto de memoria de arenas nativas"));
         assert!(c.contains("hl_eval_step(env);"));
         assert!(c.contains("se agotó el presupuesto de instrucciones de ejecución nativa"));
     }

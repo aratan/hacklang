@@ -804,7 +804,7 @@ static void record_failure_cleanup(void *context) {
     cleanup_order = cleanup_order * 10 + *(int *)context;
 }
 static void verify_failure_cleanup(void) {
-    _Exit(cleanup_order == 21 ? 0 : 90);
+    fprintf(stderr, "cleanup_order=%d\\n", cleanup_order);
 }
 int main(void) {
     atexit(verify_failure_cleanup);
@@ -838,14 +838,19 @@ int main(void) {
         );
         let run = Command::new(&executable).output().expect("run C runtime failure test");
         assert!(
-            run.status.success(),
-            "runtime error skipped cleanup or ran it in the wrong order; stderr: {}",
-            String::from_utf8_lossy(&run.stderr)
+            !run.status.success(),
+            "forced runtime failure unexpectedly returned success"
+        );
+        let stderr = String::from_utf8_lossy(&run.stderr);
+        assert!(
+            stderr.contains("forced test failure"),
+            "runtime failure diagnostic was not emitted: {stderr}"
         );
         assert!(
-            String::from_utf8_lossy(&run.stderr).contains("forced test failure"),
-            "runtime failure diagnostic was not emitted"
+            stderr.contains("cleanup_order=21"),
+            "cleanup callbacks did not run inner-to-outer before process exit: {stderr}"
         );
+        assert_no_sanitizer_report(&run.stderr, "runtime_failure_cleanup");
         let _ = fs::remove_dir_all(directory);
     }
 

@@ -147,6 +147,46 @@ mod tests {
     };
 
     #[test]
+    fn native_compilation_returns_typed_hir_error_with_real_source_range() {
+        let mut lexer = crate::lexer::Lexer::new("print missing;".to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = crate::parser::Parser::new_spanned(tokens);
+        let (program, spans) = parser.parse_program_with_spans().unwrap();
+
+        let diagnostic = compile_to_executable_with_spans_diagnostic(
+            &program,
+            &spans,
+            Path::new("/nonexistent/hacklang-source.hl"),
+            None,
+        ).unwrap_err();
+
+        assert_eq!(diagnostic.code, "HL-HIR-001");
+        assert_eq!(diagnostic.phase, DiagnosticPhase::Lowering);
+        assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
+        assert!(diagnostic.range.is_some());
+    }
+
+    #[test]
+    fn native_compilation_errors_have_codegen_phase_without_fake_source_range() {
+        let mut lexer = crate::lexer::Lexer::new(String::new());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = crate::parser::Parser::new_spanned(tokens);
+        let (program, spans) = parser.parse_program_with_spans().unwrap();
+
+        let diagnostic = compile_to_executable_with_spans_diagnostic(
+            &program,
+            &spans,
+            Path::new("/nonexistent/hacklang-source.hl"),
+            None,
+        ).unwrap_err();
+
+        assert_eq!(diagnostic.code, "HL-NATIVE-001");
+        assert_eq!(diagnostic.phase, DiagnosticPhase::NativeCodegen);
+        assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
+        assert_eq!(diagnostic.range, None);
+    }
+
+    #[test]
     fn c_runtime_cleanup_callbacks_run_lifo_and_transfer_without_duplication() {
         let directory = temporary_directory().expect("temporary directory");
         let c_file = directory.join("cleanup_runtime.c");

@@ -38,6 +38,10 @@ static void record_cleanup(void *context) {
     (void)write(cleanup_fd, &marker, 1);
 }
 
+static void noop_cleanup(void *context) {
+    (void)context;
+}
+
 static size_t lane_block_count(const HlArenaLane *lane) {
     size_t count = 0;
     for (const HlArenaBlock *block = lane->blocks; block; block = block->next) ++count;
@@ -47,6 +51,50 @@ static size_t lane_block_count(const HlArenaLane *lane) {
 int main(void) {
     HlEnv *root = hl_env_new(NULL);
     if (!root) return 10;
+
+    /* The auxiliary heap budget tracks live bytes, not cumulative allocations. */
+    const uint64_t heap_baseline = root->heap_bytes_live;
+    for (size_t i = 0; i < 256; ++i) {
+        void *scratch = hl_heap_alloc(root, 128);
+        if (!scratch) return 27;
+        memset(scratch, (int)i, 128);
+        if (((uintptr_t)scratch % _Alignof(max_align_t)) != 0) return 28;
+        hl_heap_free(scratch);
+        if (root->heap_bytes_live != heap_baseline) return 29;
+    }
+
+    void *resized = hl_heap_alloc(root, 32);
+    if (!resized) return 30;
+    const uint64_t before_grow = root->heap_bytes_live;
+    resized = hl_heap_realloc(root, resized, 96);
+    if (!resized || root->heap_bytes_live != before_grow + 64) return 31;
+    resized = hl_heap_realloc(root, resized, 8);
+    if (!resized || root->heap_bytes_live != before_grow - 24) return 32;
+    hl_heap_free(resized);
+    if (root->heap_bytes_live != heap_baseline) return 33;
+
+    /* A child scope shares the root budget and releases its registrations. */
+    HlEnv *budget_child = hl_env_new(root);
+    if (!budget_child) return 34;
+    void *child_memory = hl_heap_alloc(budget_child, 64);
+    if (!child_memory || root->heap_bytes_live <= heap_baseline) return 35;
+    hl_heap_free(child_memory);
+    if (root->heap_bytes_live != heap_baseline) return 36;
+    if (!hl_env_defer(budget_child, noop_cleanup, NULL)) return 37;
+    hl_env_free(budget_child);
+    if (root->heap_bytes_live != heap_baseline) return 38;
+
+    /* The limit is enforced across live allocations and can be recovered
+     * after the rejected allocation is handled by the caller. */
+    const uint64_t original_heap_limit = root->max_heap_bytes;
+    root->max_heap_bytes = heap_baseline + sizeof(HlHeapHeader) + 128;
+    void *limited = hl_heap_alloc(root, 128);
+    if (!limited) return 39;
+    if (hl_heap_alloc(root, 1) != NULL || !root->heap_limit_exceeded) return 40;
+    root->heap_limit_exceeded = 0;
+    hl_heap_free(limited);
+    root->max_heap_bytes = original_heap_limit;
+    if (root->heap_bytes_live != heap_baseline) return 41;
 
     char *payload = (char *)malloc(16385);
     if (!payload) return 11;
@@ -71,6 +119,14 @@ int main(void) {
      * Collection must unlink it and destroy its private value lane. */
     hl_collect(root);
     if (root->cells != NULL) return 17;
+    if (root->heap_bytes_live != heap_baseline) return 42;
+
+    /* Unreachable closure descriptors and their capture arrays are charged
+     * and reclaimed by the same tracing collector. */
+    HlValue unreachable_closure = hl_closure_new(root, 0, NULL, 0);
+    if (unreachable_closure.tag != HL_CLOSURE || !root->closures) return 43;
+    hl_collect(root);
+    if (root->closures != NULL || root->heap_bytes_live != heap_baseline) return 44;
 
     /* A fatal runtime error must unwind every nested environment exactly once,
      * running child cleanups before parent cleanups. The child process lets the

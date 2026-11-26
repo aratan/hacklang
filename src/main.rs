@@ -150,7 +150,7 @@ fn run() -> ExitCode {
 
     if command == Command::Build {
         let output = cli.output.as_deref().map(std::path::Path::new);
-        match native::compile_to_executable(&ast, std::path::Path::new(filename), output) {
+        match native::compile_to_executable_with_spans(&ast, &source_spans, std::path::Path::new(filename), output) {
             Ok(executable) => {
                 println!("Ejecutable nativo generado: {}", executable.display());
                 return ExitCode::SUCCESS;

@@ -478,7 +478,7 @@ pub fn lower_with_spans(program: &AstProgram, spans: &AstSpanMap) -> Result<Prog
     program.functions = crate::capture::analyze(&program)
         .map_err(|error| LowerError { message: error.message, range: None })?;
     program.capture_storage = crate::capture::plan_storage(&program)
-        .map_err(|error| LowerError { message: error.message })?;
+        .map_err(|error| LowerError { message: error.message, range: None })?;
     Ok(program)
 }
 

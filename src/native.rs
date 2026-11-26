@@ -1893,4 +1893,25 @@ print saved[0]["call"]();
         let _ = fs::remove_dir_all(directory);
     }
 
+
+    #[test]
+    fn native_build_preserves_source_range_for_lowering_diagnostics() {
+        let source = "return 1;";
+        let mut lexer = crate::lexer::Lexer::new(source.to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = crate::parser::Parser::new_spanned(tokens);
+        let (program, spans) = parser.parse_program_with_spans().unwrap();
+
+        let error = compile_to_executable_with_spans(
+            &program,
+            &spans,
+            Path::new("unused.hl"),
+            Some(Path::new("unused.out")),
+        ).unwrap_err();
+
+        assert!(error.contains("return fuera de una función"), "{error}");
+        assert!(error.contains("línea 1, columna 1"), "{error}");
+        assert!(error.contains("rango 0.."), "{error}");
+    }
+
 }

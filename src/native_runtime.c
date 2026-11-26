@@ -155,6 +155,9 @@ struct HlEnv {
     uint64_t max_eval_steps;
     uint64_t arena_bytes_reserved;
     uint64_t max_arena_bytes;
+    uint64_t heap_bytes_live;
+    uint64_t max_heap_bytes;
+    int heap_limit_exceeded;
     HlArenaLane *lane;
     HlArenaBlock *lane_mark_block;
     size_t lane_mark_used;
@@ -167,6 +170,77 @@ struct HlEnv {
     int has_source_range;
 };
 
+static HlEnv *hl_env_root(HlEnv *environment);
+
+typedef struct HlHeapHeader {
+    HlEnv *root;
+    uint64_t charged_bytes;
+    max_align_t alignment;
+} HlHeapHeader;
+
+/* Auxiliary heap allocations are charged to the root execution environment.
+ * The header preserves the owner so cleanup callbacks can release resources
+ * without needing an environment argument. */
+static void *hl_heap_alloc(HlEnv *environment, size_t size) {
+    if (size > SIZE_MAX - sizeof(HlHeapHeader)) return NULL;
+    HlEnv *root = hl_env_root(environment);
+    uint64_t charge = (uint64_t)(sizeof(HlHeapHeader) + size);
+    if (root && (root->heap_bytes_live > root->max_heap_bytes ||
+        charge > root->max_heap_bytes - root->heap_bytes_live)) {
+        root->heap_limit_exceeded = 1;
+        return NULL;
+    }
+    HlHeapHeader *header = (HlHeapHeader *)malloc(sizeof(HlHeapHeader) + size);
+    if (!header) return NULL;
+    header->root = root;
+    header->charged_bytes = charge;
+    if (root) root->heap_bytes_live += charge;
+    return (void *)(header + 1);
+}
+static void *hl_heap_calloc(HlEnv *environment, size_t count, size_t size) {
+    if (count && size > SIZE_MAX / count) return NULL;
+    size_t total = count * size;
+    void *memory = hl_heap_alloc(environment, total);
+    if (memory) memset(memory, 0, total);
+    return memory;
+}
+static void hl_heap_free(void *memory) {
+    if (!memory) return;
+    HlHeapHeader *header = ((HlHeapHeader *)memory) - 1;
+    if (header->root) {
+        if (header->root->heap_bytes_live >= header->charged_bytes)
+            header->root->heap_bytes_live -= header->charged_bytes;
+        else
+            header->root->heap_bytes_live = 0;
+    }
+    free(header);
+}
+static void *hl_heap_realloc(HlEnv *environment, void *memory, size_t size) {
+    if (!memory) return hl_heap_alloc(environment, size);
+    if (size == 0) { hl_heap_free(memory); return NULL; }
+    if (size > SIZE_MAX - sizeof(HlHeapHeader)) return NULL;
+    HlHeapHeader *old_header = ((HlHeapHeader *)memory) - 1;
+    HlEnv *root = old_header->root;
+    uint64_t new_charge = (uint64_t)(sizeof(HlHeapHeader) + size);
+    uint64_t old_charge = old_header->charged_bytes;
+    if (root && new_charge > old_charge &&
+        (root->heap_bytes_live > root->max_heap_bytes ||
+         new_charge - old_charge > root->max_heap_bytes - root->heap_bytes_live)) {
+        root->heap_limit_exceeded = 1;
+        return NULL;
+    }
+    HlHeapHeader *new_header = (HlHeapHeader *)realloc(old_header, sizeof(HlHeapHeader) + size);
+    if (!new_header) return NULL;
+    new_header->root = root;
+    new_header->charged_bytes = new_charge;
+    if (root) {
+        if (new_charge >= old_charge) root->heap_bytes_live += new_charge - old_charge;
+        else root->heap_bytes_live -= old_charge - new_charge;
+    }
+    (void)environment;
+    return (void *)(new_header + 1);
+}
+
 static void hl_lane_init(HlArenaLane *lane);
 static void hl_lane_destroy(HlArenaLane *lane);
 
@@ -176,7 +250,7 @@ static void hl_lane_destroy(HlArenaLane *lane);
 static void hl_cleanup_binding_string(void *context) {
     HlBinding *binding = (HlBinding *)context;
     if (!binding) return;
-    free(binding->string_storage);
+    hl_heap_free(binding->string_storage);
     binding->string_storage = NULL;
     binding->string_capacity = 0;
     binding->ownership_token = 0;
@@ -227,6 +301,9 @@ static void hl_clear_source_range(HlEnv *environment) {
 }
 
 static void hl_fail(HlEnv *environment, const char *message) {
+    HlEnv *root = hl_env_root(environment);
+    if (root && root->heap_limit_exceeded)
+        message = "se agotó el presupuesto de memoria auxiliar del runtime nativo";
     const HlEnv *source = environment;
     while (source && source->has_source_range == 0) source = source->parent;
     const char *diagnostics = getenv("HACKLANG_DIAGNOSTICS");
@@ -274,7 +351,7 @@ static void hl_frame_write_or_fail(HlEnv *env, HlEnv *frame_owner,
  * cancellation, transfer, or execution by hl_env_free. */
 HlAllocation *hl_env_defer(HlEnv *environment, HlCleanupFn cleanup, void *context) {
     if (!environment || environment->closing || !cleanup) return NULL;
-    HlAllocation *entry = (HlAllocation *)malloc(sizeof(HlAllocation));
+    HlAllocation *entry = (HlAllocation *)hl_heap_alloc(environment, sizeof(HlAllocation));
     if (!entry) return NULL;
     entry->cleanup = cleanup;
     entry->context = context;
@@ -324,7 +401,7 @@ int hl_env_transfer(HlEnv *from, HlEnv *to, HlAllocation *entry) {
 int hl_env_cancel(HlEnv *environment, HlAllocation *entry) {
     if (!hl_cleanup_detach(environment, entry)) return 0;
     hl_ownership_invalidate_allocation(entry);
-    free(entry);
+    hl_heap_free(entry);
     return 1;
 }
 
@@ -359,10 +436,10 @@ int hl_ownership_acquire(HlEnv *environment, uint64_t site_id, uint64_t *token_o
     HlEnv *root = hl_env_root(environment);
     if (!root || !environment || environment->closing || !token_out || !cleanup
         || root->next_ownership_id == UINT64_MAX) return 0;
-    HlOwnershipRecord *record = (HlOwnershipRecord *)malloc(sizeof(HlOwnershipRecord));
+    HlOwnershipRecord *record = (HlOwnershipRecord *)hl_heap_alloc(environment, sizeof(HlOwnershipRecord));
     if (!record) return 0;
     HlAllocation *allocation = hl_env_defer(environment, cleanup, context);
-    if (!allocation) { free(record); return 0; }
+    if (!allocation) { hl_heap_free(record); return 0; }
     record->id = ++root->next_ownership_id;
     record->site_id = site_id;
     record->owner = environment;
@@ -447,25 +524,25 @@ static void hl_env_free(HlEnv *environment) {
         HlAllocation *next = allocation->next;
         hl_ownership_invalidate_allocation(allocation);
         allocation->cleanup(allocation->context);
-        free(allocation);
+        hl_heap_free(allocation);
         allocation = next;
     }
     /* Token tombstones live in the root until all descendant callbacks have run. */
     if (!environment->parent) {
         HlRootFrame *frame_root = environment->frame_roots;
-        while (frame_root) { HlRootFrame *next = frame_root->next; free(frame_root); frame_root = next; }
+        while (frame_root) { HlRootFrame *next = frame_root->next; hl_heap_free(frame_root); frame_root = next; }
         environment->frame_roots = NULL;
         HlRootValue *value_root = environment->value_roots;
-        while (value_root) { HlRootValue *next = value_root->next; free(value_root); value_root = next; }
+        while (value_root) { HlRootValue *next = value_root->next; hl_heap_free(value_root); value_root = next; }
         environment->value_roots = NULL;
         HlClosure *closure = environment->closures;
-        while (closure) { HlClosure *next = closure->next; free(closure->captures); free(closure); closure = next; }
+        while (closure) { HlClosure *next = closure->next; hl_heap_free(closure->captures); hl_heap_free(closure); closure = next; }
         environment->closures = NULL;
         HlCell *cell = environment->cells;
-        while (cell) { HlCell *next = cell->next; hl_lane_destroy(&cell->value_lane); free(cell); cell = next; }
+        while (cell) { HlCell *next = cell->next; hl_lane_destroy(&cell->value_lane); hl_heap_free(cell); cell = next; }
         environment->cells = NULL;
         HlOwnershipRecord *record = environment->ownership_records;
-        while (record) { HlOwnershipRecord *next = record->next; free(record); record = next; }
+        while (record) { HlOwnershipRecord *next = record->next; hl_heap_free(record); record = next; }
         environment->ownership_records = NULL;
     }
     /* Binding-owned buffers are released by registered callbacks above. */
@@ -485,7 +562,7 @@ static HlValue hl_clone_value_in_lane(HlEnv *environment, HlArenaLane *lane, HlV
 static HlCell *hl_cell_new(HlEnv *environment, HlValue initial, int initialized) {
     HlEnv *root = hl_env_root(environment);
     if (!root || root->closing) return NULL;
-    HlCell *cell = (HlCell *)malloc(sizeof(HlCell));
+    HlCell *cell = (HlCell *)hl_heap_alloc(environment, sizeof(HlCell));
     if (!cell) hl_fail(environment, "memoria agotada al crear celda capturada");
     cell->value = initial;
     cell->owner = root;
@@ -580,11 +657,11 @@ static HlValue hl_closure_new(HlEnv *environment, uint32_t function_id,
         const char *const *capture_names, size_t capture_count) {
     HlEnv *root = hl_env_root(environment);
     if (!root || root->closing) hl_fail(environment, "entorno raíz no disponible para closure");
-    HlClosure *closure = (HlClosure *)calloc(1, sizeof(HlClosure));
+    HlClosure *closure = (HlClosure *)hl_heap_calloc(environment, 1, sizeof(HlClosure));
     if (!closure) hl_fail(environment, "memoria agotada al crear closure");
     if (capture_count) {
-        closure->captures = (HlCell **)calloc(capture_count, sizeof(HlCell *));
-        if (!closure->captures) { free(closure); hl_fail(environment, "memoria agotada al capturar bindings"); }
+        closure->captures = (HlCell **)hl_heap_calloc(environment, capture_count, sizeof(HlCell *));
+        if (!closure->captures) { hl_heap_free(closure); hl_fail(environment, "memoria agotada al capturar bindings"); }
     }
     closure->function_id = function_id;
     closure->capture_count = capture_count;
@@ -650,7 +727,7 @@ static void hl_trace_closure(HlClosure *closure) {
 static void hl_root_frame_push(HlEnv *environment, HlFrame *frame) {
     HlEnv *root = hl_env_root(environment);
     if (!root || root->closing || !frame) return;
-    HlRootFrame *node = (HlRootFrame *)malloc(sizeof(HlRootFrame));
+    HlRootFrame *node = (HlRootFrame *)hl_heap_alloc(environment, sizeof(HlRootFrame));
     if (!node) hl_fail(environment, "memoria agotada al registrar el frame activo");
     node->frame = frame;
     node->next = root->frame_roots;
@@ -661,12 +738,12 @@ static void hl_root_frame_pop(HlEnv *environment) {
     if (!root || !root->frame_roots) return;
     HlRootFrame *node = root->frame_roots;
     root->frame_roots = node->next;
-    free(node);
+    hl_heap_free(node);
 }
 static void hl_root_value_push(HlEnv *environment, HlValue *slot) {
     HlEnv *root = hl_env_root(environment);
     if (!root || root->closing || !slot) return;
-    HlRootValue *node = (HlRootValue *)malloc(sizeof(HlRootValue));
+    HlRootValue *node = (HlRootValue *)hl_heap_alloc(environment, sizeof(HlRootValue));
     if (!node) hl_fail(environment, "memoria agotada al registrar una raíz temporal");
     node->slot = slot;
     node->next = root->value_roots;
@@ -680,7 +757,7 @@ static void hl_root_value_pop(HlEnv *environment, HlValue *slot) {
     if (!*link) return;
     HlRootValue *node = *link;
     *link = node->next;
-    free(node);
+    hl_heap_free(node);
 }
 
 static void hl_collect(HlEnv *environment) {
@@ -703,7 +780,7 @@ static void hl_collect(HlEnv *environment) {
     HlCell **cell_link = &root->cells;
     while (*cell_link) {
         HlCell *cell = *cell_link;
-        if (!cell->marked) { *cell_link = cell->next; hl_lane_destroy(&cell->value_lane); free(cell); continue; }
+        if (!cell->marked) { *cell_link = cell->next; hl_lane_destroy(&cell->value_lane); hl_heap_free(cell); continue; }
         cell->marked = 0;
         cell_link = &cell->next;
     }
@@ -712,8 +789,8 @@ static void hl_collect(HlEnv *environment) {
         HlClosure *closure = *closure_link;
         if (!closure->marked) {
             *closure_link = closure->next;
-            free(closure->captures);
-            free(closure);
+            hl_heap_free(closure->captures);
+            hl_heap_free(closure);
             continue;
         }
         closure->marked = 0;
@@ -858,6 +935,9 @@ static HlEnv *hl_env_new_in_lane(HlEnv *parent, HlArenaLane *lane) {
     environment->max_eval_steps = UINT64_C(1000000);
     environment->arena_bytes_reserved = 0;
     environment->max_arena_bytes = UINT64_C(268435456);
+    environment->heap_bytes_live = 0;
+    environment->max_heap_bytes = UINT64_C(268435456);
+    environment->heap_limit_exceeded = 0;
     if (!parent) {
         const char *limit = getenv("HACKLANG_MAX_EVAL_STEPS");
         if (limit && *limit >= '0' && *limit <= '9') {
@@ -872,6 +952,13 @@ static HlEnv *hl_env_new_in_lane(HlEnv *parent, HlArenaLane *lane) {
             unsigned long long parsed = strtoull(memory_limit, &end, 10);
             if (end != memory_limit && *end == '\0' && parsed > 0)
                 environment->max_arena_bytes = (uint64_t)parsed;
+        }
+        const char *heap_limit = getenv("HACKLANG_MAX_HEAP_BYTES");
+        if (heap_limit && *heap_limit >= '0' && *heap_limit <= '9') {
+            char *end = NULL;
+            unsigned long long parsed = strtoull(heap_limit, &end, 10);
+            if (end != heap_limit && *end == '\0' && parsed > 0)
+                environment->max_heap_bytes = (uint64_t)parsed;
         }
     }
     environment->lane = lane;
@@ -944,7 +1031,7 @@ static HlValue hl_store_value(HlBinding *binding, HlValue value, HlStorageClass 
             hl_release_binding_resource(binding, "no se pudo liberar la propiedad anterior del binding");
             stored = hl_clone_value(binding->owner, value);
         }
-        free(binding->string_storage);
+        hl_heap_free(binding->string_storage);
         binding->string_storage = NULL;
         binding->string_capacity = 0;
         return stored;
@@ -959,7 +1046,7 @@ static HlValue hl_store_value(HlBinding *binding, HlValue value, HlStorageClass 
         if (storage == HL_STORAGE_SCOPE) {
             hl_release_binding_resource(binding, "no se pudo liberar la propiedad anterior de cadena");
             char *scoped = hl_copy_string(binding->owner, value.as.string);
-            free(binding->string_storage);
+            hl_heap_free(binding->string_storage);
             binding->string_storage = NULL;
             binding->string_capacity = 0;
             value.as.string = scoped;
@@ -976,27 +1063,27 @@ static HlValue hl_store_value(HlBinding *binding, HlValue value, HlStorageClass 
         }
 
         const size_t size = strlen(value.as.string) + 1;
-        char *incoming = (char *)malloc(size);
+        char *incoming = (char *)hl_heap_alloc(binding->owner, size);
         if (!incoming) hl_fail(binding->owner, "memoria agotada al copiar una cadena");
         memcpy(incoming, value.as.string, size);
 
         if (size > binding->string_capacity) {
-            char *grown = (char *)realloc(binding->string_storage, size);
+            char *grown = (char *)hl_heap_realloc(binding->owner, binding->string_storage, size);
             if (!grown) {
-                free(incoming);
+                hl_heap_free(incoming);
                 hl_fail(binding->owner, "memoria agotada al ampliar una cadena");
             }
             binding->string_storage = grown;
             binding->string_capacity = size;
         }
         memcpy(binding->string_storage, incoming, size);
-        free(incoming);
+        hl_heap_free(incoming);
         value.as.string = binding->string_storage;
         return value;
     }
 
     hl_release_binding_resource(binding, "no se pudo liberar la propiedad anterior del binding");
-    free(binding->string_storage);
+    hl_heap_free(binding->string_storage);
     binding->string_storage = NULL;
     binding->string_capacity = 0;
     return value;

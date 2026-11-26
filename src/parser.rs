@@ -1041,7 +1041,7 @@ mod tests {
 
     #[test]
     fn spanned_parser_reports_missing_grouping_parenthesis_at_eof() {
-        let mut lexer = crate::lexer::Lexer::new("\\nlet value = (1 + 2".to_string());
+        let mut lexer = crate::lexer::Lexer::new("\nlet value = (1 + 2".to_string());
         let tokens = lexer.tokenize_spanned().unwrap();
         let mut parser = Parser::new_spanned(tokens);
         let error = parser.parse_program().unwrap_err();
@@ -1051,7 +1051,7 @@ mod tests {
 
     #[test]
     fn spanned_parser_reports_unclosed_statement_call_at_eof() {
-        let mut lexer = crate::lexer::Lexer::new("\\nprocess(1".to_string());
+        let mut lexer = crate::lexer::Lexer::new("\nprocess(1".to_string());
         let tokens = lexer.tokenize_spanned().unwrap();
         let mut parser = Parser::new_spanned(tokens);
         let error = parser.parse_program().unwrap_err();

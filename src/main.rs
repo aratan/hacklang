@@ -291,6 +291,14 @@ mod cli_tests {
     }
 
     #[test]
+    fn build_allows_json_diagnostics_but_not_formatting() {
+        let cli = parse_args(&args(&["build", "--diagnostics-json", "program.hl"])).unwrap();
+        assert_eq!(cli.command, Some(Command::Build));
+        assert!(cli.diagnostics_json);
+        assert!(parse_args(&args(&["build", "--format", "program.hl"])).is_err());
+    }
+
+    #[test]
     fn rejects_duplicate_source_files_and_invalid_flag_combinations() {
         assert!(parse_args(&args(&["run", "a.hl", "b.hl"])).is_err());
         assert!(parse_args(&args(&["check", "--format", "a.hl"])).is_err());

@@ -505,3 +505,23 @@ print tally;
 "#,
     );
 }
+
+#[test]
+fn closures_created_in_separate_loop_iterations_keep_distinct_captures() {
+    assert_interpreter_native_parity(
+        "distinct_iteration_closures",
+        r#"
+let saved = @();
+let index = 0;
+while (index < 2) (
+    let captured = index;
+    let getter = || (captured);
+    saved[index] = getter;
+    index = index + 1;
+)
+print saved[0]();
+print saved[1]();
+"#,
+    );
+}
+

@@ -34,8 +34,23 @@ pub fn compile_to_executable(
     source_path: &Path,
     requested_output: Option<&Path>,
 ) -> Result<PathBuf, String> {
-    // HIR es la única entrada del backend nativo.
-    let hir = crate::hir::lower(program)
+    compile_to_executable_with_spans(
+        program,
+        &crate::ast::AstSpanMap::default(),
+        source_path,
+        requested_output,
+    )
+}
+
+pub fn compile_to_executable_with_spans(
+    program: &Program,
+    source_spans: &crate::ast::AstSpanMap,
+    source_path: &Path,
+    requested_output: Option<&Path>,
+) -> Result<PathBuf, String> {
+    // HIR es la única entrada del backend nativo. AST→HIR errors retain the
+    // source range of the statement/expression that caused the lowering failure.
+    let hir = crate::hir::lower_with_spans(program, source_spans)
         .map_err(|error| format!("No se pudo construir HIR: {error}"))?;
     // HIR codegen emits function bodies, activation frames, capture cells and
     // the runtime dispatcher. Memory planning remains conservative: no value

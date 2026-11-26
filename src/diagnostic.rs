@@ -60,12 +60,12 @@ impl Diagnostic {
         let range = self.range.map_or_else(
             || "null".to_string(),
             |span| format!(
-                "{{\\"start\\":{},\\"end\\":{},\\"line\\":{},\\"column\\":{},\\"endLine\\":{},\\"endColumn\\":{}}}",
+                "{{\"start\":{},\"end\":{},\"line\":{},\"column\":{},\"endLine\":{},\"endColumn\":{}}}",
                 span.start, span.end, span.line, span.column, span.end_line, span.end_column
             ),
         );
         format!(
-            "{{\\"code\\":\\"{}\\",\\"phase\\":\\"{}\\",\\"severity\\":\\"{}\\",\\"message\\":\\"{}\\",\\"range\\":{}}}",
+            "{{\"code\":\"{}\",\"phase\":\"{}\",\"severity\":\"{}\",\"message\":\"{}\",\"range\":{}}}",
             self.code,
             self.phase.as_str(),
             self.severity.as_str(),
@@ -84,7 +84,7 @@ pub fn json_escape(value: &str) -> String {
             '\n' => escaped.push_str("\\n"),
             '\r' => escaped.push_str("\\r"),
             '\t' => escaped.push_str("\\t"),
-            ch if ch <= '\\u{1f}' => escaped.push_str(&format!("\\u{:04x}", ch as u32)),
+            ch if ch <= '\u{1f}' => escaped.push_str(&format!("\\u{:04x}", ch as u32)),
             ch => escaped.push(ch),
         }
     }
@@ -111,14 +111,17 @@ mod tests {
             None,
         );
         let json = diagnostic.to_json();
-        assert!(json.contains("\\"code\\":\\"HL-LEX-001\\""));
-        assert!(json.contains("\\"phase\\":\\"lexing\\""));
-        assert!(json.contains("\\"severity\\":\\"error\\""));
-        assert!(json.contains("\\"range\\":null"));
+        assert!(json.contains("\"code\":\"HL-LEX-001\""));
+        assert!(json.contains("\"phase\":\"lexing\""));
+        assert!(json.contains("\"severity\":\"error\""));
+        assert!(json.contains("\"range\":null"));
     }
 
     #[test]
     fn diagnostic_json_escapes_control_characters() {
-        assert_eq!(json_escape("quote: \\" slash: \\\\ newline:\n tab:\t"), r#"quote: \\" slash: \\\\ newline:\\n tab:\\t"#);
+        assert_eq!(
+            json_escape("quote: \" slash: \\ newline:\n tab:\t"),
+            r#"quote: \" slash: \\ newline:\n tab:\t"#
+        );
     }
 }

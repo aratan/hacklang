@@ -97,6 +97,7 @@ pub struct TypeChecker {
     expression_spans: Vec<Option<SourceSpan>>,
     statement_span_cursor: usize,
     expression_span_cursor: usize,
+    infer_depth: usize,
     current_statement_span: Option<SourceSpan>,
     current_expression_span: Option<SourceSpan>,
 }
@@ -111,6 +112,7 @@ impl TypeChecker {
             expression_spans: Vec::new(),
             statement_span_cursor: 0,
             expression_span_cursor: 0,
+            infer_depth: 0,
             current_statement_span: None,
             current_expression_span: None,
         }
@@ -259,10 +261,17 @@ impl TypeChecker {
     }
 
     fn infer(&mut self, expr: &Expression) -> Type {
+        let is_root = self.infer_depth == 0;
         let previous_span = self.current_expression_span;
-        self.current_expression_span = self.next_expression_span();
+        if is_root {
+            self.current_expression_span = self.next_expression_span();
+        }
+        self.infer_depth += 1;
         let inferred = self.infer_inner(expr);
-        self.current_expression_span = previous_span;
+        self.infer_depth -= 1;
+        if is_root {
+            self.current_expression_span = previous_span;
+        }
         inferred
     }
 

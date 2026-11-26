@@ -556,7 +556,7 @@ mod tests {
 
     #[test]
     fn source_spans_count_unicode_scalars_and_place_eof_after_trailing_newline() {
-        let source = "// café🙂\\nlet value = \\"a🙂\\";\\n";
+        let source = "// café🙂\nlet value = \"a🙂\";\n";
         let mut lexer = Lexer::new(source.to_string());
         let tokens = lexer.tokenize_spanned().unwrap();
 

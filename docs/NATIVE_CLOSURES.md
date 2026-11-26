@@ -82,3 +82,10 @@ The sanitizer regression creates a map containing nested arrays and a closure in
 - Tracing-GC sweep destroys the private lane before freeing an unreachable cell; root teardown does the same for cells still reachable at shutdown.
 - Added `tests/native_cell_lifetime.rs`: a sanitizer-backed C runtime harness performs 128 large captured-cell writes, checks bounded lane allocation, then collects an unrooted cell. ASan/UBSan and leak detection run in CI.
 - CI HEAD `ad1465aae9b35e303edee0bc52d9d41b0aa6a2ca`: 300 unit tests, 28 runtime/native tests, the new cell-lifetime harness, 13 differential tests, examples and interpreter/native parity all passed.
+
+
+## Dynamic-call error parity (26-11-2026)
+
+- The generated C function entry now reports dynamic-call arity failures with the same message as the Rust interpreter, including expected and received argument counts.
+- Added an end-to-end differential regression that builds a higher-order call, then confirms both the interpreter and native executable fail with `La función esperaba 2 argumentos y recibió 1`.
+- CI HEAD `5f11129948e1a4b784dfc48c2c613afdba37bf51`: 300 unit tests, 28 runtime/native tests, 1 cell-lifetime sanitizer harness, 14 differential tests, examples and interpreter/native parity passed.

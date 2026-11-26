@@ -201,16 +201,23 @@ impl Parser {
             Token::While => self.parse_while_statement(),
             Token::If => self.parse_if_statement(),
             Token::Identifier(name) => {
-                // Called a function: func(args) or bare identifier: foo
+                // Preserve the legacy statement shape while recording exactly one
+                // root expression span; argument expressions are nested in that root.
                 let ident = name.clone();
+                let start = self.position;
                 self.advance();
                 if *self.current_token() == Token::ParenOpen {
                     self.advance();
-                    let args = self.parse_comma_list(Token::ParenClose)?;
+                    self.expression_depth += 1;
+                    let args_result = self.parse_comma_list(Token::ParenClose);
+                    self.expression_depth -= 1;
+                    let args = args_result?;
                     if *self.current_token() != Token::ParenClose {
                         return Err("Se esperaba ')' al cerrar la llamada".to_string());
                     }
                     self.advance(); // consume )
+                    let span = self.span_for_tokens(start, self.position);
+                    self.expression_spans.push(span);
                     if *self.current_token() == Token::Semicolon {
                         self.advance(); // consume ;
                     }
@@ -223,14 +230,32 @@ impl Parser {
                         value: call_expr,
                     }))
                 } else {
-                    let id_clone = ident.clone();
+                    let span = self.span_for_tokens(start, self.position);
+                    self.expression_spans.push(span);
                     Ok(Statement::Let(LetStatement {
-                        name: id_clone.clone(),
-                        value: Expression::Identifier(id_clone),
+                        name: ident.clone(),
+                        value: Expression::Identifier(ident),
                     }))
                 }
             }
-            Token::Pipe => self.parse_lambda_statement(),
+            Token::Pipe => {
+                let start = self.position;
+                self.expression_depth += 1;
+                let lambda_result = self.parse_lambda_expression();
+                self.expression_depth -= 1;
+                let lambda = lambda_result?;
+                let span = self.span_for_tokens(start, self.position);
+                self.expression_spans.push(span);
+                if *self.current_token() == Token::Semicolon {
+                    self.advance();
+                }
+                let params = match &lambda {
+                    Expression::Lambda { params, .. } => params,
+                    _ => unreachable!("parse_lambda_expression always returns a Lambda"),
+                };
+                let name = format!("__lambda_{}", params.join("_"));
+                Ok(Statement::Let(LetStatement { name, value: lambda }))
+            },
             _ => Err(format!(
                 "Se esperaba el inicio de una sentencia, pero se encontró: {:?}",
                 self.current_token()

@@ -127,6 +127,20 @@ jobs:
           test "$budget_status" -eq 1
           grep -q "presupuesto de instrucciones de ejecución nativa" "$temp_dir/runtime-budget.err"
 
+          cat > "$temp_dir/runtime-time-budget.hl" <<'EOF'
+          let counter = 0;
+          while (true) (
+            counter = counter + 1;
+          )
+          EOF
+          cargo run --quiet -- build "$temp_dir/runtime-time-budget.hl" -o "$temp_dir/runtime-time-budget" > /dev/null
+          set +e
+          HACKLANG_MAX_EVAL_MILLIS=5 "$temp_dir/runtime-time-budget" > "$temp_dir/runtime-time-budget.out" 2> "$temp_dir/runtime-time-budget.err"
+          time_status=$?
+          set -e
+          test "$time_status" -eq 1
+          grep -q "presupuesto de tiempo de CPU de ejecución nativa" "$temp_dir/runtime-time-budget.err"
+
           payload="$(head -c 8192 /dev/zero | tr '\0' 'a')"
           printf 'let payload = "%s";\nprint 1;\n' "$payload" > "$temp_dir/runtime-memory-budget.hl"
           cargo run --quiet -- build "$temp_dir/runtime-memory-budget.hl" -o "$temp_dir/runtime-memory-budget" > /dev/null

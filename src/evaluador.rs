@@ -1049,7 +1049,7 @@ mod tests {
 
     #[test]
     fn runtime_diagnostics_prefer_the_innermost_failing_statement() {
-        let source = "if (true) {\n  print 1 / 0;\n}";
+        let source = "if (true) (\n  print 1 / 0;\n)";
         let mut lexer = crate::lexer::Lexer::new(source.to_string());
         let tokens = lexer.tokenize_spanned().unwrap();
         let mut parser = crate::parser::Parser::new_spanned(tokens);

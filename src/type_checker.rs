@@ -4,7 +4,8 @@
 //! established safely. It reports definite contradictions only; it never changes
 //! runtime behavior or prevents a program from executing.
 
-use crate::ast::{Expression, Program, Statement};
+use crate::ast::{AstSpanMap, Expression, Program, Statement};
+use crate::lexer::SourceSpan;
 use crate::lexer::Token;
 use std::collections::HashMap;
 
@@ -40,17 +41,26 @@ pub struct Diagnostic {
     /// Static analysis is advisory and never blocks execution.
     pub severity: &'static str,
     pub message: String,
+    pub range: Option<SourceSpan>,
 }
 
 impl Diagnostic {
     /// Serialize this diagnostic as one JSON object.
     /// Source ranges are null until the AST preserves lexer spans.
     pub fn to_json(&self) -> String {
+        let range = self.range.map_or_else(
+            || "null".to_string(),
+            |span| format!(
+                "{{\"start\":{},\"end\":{},\"line\":{},\"column\":{},\"endLine\":{},\"endColumn\":{}}}",
+                span.start, span.end, span.line, span.column, span.end_line, span.end_column
+            ),
+        );
         format!(
-            "{{\"code\":\"{}\",\"severity\":\"{}\",\"message\":\"{}\",\"range\":null}}",
+            "{{\"code\":\"{}\",\"severity\":\"{}\",\"message\":\"{}\",\"range\":{}}}",
             self.code,
             self.severity,
-            json_escape(&self.message)
+            json_escape(&self.message),
+            range
         )
     }
 }
@@ -83,6 +93,12 @@ pub struct TypeChecker {
     scopes: Vec<Scope>,
     diagnostics: Vec<Diagnostic>,
     return_types: Vec<Vec<Type>>,
+    statement_spans: Vec<Option<SourceSpan>>,
+    expression_spans: Vec<Option<SourceSpan>>,
+    statement_span_cursor: usize,
+    expression_span_cursor: usize,
+    current_statement_span: Option<SourceSpan>,
+    current_expression_span: Option<SourceSpan>,
 }
 
 impl TypeChecker {
@@ -91,13 +107,37 @@ impl TypeChecker {
             scopes: vec![Scope::new()],
             diagnostics: Vec::new(),
             return_types: Vec::new(),
+            statement_spans: Vec::new(),
+            expression_spans: Vec::new(),
+            statement_span_cursor: 0,
+            expression_span_cursor: 0,
+            current_statement_span: None,
+            current_expression_span: None,
         }
     }
 
     pub fn check(program: &Program) -> Vec<Diagnostic> {
+        Self::check_with_spans(program, &AstSpanMap::default())
+    }
+
+    pub fn check_with_spans(program: &Program, spans: &AstSpanMap) -> Vec<Diagnostic> {
         let mut checker = Self::new();
+        checker.statement_spans = spans.statements.clone();
+        checker.expression_spans = spans.expressions.clone();
         checker.check_statements(&program.statements);
         checker.diagnostics
+    }
+
+    fn next_statement_span(&mut self) -> Option<SourceSpan> {
+        let span = self.statement_spans.get(self.statement_span_cursor).copied().flatten();
+        self.statement_span_cursor += 1;
+        span
+    }
+
+    fn next_expression_span(&mut self) -> Option<SourceSpan> {
+        let span = self.expression_spans.get(self.expression_span_cursor).copied().flatten();
+        self.expression_span_cursor += 1;
+        span
     }
 
     fn report(&mut self, message: impl Into<String>) {
@@ -105,6 +145,7 @@ impl TypeChecker {
             code: "HL-TYPE-001",
             severity: "warning",
             message: message.into(),
+            range: self.current_expression_span.or(self.current_statement_span),
         });
     }
 
@@ -136,6 +177,8 @@ impl TypeChecker {
 
     fn check_statements(&mut self, statements: &[Statement]) {
         for statement in statements {
+            let previous_span = self.current_statement_span;
+            self.current_statement_span = self.next_statement_span();
             match statement {
                 Statement::Let(stmt) => {
                     let ty = self.infer(&stmt.value);
@@ -205,6 +248,7 @@ impl TypeChecker {
                     }
                 }
             }
+            self.current_statement_span = previous_span;
         }
     }
 
@@ -215,6 +259,14 @@ impl TypeChecker {
     }
 
     fn infer(&mut self, expr: &Expression) -> Type {
+        let previous_span = self.current_expression_span;
+        self.current_expression_span = self.next_expression_span();
+        let inferred = self.infer_inner(expr);
+        self.current_expression_span = previous_span;
+        inferred
+    }
+
+    fn infer_inner(&mut self, expr: &Expression) -> Type {
         match expr {
             Expression::NumberLiteral(_) => Type::Number,
             Expression::BoolLiteral(_) => Type::Bool,

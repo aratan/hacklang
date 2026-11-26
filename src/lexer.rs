@@ -175,7 +175,7 @@ impl Lexer {
                     tokens.push(Self::spanned(Token::Number(Number(number)), token_start, self.position, &self.chars, &self.line_starts));
                 }
                 '"' => {
-                    let string = self.read_string().map_err(|error| Self::with_location(error, token_start, &self.line_starts))?;
+                    let string = self.read_string().map_err(|error| Self::with_location(error, token_start, self.position, &self.line_starts))?;
                     tokens.push(Self::spanned(Token::String(string), token_start, self.position, &self.chars, &self.line_starts));
                 }
                 '(' => {

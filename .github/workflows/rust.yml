@@ -136,3 +136,15 @@ jobs:
           set -e
           test "$memory_status" -eq 1
           grep -q "presupuesto de memoria de arenas nativas" "$temp_dir/runtime-memory-budget.err"
+
+          : > "$temp_dir/runtime-heap-budget.hl"
+          for index in $(seq 1 128); do
+            printf 'let f%s = |x| (x + %s);\\n' "$index" "$index" >> "$temp_dir/runtime-heap-budget.hl"
+          done
+          cargo run --quiet -- build "$temp_dir/runtime-heap-budget.hl" -o "$temp_dir/runtime-heap-budget" > /dev/null
+          set +e
+          HACKLANG_MAX_HEAP_BYTES=4096 "$temp_dir/runtime-heap-budget" > "$temp_dir/runtime-heap-budget.out" 2> "$temp_dir/runtime-heap-budget.err"
+          heap_status=$?
+          set -e
+          test "$heap_status" -eq 1
+          grep -q "presupuesto de memoria auxiliar del runtime nativo" "$temp_dir/runtime-heap-budget.err"

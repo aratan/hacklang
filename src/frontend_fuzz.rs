@@ -16,7 +16,7 @@ const CORPUS: &[&str] = &[
     "n:=10\nprint n",
     "let broken = \"unterminated;",
     "((((((((((((((((((((((((((((((((((((((((((((((((1))))))))))))))))))))))))))))))))))))))))))))))))",
-    "if (true) { let x = [1, 2, @(\\"k\\": \\"v\\")]; print x[0]; }",
+    r#"if (true) { let x = [1, 2, @("k": "v")]; print x[0]; }"#,
     "// comment with unicode: áéíóú 🙂\nlet value = 2;",
     "let x = @(\"a\": [1, 2], \"b\": true);",
     "let x = 1e999999999999999999999999999999999999;",
@@ -66,7 +66,7 @@ fn lexer_and_parser_survive_regression_corpus_in_both_modes() {
 fn lexer_and_parser_survive_bounded_deterministic_mutations() {
     const ALPHABET: &[char] = &[
         'a', 'Z', '_', '0', '9', '+', '-', '*', '/', '=', ';', '(', ')', '{', '}',
-        '[', ']', ':', '|', ',', '@', '?', '"', '\\', ' ', '\\n', '\\t', 'á', '界', '🙂', '\\0',
+        '[', ']', ':', '|', ',', '@', '?', '"', '\\', ' ', '\n', '\t', 'á', '界', '🙂', '\0',
     ];
 
     let mut state = 0x4841_434b_4c41_4e47_u64;

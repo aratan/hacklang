@@ -544,7 +544,7 @@ fn many_escaped_closures_in_map_keep_distinct_capture_cells() {
         "many_escaped_closures_in_map",
         r#"
 let make = |value| (|| (value));
-let functions = @(\"seed\": 0);
+let functions = @("seed": 0);
 let index = 0;
 while (index < 96) (
     functions[index] = make(index);

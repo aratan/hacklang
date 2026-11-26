@@ -221,5 +221,7 @@ jobs:
           cargo run --quiet -- run --max-eval-steps 1000000000 --max-eval-millis 20 "$temp_dir/interpreter-time-budget-nested.hl" > "$temp_dir/interpreter-time-budget.out" 2> "$temp_dir/interpreter-time-budget.err"
           interpreter_time_status=$?
           set -e
+          echo "Interpreter time-budget exit status: $interpreter_time_status"
+          cat "$temp_dir/interpreter-time-budget.err"
           test "$interpreter_time_status" -eq 1
           grep -q "Presupuesto de tiempo de evaluación excedido" "$temp_dir/interpreter-time-budget.err"

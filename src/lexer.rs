@@ -171,11 +171,11 @@ impl Lexer {
                     tokens.push(Self::spanned(token, token_start, self.position, &self.chars, &self.line_starts));
                 }
                 '0'..='9' => {
-                    let number = self.read_number().map_err(|error| with_location(error, token_start, &self.line_starts))?;
+                    let number = self.read_number().map_err(|error| Self::with_location(error, token_start, &self.line_starts))?;
                     tokens.push(Self::spanned(Token::Number(Number(number)), token_start, self.position, &self.chars, &self.line_starts));
                 }
                 '"' => {
-                    let string = self.read_string().map_err(|error| with_location(error, token_start, &self.line_starts))?;
+                    let string = self.read_string().map_err(|error| Self::with_location(error, token_start, &self.line_starts))?;
                     tokens.push(Self::spanned(Token::String(string), token_start, self.position, &self.chars, &self.line_starts));
                 }
                 '(' => {
@@ -239,7 +239,7 @@ impl Lexer {
                     self.position += 1;
                 }
                 _ => {
-                    return Err(with_location(format!("Carácter inesperado: '{}'", c), token_start, &self.line_starts));
+                    return Err(Self::with_location(format!("Carácter inesperado: '{}'", c), token_start, &self.line_starts));
                 }
             }
         }

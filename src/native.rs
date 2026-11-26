@@ -1598,11 +1598,12 @@ int main(void) {
         let failure = sanitized_native_build(
             r#"
 let state = @("payload": [[1, 2], [3, 4]]);
+let payload = state["payload"];
 let fail = |n| (
-    state["payload"][1][0] = n;
+    payload[1] = [n, 4];
     let churn = [n, n + 1, n + 2, n + 3];
     if (n < 1) (
-        print state["payload"][1][0];
+        print payload[1][0];
         return [1][8];
     )
     return fail(n - 1);

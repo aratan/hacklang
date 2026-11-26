@@ -209,7 +209,13 @@ static void hl_fail(HlEnv *environment, const char *message) {
         fputs("[{\"code\":\"HL-RUNTIME-001\",\"phase\":\"runtime\","
               "\"severity\":\"error\",\"message\":", stderr);
         hl_json_write_string(stderr, message ? message : "Error de ejecución desconocido");
-        fputs(",\"range\":null}]\n", stderr);
+        if (source) {
+            fprintf(stderr, ",\"range\":{\"start\":%zu,\"end\":%zu,\"line\":%zu,\"column\":%zu}}]\\n",
+                    source->source_start, source->source_end,
+                    source->source_line, source->source_column);
+        } else {
+            fputs(",\"range\":null}]\\n", stderr);
+        }
     } else {
         fprintf(stderr, "Error en tiempo de ejecución: %s\n", message);
     }

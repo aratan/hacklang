@@ -697,10 +697,6 @@ int main(void) {
     hl_binding_set(activation, "captured", (HlValue){.tag=HL_STRING, .as.string="cell-live"});
     const char *names[] = {"captured"};
     observed_temporary = hl_closure_new(activation, 7, names, 1);
-    HlFrame frame;
-    HlFrameSlot slot;
-    observed_frame = frame;
-    observed_slot = slot;
     if (!hl_frame_init(&observed_frame, &observed_slot, 1)) return 10;
     if (!hl_frame_write(&observed_frame, 0,
         (HlValue){.tag=HL_STRING, .as.string="frame-live"})) return 11;

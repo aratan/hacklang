@@ -1127,6 +1127,21 @@ mod tests {
     }
 
     #[test]
+    fn zero_time_budget_stops_interpreter_before_first_statement() {
+        let mut lexer = crate::lexer::Lexer::new("print 1;".to_string());
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = crate::parser::Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+        let mut evaluator = Evaluator::new_with_resource_limits(
+            256,
+            DEFAULT_MAX_EVAL_STEPS,
+            Duration::ZERO,
+        );
+        let error = evaluator.evaluate(&program).unwrap_err();
+        assert!(error.contains("Presupuesto de tiempo de evaluación excedido"));
+    }
+
+    #[test]
     fn instruction_budget_resets_for_each_program_evaluation() {
         let mut lexer = crate::lexer::Lexer::new("print 1;".to_string());
         let tokens = lexer.tokenize().unwrap();

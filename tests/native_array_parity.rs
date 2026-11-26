@@ -506,7 +506,7 @@ print text[1][0];
 
 #[test]
 fn embedded_nul_strings_match_interpreter_length_index_truthiness_and_printing() {
-    let source = "let text = \"A\0B\";\nprint len(text);\nprint text[0];\nprint text[1];\nprint text[2];\nprint text;\nprint [text];\nlet entries = @(text: 7);\nprint entries[\"A\0B\"];\nlet joined = text + \"C\";\nprint len(joined);\nprint joined[3];\nlet flag = false;\nif (text[1]) (flag = true;);\nprint flag;\n";
+    let source = "let text = \"A\0B\";\nprint len(text);\nprint text[0];\nprint text[1];\nprint text[2];\nprint text;\nprint [text];\nlet entries = @(text: 7);\nprint entries[\"A\0B\"];\nlet copy = text;\nprint copy;\nlet joined = text + 7;\nprint len(joined);\nprint joined[3];\nlet flag = false;\nif (text[1]) (flag = true;);\nprint flag;\n";
     assert_interpreter_native_parity("embedded_nul_string", source);
 }
 

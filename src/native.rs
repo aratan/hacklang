@@ -906,7 +906,7 @@ int main(void) {
     if (!hl_env_defer(outer, record_failure_cleanup, &outer_second_digit)) return 11;
     if (!hl_env_defer(inner, record_failure_cleanup, &inner_first_digit)) return 12;
     if (!hl_env_defer(inner, record_failure_cleanup, &inner_second_digit)) return 13;
-    hl_fail(inner, "forced test failure");
+    hl_fail(inner, "forced \"test\" failure\nline");
     return 99;
 }
 "#
@@ -937,7 +937,7 @@ int main(void) {
         );
         let stderr = String::from_utf8_lossy(&run.stderr);
         assert!(
-            stderr.contains("forced test failure"),
+            stderr.contains("forced \"test\" failure\nline"),
             "runtime failure diagnostic was not emitted: {stderr}"
         );
         assert!(
@@ -945,6 +945,20 @@ int main(void) {
             "cleanup callbacks did not run inner-to-outer before process exit: {stderr}"
         );
         assert_no_sanitizer_report(&run.stderr, "runtime_failure_cleanup");
+
+        let json_run = Command::new(&executable)
+            .env("HACKLANG_DIAGNOSTICS", "json")
+            .output()
+            .expect("run C runtime failure test with JSON diagnostics");
+        assert!(!json_run.status.success(), "JSON runtime failure unexpectedly returned success");
+        let json_stderr = String::from_utf8_lossy(&json_run.stderr);
+        let first_line = json_stderr.lines().next().unwrap_or_default();
+        assert_eq!(
+            first_line,
+            r#"[{"code":"HL-RUNTIME-001","phase":"runtime","severity":"error","message":"forced \\"test\\" failure\\nline","range":null}]"#
+        );
+        assert!(json_stderr.contains("cleanup_order=4321"), "cleanup callbacks did not run before JSON-mode process exit: {json_stderr}");
+        assert_no_sanitizer_report(&json_run.stderr, "runtime_failure_cleanup");
         let _ = fs::remove_dir_all(directory);
     }
 

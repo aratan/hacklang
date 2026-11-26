@@ -504,6 +504,45 @@ mod tests {
     }
 
     #[test]
+    fn nested_control_flow_preserves_type_diagnostic_expression_spans() {
+        let source = "\nlet x = 1;\nif (true) ( print true + 1; )\nwhile (false) ( print false + 2; )";
+        let mut lexer = Lexer::new(source.to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = Parser::new_spanned(tokens);
+        let (program, spans) = parser.parse_program_with_spans().unwrap();
+        let diagnostics = TypeChecker::check_with_spans(&program, &spans);
+        let operand_errors: Vec<_> = diagnostics.iter()
+            .filter(|item| item.message.contains("operando izquierdo"))
+            .collect();
+        assert_eq!(operand_errors.len(), 2, "{diagnostics:?}");
+        for (diagnostic, expression) in operand_errors.iter().zip(["true + 1", "false + 2"]) {
+            let start = source.find(expression).unwrap();
+            let range = diagnostic.range.expect("nested diagnostic must retain expression range");
+            assert_eq!((range.start, range.end), (start, start + expression.len()));
+        }
+    }
+
+    #[test]
+    fn call_statement_does_not_shift_following_type_diagnostic_span() {
+        let source = "\nlen(true);\nprint true + 2;";
+        let mut lexer = Lexer::new(source.to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = Parser::new_spanned(tokens);
+        let (program, spans) = parser.parse_program_with_spans().unwrap();
+        let diagnostics = TypeChecker::check_with_spans(&program, &spans);
+        let len_error = diagnostics.iter().find(|item| item.message.contains("len() requiere"))
+            .expect("len argument mismatch");
+        let print_error = diagnostics.iter().find(|item| item.message.contains("operando izquierdo"))
+            .expect("print expression mismatch");
+        let call_start = source.find("len(true)").unwrap();
+        let call_range = len_error.range.expect("call statement span");
+        assert_eq!((call_range.start, call_range.end), (call_start, call_start + "len(true)".len()));
+        let expression_start = source.find("true + 2").unwrap();
+        let expression_range = print_error.range.expect("following expression span");
+        assert_eq!((expression_range.start, expression_range.end), (expression_start, expression_start + "true + 2".len()));
+    }
+
+    #[test]
     fn builtin_len_has_numeric_type_for_supported_inputs() {
         assert!(check_source("let a = len(\"hello\"); let b = len([1,2]); let c = len(@(\"x\":1));").is_empty());
     }

@@ -129,6 +129,60 @@ fn assert_interpreter_native_runtime_error(
     fs::remove_dir_all(directory).expect("remove isolated runtime-error directory");
 }
 
+fn assert_native_json_source_line(name: &str, source_text: &str, expected_line: usize) {
+    let directory = case_directory();
+    let source = directory.join(format!("{name}.hl"));
+    let executable = directory.join(name);
+    fs::write(&source, source_text).expect("write native source-range fixture");
+
+    let build = Command::new(env!("CARGO_BIN_EXE_hl"))
+        .arg("build")
+        .arg(&source)
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("build native source-range fixture");
+    assert!(
+        build.status.success(),
+        "{name}: native build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let run = Command::new(&executable)
+        .env("HACKLANG_DIAGNOSTICS", "json")
+        .output()
+        .expect("run native source-range fixture");
+    assert!(!run.status.success(), "{name}: expected runtime trap");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    let json = stderr.lines().next().unwrap_or_default();
+    assert!(json.starts_with("[{") && json.ends_with("}]"), "{name}: invalid JSON diagnostic: {stderr}");
+    assert!(
+        json.contains(&format!("\"line\":{expected_line},\"column\":")),
+        "{name}: expected source line {expected_line}, got {json}"
+    );
+    assert!(!json.contains("\"range\":null"), "{name}: source range was lost: {json}");
+
+    fs::remove_dir_all(directory).expect("remove isolated source-range directory");
+}
+
+#[test]
+fn native_runtime_traps_report_the_statement_source_range() {
+    assert_native_json_source_line(
+        "runtime_trap_source_range",
+        "let values = [1];\nprint values[\"bad\"];\n",
+        2,
+    );
+}
+
+#[test]
+fn nested_function_traps_report_the_inner_statement_range() {
+    assert_native_json_source_line(
+        "nested_runtime_trap_source_range",
+        "let fail = |values| (\n    if (1) (\n        print values[\"bad\"];\n    );\n);\nfail([1]);\n",
+        3,
+    );
+}
+
 fn assert_native_build_failure(name: &str, source_text: &str, error_fragment: &str) {
     let directory = case_directory();
     let source = directory.join(format!("{name}.hl"));

@@ -516,6 +516,7 @@ let index = 0;
 while (index < 2) (
     let captured = index;
     let getter = || (captured);
+    print getter();
     saved[index] = getter;
     index = index + 1;
 )

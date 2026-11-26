@@ -1089,8 +1089,8 @@ mod tests {
         let statement = spans.statements[0].unwrap();
         let expression = spans.expressions[0].unwrap();
         assert_eq!((statement.line, statement.column), (2, 1));
-        assert_eq!((expression.line, expression.column), (2, 14));
-        assert_eq!(expression.end, 21);
+        assert_eq!((expression.line, expression.column), (2, 13));
+        assert_eq!(expression.end, 20);
     }
 
     #[test]

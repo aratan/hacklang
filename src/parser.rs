@@ -1062,7 +1062,7 @@ mod tests {
 
     #[test]
     fn spanned_parser_rejects_ternary_without_colon() {
-        let mut lexer = crate::lexer::Lexer::new("\\nlet value = true ? 1;".to_string());
+        let mut lexer = crate::lexer::Lexer::new("\nlet value = true ? 1;".to_string());
         let tokens = lexer.tokenize_spanned().unwrap();
         let mut parser = Parser::new_spanned(tokens);
         let error = parser.parse_program().unwrap_err();

@@ -74,7 +74,12 @@ fn assert_interpreter_native_parity(name: &str, source_text: &str) {
 
     let expected = interpreter_output(&interpreter.stdout);
     let actual = String::from_utf8(native.stdout).expect("native output must be UTF-8");
-    assert_eq!(actual, expected, "{name}: interpreter/native output differs");
+    assert_eq!(
+        actual,
+        expected,
+        "{name}: interpreter/native output differs; native stderr: {}",
+        String::from_utf8_lossy(&native.stderr)
+    );
 
     fs::remove_dir_all(directory).expect("remove isolated test directory");
 }

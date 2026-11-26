@@ -34,8 +34,23 @@ pub fn compile_to_executable(
     source_path: &Path,
     requested_output: Option<&Path>,
 ) -> Result<PathBuf, String> {
-    // HIR es la única entrada del backend nativo.
-    let hir = crate::hir::lower(program)
+    compile_to_executable_with_spans(
+        program,
+        &crate::ast::AstSpanMap::default(),
+        source_path,
+        requested_output,
+    )
+}
+
+pub fn compile_to_executable_with_spans(
+    program: &Program,
+    source_spans: &crate::ast::AstSpanMap,
+    source_path: &Path,
+    requested_output: Option<&Path>,
+) -> Result<PathBuf, String> {
+    // HIR es la única entrada del backend nativo. AST→HIR errors retain the
+    // source range of the statement/expression that caused the lowering failure.
+    let hir = crate::hir::lower_with_spans(program, source_spans)
         .map_err(|error| format!("No se pudo construir HIR: {error}"))?;
     // HIR codegen emits function bodies, activation frames, capture cells and
     // the runtime dispatcher. Memory planning remains conservative: no value
@@ -1876,6 +1891,27 @@ print saved[0]["call"]();
         assert_no_sanitizer_report(&run.stderr, "expression_temporaries");
 
         let _ = fs::remove_dir_all(directory);
+    }
+
+
+    #[test]
+    fn native_build_preserves_source_range_for_lowering_diagnostics() {
+        let source = "return 1;";
+        let mut lexer = crate::lexer::Lexer::new(source.to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = crate::parser::Parser::new_spanned(tokens);
+        let (program, spans) = parser.parse_program_with_spans().unwrap();
+
+        let error = compile_to_executable_with_spans(
+            &program,
+            &spans,
+            Path::new("unused.hl"),
+            Some(Path::new("unused.out")),
+        ).unwrap_err();
+
+        assert!(error.contains("return fuera de una función"), "{error}");
+        assert!(error.contains("línea 1, columna 1"), "{error}");
+        assert!(error.contains("rango 0.."), "{error}");
     }
 
 }

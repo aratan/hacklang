@@ -171,11 +171,11 @@ impl Lexer {
                     tokens.push(Self::spanned(token, token_start, self.position, &self.chars, &self.line_starts));
                 }
                 '0'..='9' => {
-                    let number = self.read_number().map_err(|error| Self::with_location(error, token_start, &self.line_starts))?;
+                    let number = self.read_number().map_err(|error| Self::with_location(error, token_start, self.position, &self.line_starts))?;
                     tokens.push(Self::spanned(Token::Number(Number(number)), token_start, self.position, &self.chars, &self.line_starts));
                 }
                 '"' => {
-                    let string = self.read_string().map_err(|error| Self::with_location(error, token_start, &self.line_starts))?;
+                    let string = self.read_string().map_err(|error| Self::with_location(error, token_start, self.position, &self.line_starts))?;
                     tokens.push(Self::spanned(Token::String(string), token_start, self.position, &self.chars, &self.line_starts));
                 }
                 '(' => {
@@ -239,7 +239,7 @@ impl Lexer {
                     self.position += 1;
                 }
                 _ => {
-                    return Err(Self::with_location(format!("Carácter inesperado: '{}'", c), token_start, &self.line_starts));
+                    return Err(Self::with_location(format!("Carácter inesperado: '{}'", c), token_start, token_start + 1, &self.line_starts));
                 }
             }
         }
@@ -249,11 +249,11 @@ impl Lexer {
     }
 
 
-fn with_location(error: String, offset: usize, line_starts: &[usize]) -> String {
-    let line_index = line_starts.partition_point(|line_start| *line_start <= offset).saturating_sub(1);
+fn with_location(error: String, start: usize, end: usize, line_starts: &[usize]) -> String {
+    let line_index = line_starts.partition_point(|line_start| *line_start <= start).saturating_sub(1);
     let line = line_index + 1;
-    let column = offset - line_starts[line_index] + 1;
-    format!("{error} (línea {line}, columna {column})")
+    let column = start - line_starts[line_index] + 1;
+    format!("{error} (línea {line}, columna {column}, rango {start}..{end})")
 }
 
 fn spanned(token: Token, start: usize, end: usize, chars: &[char], line_starts: &[usize]) -> SpannedToken {
@@ -349,14 +349,17 @@ mod tests {
         let mut unexpected = Lexer::new("\n  §".to_string());
         let error = unexpected.tokenize_spanned().unwrap_err();
         assert!(error.contains("línea 2, columna 3"), "{error}");
+        assert!(error.contains("rango 3..4"), "{error}");
 
         let mut unterminated = Lexer::new("let x = 1;\n  \"open".to_string());
         let error = unterminated.tokenize_spanned().unwrap_err();
         assert!(error.contains("línea 2, columna 3"), "{error}");
+        assert!(error.contains("rango 13..18"), "{error}");
 
         let mut exponent = Lexer::new("let x = 1e+".to_string());
         let error = exponent.tokenize_spanned().unwrap_err();
         assert!(error.contains("línea 1, columna 9"), "{error}");
+        assert!(error.contains("rango 8..11"), "{error}");
     }
 
     #[test]
@@ -549,6 +552,26 @@ mod tests {
         assert_eq!(tokens[1].span.start, 4);
         assert_eq!(tokens[2].span.column, 7);
         assert_eq!(tokens[2].span.end_column, 9);
+    }
+
+    #[test]
+    fn source_spans_count_unicode_scalars_and_place_eof_after_trailing_newline() {
+        let source = "// café🙂\nlet value = \"a🙂\";\n";
+        let mut lexer = Lexer::new(source.to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+
+        let string = tokens.iter()
+            .find(|item| matches!(item.token, Token::String(_)))
+            .expect("string token");
+        assert_eq!((string.span.start, string.span.end), (21, 25));
+        assert_eq!(
+            (string.span.line, string.span.column, string.span.end_line, string.span.end_column),
+            (2, 13, 2, 17)
+        );
+
+        let eof = tokens.last().expect("EOF token").span;
+        assert_eq!((eof.start, eof.end), (27, 27));
+        assert_eq!((eof.line, eof.column, eof.end_line, eof.end_column), (3, 1, 3, 1));
     }
 
 }

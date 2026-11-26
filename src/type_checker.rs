@@ -4,7 +4,8 @@
 //! established safely. It reports definite contradictions only; it never changes
 //! runtime behavior or prevents a program from executing.
 
-use crate::ast::{Expression, Program, Statement};
+use crate::ast::{AstSpanMap, Expression, Program, Statement};
+use crate::lexer::SourceSpan;
 use crate::lexer::Token;
 use std::collections::HashMap;
 
@@ -40,17 +41,26 @@ pub struct Diagnostic {
     /// Static analysis is advisory and never blocks execution.
     pub severity: &'static str,
     pub message: String,
+    pub range: Option<SourceSpan>,
 }
 
 impl Diagnostic {
     /// Serialize this diagnostic as one JSON object.
-    /// Source ranges are null until the AST preserves lexer spans.
+    /// Source ranges are null when callers use the legacy unspanned parser API.
     pub fn to_json(&self) -> String {
+        let range = self.range.map_or_else(
+            || "null".to_string(),
+            |span| format!(
+                "{{\"start\":{},\"end\":{},\"line\":{},\"column\":{},\"endLine\":{},\"endColumn\":{}}}",
+                span.start, span.end, span.line, span.column, span.end_line, span.end_column
+            ),
+        );
         format!(
-            "{{\"code\":\"{}\",\"severity\":\"{}\",\"message\":\"{}\",\"range\":null}}",
+            "{{\"code\":\"{}\",\"severity\":\"{}\",\"message\":\"{}\",\"range\":{}}}",
             self.code,
             self.severity,
-            json_escape(&self.message)
+            json_escape(&self.message),
+            range
         )
     }
 }
@@ -83,6 +93,13 @@ pub struct TypeChecker {
     scopes: Vec<Scope>,
     diagnostics: Vec<Diagnostic>,
     return_types: Vec<Vec<Type>>,
+    statement_spans: Vec<Option<SourceSpan>>,
+    expression_spans: Vec<Option<SourceSpan>>,
+    statement_span_cursor: usize,
+    expression_span_cursor: usize,
+    infer_depth: usize,
+    current_statement_span: Option<SourceSpan>,
+    current_expression_span: Option<SourceSpan>,
 }
 
 impl TypeChecker {
@@ -91,13 +108,49 @@ impl TypeChecker {
             scopes: vec![Scope::new()],
             diagnostics: Vec::new(),
             return_types: Vec::new(),
+            statement_spans: Vec::new(),
+            expression_spans: Vec::new(),
+            statement_span_cursor: 0,
+            expression_span_cursor: 0,
+            infer_depth: 0,
+            current_statement_span: None,
+            current_expression_span: None,
         }
     }
 
     pub fn check(program: &Program) -> Vec<Diagnostic> {
+        Self::check_with_spans(program, &AstSpanMap::default())
+    }
+
+    pub fn check_with_spans(program: &Program, spans: &AstSpanMap) -> Vec<Diagnostic> {
         let mut checker = Self::new();
+        checker.statement_spans = spans.statements.clone();
+        checker.expression_spans = spans.expressions.clone();
         checker.check_statements(&program.statements);
         checker.diagnostics
+    }
+
+    fn next_statement_span(&mut self) -> Option<SourceSpan> {
+        let span = self.statement_spans.get(self.statement_span_cursor).copied().flatten();
+        self.statement_span_cursor += 1;
+        span
+    }
+
+    fn next_expression_span(&mut self) -> Option<SourceSpan> {
+        let span = self.expression_spans.get(self.expression_span_cursor).copied().flatten();
+        self.expression_span_cursor += 1;
+        span
+    }
+
+    fn current_range(&self) -> Option<SourceSpan> {
+        match (self.current_expression_span, self.current_statement_span) {
+            (Some(expression), Some(statement))
+                if statement.start >= expression.start && statement.end <= expression.end =>
+                    Some(statement),
+            (Some(expression), _) => Some(expression),
+            (_, Some(statement)) => Some(statement),
+            (None, None) => None,
+        }
     }
 
     fn report(&mut self, message: impl Into<String>) {
@@ -105,6 +158,7 @@ impl TypeChecker {
             code: "HL-TYPE-001",
             severity: "warning",
             message: message.into(),
+            range: self.current_range(),
         });
     }
 
@@ -136,6 +190,8 @@ impl TypeChecker {
 
     fn check_statements(&mut self, statements: &[Statement]) {
         for statement in statements {
+            let previous_span = self.current_statement_span;
+            self.current_statement_span = self.next_statement_span();
             match statement {
                 Statement::Let(stmt) => {
                     let ty = self.infer(&stmt.value);
@@ -205,6 +261,7 @@ impl TypeChecker {
                     }
                 }
             }
+            self.current_statement_span = previous_span;
         }
     }
 
@@ -215,6 +272,21 @@ impl TypeChecker {
     }
 
     fn infer(&mut self, expr: &Expression) -> Type {
+        let is_root = self.infer_depth == 0;
+        let previous_span = self.current_expression_span;
+        if is_root {
+            self.current_expression_span = self.next_expression_span();
+        }
+        self.infer_depth += 1;
+        let inferred = self.infer_inner(expr);
+        self.infer_depth -= 1;
+        if is_root {
+            self.current_expression_span = previous_span;
+        }
+        inferred
+    }
+
+    fn infer_inner(&mut self, expr: &Expression) -> Type {
         match expr {
             Expression::NumberLiteral(_) => Type::Number,
             Expression::BoolLiteral(_) => Type::Bool,
@@ -410,6 +482,64 @@ mod tests {
         let mut parser = Parser::new(tokens);
         let program = parser.parse_program().unwrap();
         TypeChecker::check(&program)
+    }
+
+    #[test]
+    fn type_diagnostics_include_precise_expression_source_ranges() {
+        let mut lexer = Lexer::new("\nlet result = true + 2;".to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = Parser::new_spanned(tokens);
+        let (program, spans) = parser.parse_program_with_spans().unwrap();
+        let diagnostics = TypeChecker::check_with_spans(&program, &spans);
+        let diagnostic = diagnostics.iter()
+            .find(|item| item.message.contains("operando izquierdo"))
+            .expect("expected numeric operand diagnostic");
+        let range = diagnostic.range.expect("diagnostic must carry a source range");
+        assert_eq!((range.line, range.column), (2, 14));
+        assert_eq!(range.end, 22);
+        let json = diagnostic.to_json();
+        assert!(json.contains("\"range\":{"), "{json}");
+        assert!(json.contains("\"start\":14"), "{json}");
+        assert!(json.contains("\"end\":22"), "{json}");
+    }
+
+    #[test]
+    fn nested_control_flow_preserves_type_diagnostic_expression_spans() {
+        let source = "\nlet x = 1;\nif (true) ( print true + 1; )\nwhile (false) ( print false + 2; )";
+        let mut lexer = Lexer::new(source.to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = Parser::new_spanned(tokens);
+        let (program, spans) = parser.parse_program_with_spans().unwrap();
+        let diagnostics = TypeChecker::check_with_spans(&program, &spans);
+        let operand_errors: Vec<_> = diagnostics.iter()
+            .filter(|item| item.message.contains("operando izquierdo"))
+            .collect();
+        assert_eq!(operand_errors.len(), 2, "{diagnostics:?}");
+        for (diagnostic, expression) in operand_errors.iter().zip(["true + 1", "false + 2"]) {
+            let start = source.find(expression).unwrap();
+            let range = diagnostic.range.expect("nested diagnostic must retain expression range");
+            assert_eq!((range.start, range.end), (start, start + expression.len()));
+        }
+    }
+
+    #[test]
+    fn call_statement_does_not_shift_following_type_diagnostic_span() {
+        let source = "\nlen(true);\nprint true + 2;";
+        let mut lexer = Lexer::new(source.to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = Parser::new_spanned(tokens);
+        let (program, spans) = parser.parse_program_with_spans().unwrap();
+        let diagnostics = TypeChecker::check_with_spans(&program, &spans);
+        let len_error = diagnostics.iter().find(|item| item.message.contains("len() requiere"))
+            .expect("len argument mismatch");
+        let print_error = diagnostics.iter().find(|item| item.message.contains("operando izquierdo"))
+            .expect("print expression mismatch");
+        let call_start = source.find("len(true)").unwrap();
+        let call_range = len_error.range.expect("call statement span");
+        assert_eq!((call_range.start, call_range.end), (call_start, call_start + "len(true)".len()));
+        let expression_start = source.find("true + 2").unwrap();
+        let expression_range = print_error.range.expect("following expression span");
+        assert_eq!((expression_range.start, expression_range.end), (expression_start, expression_start + "true + 2".len()));
     }
 
     #[test]

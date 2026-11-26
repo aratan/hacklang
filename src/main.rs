@@ -140,8 +140,8 @@ fn run() -> ExitCode {
     } else {
         parser::Parser::new_spanned(tokens)
     };
-    let ast = match parser.parse_program() {
-        Ok(program) => program,
+    let (ast, source_spans) = match parser.parse_program_with_spans() {
+        Ok(parsed) => parsed,
         Err(error) => {
             eprintln!("Error de análisis sintáctico: {error}");
             return ExitCode::from(1);
@@ -150,7 +150,7 @@ fn run() -> ExitCode {
 
     if command == Command::Build {
         let output = cli.output.as_deref().map(std::path::Path::new);
-        match native::compile_to_executable(&ast, std::path::Path::new(filename), output) {
+        match native::compile_to_executable_with_spans(&ast, &source_spans, std::path::Path::new(filename), output) {
             Ok(executable) => {
                 println!("Ejecutable nativo generado: {}", executable.display());
                 return ExitCode::SUCCESS;
@@ -167,7 +167,7 @@ fn run() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let diagnostics = type_checker::TypeChecker::check(&ast);
+    let diagnostics = type_checker::TypeChecker::check_with_spans(&ast, &source_spans);
     if cli.diagnostics_json {
         let items = diagnostics.iter()
             .map(|diagnostic| diagnostic.to_json())

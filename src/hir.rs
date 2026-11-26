@@ -1,5 +1,5 @@
-use crate::ast::{Expression as AstExpr, Program as AstProgram, Statement as AstStmt};
-use crate::lexer::Token;
+use crate::ast::{AstSpanMap, Expression as AstExpr, Program as AstProgram, Statement as AstStmt};
+use crate::lexer::{SourceSpan, Token};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -130,11 +130,17 @@ pub enum ExprKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct LowerError {
     pub message: String,
+    pub range: Option<SourceSpan>,
 }
 
 impl std::fmt::Display for LowerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.message)
+        if let Some(span) = self.range {
+            write!(f, "{} (línea {}, columna {}, rango {}..{})", self.message,
+                span.line, span.column, span.start, span.end)
+        } else {
+            write!(f, "{}", self.message)
+        }
     }
 }
 
@@ -151,10 +157,17 @@ struct Lowerer {
     functions: Vec<Function>,
     function_stack: Vec<FunctionId>,
     predeclared_functions: HashSet<BindingId>,
+    statement_spans: Vec<Option<SourceSpan>>,
+    expression_spans: Vec<Option<SourceSpan>>,
+    statement_span_cursor: usize,
+    expression_span_cursor: usize,
+    expression_depth: usize,
+    current_statement_span: Option<SourceSpan>,
+    current_expression_span: Option<SourceSpan>,
 }
 
 impl Lowerer {
-    fn new() -> Self {
+    fn new(spans: &AstSpanMap) -> Self {
         Self {
             scopes: vec![Scope { id: ScopeId(0), parent: None, kind: ScopeKind::Module }],
             bindings: Vec::new(),
@@ -166,6 +179,13 @@ impl Lowerer {
             functions: Vec::new(),
             function_stack: Vec::new(),
             predeclared_functions: HashSet::new(),
+            statement_spans: spans.statements.clone(),
+            expression_spans: spans.expressions.clone(),
+            statement_span_cursor: 0,
+            expression_span_cursor: 0,
+            expression_depth: 0,
+            current_statement_span: None,
+            current_expression_span: None,
         }
     }
 
@@ -187,6 +207,21 @@ impl Lowerer {
 
     fn current_scope(&self) -> ScopeId {
         *self.scope_stack.last().expect("module scope exists")
+    }
+
+    fn current_range(&self) -> Option<SourceSpan> {
+        match (self.current_expression_span, self.current_statement_span) {
+            (Some(expression), Some(statement))
+                if statement.start >= expression.start && statement.end <= expression.end =>
+                    Some(statement),
+            (Some(expression), _) => Some(expression),
+            (_, Some(statement)) => Some(statement),
+            (None, None) => None,
+        }
+    }
+
+    fn error(&self, message: impl Into<String>) -> LowerError {
+        LowerError { message: message.into(), range: self.current_range() }
     }
 
     fn declare(&mut self, name: &str) -> BindingId {
@@ -220,10 +255,25 @@ impl Lowerer {
 
     fn resolve(&self, name: &str) -> Result<BindingId, LowerError> {
         self.symbols.iter().rev().find_map(|scope| scope.get(name).copied())
-            .ok_or_else(|| LowerError { message: format!("Variable no resuelta durante AST→HIR: '{}'", name) })
+            .ok_or_else(|| self.error(format!("Variable no resuelta durante AST→HIR: '{}'", name)))
     }
 
     fn expr(&mut self, ast: &AstExpr) -> Result<Expression, LowerError> {
+        let is_root = self.expression_depth == 0;
+        let previous_span = self.current_expression_span;
+        if is_root {
+            self.current_expression_span = self.expression_spans
+                .get(self.expression_span_cursor).copied().flatten();
+            self.expression_span_cursor += 1;
+        }
+        self.expression_depth += 1;
+        let result = self.expr_inner(ast);
+        self.expression_depth -= 1;
+        if is_root { self.current_expression_span = previous_span; }
+        result
+    }
+
+    fn expr_inner(&mut self, ast: &AstExpr) -> Result<Expression, LowerError> {
         let kind = match ast {
             AstExpr::NumberLiteral(value) => ExprKind::Number(*value),
             AstExpr::BoolLiteral(value) => ExprKind::Bool(*value),
@@ -239,7 +289,7 @@ impl Lowerer {
                     Token::Greater => BinaryOp::Greater,
                     Token::Tilde => BinaryOp::Equal,
                     Token::Caret => BinaryOp::NotEqual,
-                    other => return Err(LowerError { message: format!("Operador no admitido en HIR inicial: {:?}", other) }),
+                    other => return Err(self.error(format!("Operador no admitido en HIR inicial: {:?}", other))),
                 };
                 let left = Box::new(self.expr(left)?);
                 let right = Box::new(self.expr(right)?);
@@ -264,7 +314,7 @@ impl Lowerer {
             AstExpr::Array(items) => ExprKind::Array(items.iter().map(|item| self.expr(item)).collect::<Result<_, _>>()?),
             AstExpr::Map(items) => ExprKind::Map(items.iter().map(|(key, value)| Ok((self.expr(key)?, self.expr(value)?))).collect::<Result<_, LowerError>>()?),
             AstExpr::Index { target, index } => ExprKind::Index { target: Box::new(self.expr(target)?), index: Box::new(self.expr(index)?) },
-            AstExpr::Block(_) => return Err(LowerError { message: "Los bloques como expresión todavía no están soportados por HIR nativa".into() }),
+            AstExpr::Block(_) => return Err(self.error("Los bloques como expresión todavía no están soportados por HIR nativa")),
         };
         let id = ExprId(self.next_expr);
         self.next_expr += 1;
@@ -272,6 +322,16 @@ impl Lowerer {
     }
 
     fn stmt(&mut self, ast: &AstStmt) -> Result<Statement, LowerError> {
+        let previous_span = self.current_statement_span;
+        self.current_statement_span = self.statement_spans
+            .get(self.statement_span_cursor).copied().flatten();
+        self.statement_span_cursor += 1;
+        let result = self.stmt_inner(ast);
+        self.current_statement_span = previous_span;
+        result
+    }
+
+    fn stmt_inner(&mut self, ast: &AstStmt) -> Result<Statement, LowerError> {
         let kind = match ast {
             AstStmt::Let(binding) => {
                 let value = self.expr(&binding.value)?;
@@ -299,7 +359,7 @@ impl Lowerer {
             AstStmt::Print(print) => StmtKind::Print(self.expr(&print.value)?),
             AstStmt::Return(value) => {
                 if self.function_stack.is_empty() {
-                    return Err(LowerError { message: "return fuera de una función durante AST→HIR".into() });
+                    return Err(self.error("return fuera de una función durante AST→HIR"));
                 }
                 StmtKind::Return(self.expr(value)?)
             },
@@ -338,13 +398,13 @@ impl Lowerer {
             }
             AstStmt::Break => {
                 if self.loop_depth == 0 {
-                    return Err(LowerError { message: "break fuera de un bucle durante AST→HIR".into() });
+                    return Err(self.error("break fuera de un bucle durante AST→HIR"));
                 }
                 StmtKind::Break
             }
             AstStmt::Continue => {
                 if self.loop_depth == 0 {
-                    return Err(LowerError { message: "continue fuera de un bucle durante AST→HIR".into() });
+                    return Err(self.error("continue fuera de un bucle durante AST→HIR"));
                 }
                 StmtKind::Continue
             }
@@ -401,7 +461,11 @@ impl Lowerer {
 }
 
 pub fn lower(program: &AstProgram) -> Result<Program, LowerError> {
-    let mut lowerer = Lowerer::new();
+    lower_with_spans(program, &AstSpanMap::default())
+}
+
+pub fn lower_with_spans(program: &AstProgram, spans: &AstSpanMap) -> Result<Program, LowerError> {
+    let mut lowerer = Lowerer::new(spans);
     lowerer.predeclare_functions(&program.statements);
     let statements = lowerer.statements(&program.statements)?;
     let mut program = Program {
@@ -412,9 +476,9 @@ pub fn lower(program: &AstProgram) -> Result<Program, LowerError> {
         capture_storage: crate::capture::CaptureStoragePlan::default(),
     };
     program.functions = crate::capture::analyze(&program)
-        .map_err(|error| LowerError { message: error.message })?;
+        .map_err(|error| LowerError { message: error.message, range: None })?;
     program.capture_storage = crate::capture::plan_storage(&program)
-        .map_err(|error| LowerError { message: error.message })?;
+        .map_err(|error| LowerError { message: error.message, range: None })?;
     Ok(program)
 }
 
@@ -590,6 +654,50 @@ mod tests {
         let StmtKind::Print(value) = &hir.statements[1].kind else { panic!("expected print"); };
         assert!(matches!(&value.kind, ExprKind::Index { target, index }
             if matches!(&target.kind, ExprKind::Index { .. }) && matches!(&index.kind, ExprKind::Number(0.0))));
+    }
+
+    #[test]
+    fn lowering_error_uses_nested_statement_expression_span() {
+        let source = "\nif (true) ( print missing; )";
+        let mut lexer = crate::lexer::Lexer::new(source.to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = crate::parser::Parser::new_spanned(tokens);
+        let (ast, spans) = parser.parse_program_with_spans().unwrap();
+
+        let error = lower_with_spans(&ast, &spans).unwrap_err();
+        let start = source.find("missing").unwrap();
+        let range = error.range.expect("lowering error must carry source span");
+        assert_eq!((range.start, range.end), (start, start + "missing".len()));
+        assert_eq!((range.line, range.column), (2, 19));
+    }
+
+    #[test]
+    fn lambda_statement_does_not_shift_following_expression_span() {
+        let source = "\n|x| x;\nprint missing;";
+        let mut lexer = crate::lexer::Lexer::new(source.to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = crate::parser::Parser::new_spanned(tokens);
+        let (ast, spans) = parser.parse_program_with_spans().unwrap();
+
+        let error = lower_with_spans(&ast, &spans).unwrap_err();
+        let start = source.find("missing").unwrap();
+        let range = error.range.expect("unresolved identifier must retain expression span");
+        assert_eq!((range.start, range.end), (start, start + "missing".len()));
+    }
+
+    #[test]
+    fn call_statement_uses_call_span_not_argument_span() {
+        let source = "\nmissing(1);\nprint 2;";
+        let mut lexer = crate::lexer::Lexer::new(source.to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = crate::parser::Parser::new_spanned(tokens);
+        let (ast, spans) = parser.parse_program_with_spans().unwrap();
+
+        let error = lower_with_spans(&ast, &spans).unwrap_err();
+        let start = source.find("missing").unwrap();
+        let end = source.find(';').unwrap();
+        let range = error.range.expect("unresolved callee must retain call span");
+        assert_eq!((range.start, range.end), (start, end));
     }
 
 }

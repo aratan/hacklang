@@ -26,6 +26,8 @@ pub struct Parser {
     expression_depth: usize,
     statement_depth: usize,
     spans: Option<Vec<SourceSpan>>,
+    statement_spans: Vec<Option<SourceSpan>>,
+    expression_spans: Vec<Option<SourceSpan>>,
 }
 
 impl Parser {
@@ -74,21 +76,49 @@ impl Parser {
             expression_depth: 0,
             statement_depth: 0,
             spans: None,
+            statement_spans: Vec::new(),
+            expression_spans: Vec::new(),
         }
     }
 
-    // El método principal que construye el árbol completo.
+    // Legacy API: callers that do not need diagnostics keep the original AST.
     pub fn parse_program(&mut self) -> Result<Program, String> {
+        self.parse_program_with_spans().map(|(program, _)| program)
+    }
+
+    /// Parse the legacy AST and return source locations in a parallel sidecar.
+    /// Statement/expression entries are recorded in pre-order, without changing
+    /// public AST node constructors or their equality semantics.
+    pub fn parse_program_with_spans(&mut self) -> Result<(Program, AstSpanMap), String> {
         match self.parse_program_inner() {
-            Ok(program) => Ok(program),
+            Ok(program) => Ok((program, AstSpanMap {
+                statements: std::mem::take(&mut self.statement_spans),
+                expressions: std::mem::take(&mut self.expression_spans),
+            })),
             Err(error) => {
                 if let Some(span) = self.spans.as_ref().and_then(|items| items.get(self.position)) {
-                    Err(format!("{} (línea {}, columna {})", error, span.line, span.column))
+                    Err(format!("{} (línea {}, columna {}, rango {}..{})",
+                        error, span.line, span.column, span.start, span.end))
                 } else {
                     Err(error)
                 }
             }
         }
+    }
+
+    fn span_for_tokens(&self, start: usize, end: usize) -> Option<SourceSpan> {
+        let spans = self.spans.as_ref()?;
+        let first = *spans.get(start)?;
+        let last_index = if end > start { end - 1 } else { start };
+        let last = *spans.get(last_index)?;
+        Some(SourceSpan {
+            start: first.start,
+            end: last.end,
+            line: first.line,
+            column: first.column,
+            end_line: last.end_line,
+            end_column: last.end_column,
+        })
     }
 
     fn parse_program_inner(&mut self) -> Result<Program, String> {
@@ -107,9 +137,13 @@ impl Parser {
         if self.statement_depth >= MAX_PARSE_DEPTH {
             return Err(format!("Límite de anidamiento de sentencias excedido ({MAX_PARSE_DEPTH})"));
         }
+        let span_slot = self.statement_spans.len();
+        let start = self.position;
+        self.statement_spans.push(None);
         self.statement_depth += 1;
         let result = self.parse_statement_inner();
         self.statement_depth -= 1;
+        self.statement_spans[span_slot] = self.span_for_tokens(start, self.position);
         result
     }
 
@@ -167,16 +201,23 @@ impl Parser {
             Token::While => self.parse_while_statement(),
             Token::If => self.parse_if_statement(),
             Token::Identifier(name) => {
-                // Called a function: func(args) or bare identifier: foo
+                // Preserve the legacy statement shape while recording exactly one
+                // root expression span; argument expressions are nested in that root.
                 let ident = name.clone();
+                let start = self.position;
                 self.advance();
                 if *self.current_token() == Token::ParenOpen {
                     self.advance();
-                    let args = self.parse_comma_list(Token::ParenClose)?;
+                    self.expression_depth += 1;
+                    let args_result = self.parse_comma_list(Token::ParenClose);
+                    self.expression_depth -= 1;
+                    let args = args_result?;
                     if *self.current_token() != Token::ParenClose {
                         return Err("Se esperaba ')' al cerrar la llamada".to_string());
                     }
                     self.advance(); // consume )
+                    let span = self.span_for_tokens(start, self.position);
+                    self.expression_spans.push(span);
                     if *self.current_token() == Token::Semicolon {
                         self.advance(); // consume ;
                     }
@@ -189,10 +230,11 @@ impl Parser {
                         value: call_expr,
                     }))
                 } else {
-                    let id_clone = ident.clone();
+                    let span = self.span_for_tokens(start, self.position);
+                    self.expression_spans.push(span);
                     Ok(Statement::Let(LetStatement {
-                        name: id_clone.clone(),
-                        value: Expression::Identifier(id_clone),
+                        name: ident.clone(),
+                        value: Expression::Identifier(ident),
                     }))
                 }
             }
@@ -384,7 +426,13 @@ impl Parser {
 
     // --- Sentencia Lambda: |x, y| { cuerpo } ---
     fn parse_lambda_statement(&mut self) -> Result<Statement, String> {
-        let lambda = self.parse_lambda_expression()?;
+        let start = self.position;
+        self.expression_depth += 1;
+        let lambda_result = self.parse_lambda_expression();
+        self.expression_depth -= 1;
+        let lambda = lambda_result?;
+        let span = self.span_for_tokens(start, self.position);
+        self.expression_spans.push(span);
         if *self.current_token() == Token::Semicolon {
             self.advance();
         }
@@ -457,9 +505,21 @@ impl Parser {
         if self.expression_depth >= MAX_PARSE_DEPTH {
             return Err(format!("Límite de profundidad de expresiones excedido ({MAX_PARSE_DEPTH})"));
         }
+        let root_expression = self.expression_depth == 0;
+        let span_slot = if root_expression {
+            let slot = self.expression_spans.len();
+            self.expression_spans.push(None);
+            Some(slot)
+        } else {
+            None
+        };
+        let start = self.position;
         self.expression_depth += 1;
         let result = self.parse_expression_inner(precedence);
         self.expression_depth -= 1;
+        if let Some(slot) = span_slot {
+            self.expression_spans[slot] = self.span_for_tokens(start, self.position);
+        }
         result
     }
 
@@ -1032,12 +1092,29 @@ mod tests {
     }
 
     #[test]
+    fn parser_returns_statement_and_expression_span_sidecar() {
+        let mut lexer = crate::lexer::Lexer::new("\nlet value = (1 + 2)".to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = Parser::new_spanned(tokens);
+        let (program, spans) = parser.parse_program_with_spans().unwrap();
+        assert_eq!(program.statements.len(), 1);
+        assert_eq!(spans.statements.len(), 1);
+        assert_eq!(spans.expressions.len(), 1);
+        let statement = spans.statements[0].unwrap();
+        let expression = spans.expressions[0].unwrap();
+        assert_eq!((statement.line, statement.column), (2, 1));
+        assert_eq!((expression.line, expression.column), (2, 13));
+        assert_eq!(expression.end, 20);
+    }
+
+    #[test]
     fn spanned_parser_reports_line_and_column() {
         let mut lexer = crate::lexer::Lexer::new("\nlet = 1;".to_string());
         let tokens = lexer.tokenize_spanned().unwrap();
         let mut parser = Parser::new_spanned(tokens);
         let error = parser.parse_program().unwrap_err();
         assert!(error.contains("línea 2, columna 5"), "{}", error);
+        assert!(error.contains("rango 5..6"), "{}", error);
     }
 
     #[test]
@@ -1078,4 +1155,16 @@ mod tests {
         let error = parser.parse_program().unwrap_err();
         assert!(error.contains("nombre de variable"));
     }
+    #[test]
+    fn spanned_parser_reports_zero_width_eof_range() {
+        let mut lexer = crate::lexer::Lexer::new("\nlet value = (1 + 2".to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = Parser::new_spanned(tokens);
+        let error = parser.parse_program().unwrap_err();
+
+        assert!(error.contains("Se esperaba ')' al cerrar la expresión agrupada"), "{error}");
+        assert!(error.contains("línea 2, columna 19"), "{error}");
+        assert!(error.contains("rango 19..19"), "{error}");
+    }
+
 }

@@ -658,6 +658,86 @@ int main(void) {
     }
 
     #[test]
+    fn c_runtime_failure_keeps_roots_alive_through_deferred_cleanup() {
+        let directory = temporary_directory().expect("temporary directory");
+        let c_file = directory.join("root_cleanup.c");
+        let executable = directory.join("root_cleanup");
+        let source = format!(
+            "{}\n{}",
+            include_str!("native_runtime.c"),
+            r#"
+static HlEnv *observed_root = NULL;
+static HlFrame observed_frame;
+static HlFrameSlot observed_slot;
+static HlValue observed_temporary;
+static void verify_roots_during_cleanup(void *context) {
+    (void)context;
+    HlValue frame_value;
+    int valid = observed_root != NULL
+        && observed_root->closing
+        && observed_root->frame_roots != NULL
+        && observed_root->frame_roots->frame == &observed_frame
+        && observed_root->value_roots != NULL
+        && observed_root->value_roots->slot == &observed_temporary
+        && observed_root->cells != NULL
+        && observed_root->closures != NULL
+        && observed_root->closures->capture_count == 1
+        && observed_root->closures->captures[0] == observed_root->cells
+        && hl_frame_read(&observed_frame, 0, &frame_value)
+        && frame_value.tag == HL_STRING
+        && strcmp(frame_value.as.string, "frame-live") == 0
+        && observed_temporary.tag == HL_CLOSURE
+        && observed_temporary.as.closure == observed_root->closures;
+    _Exit(valid ? 0 : 91);
+}
+int main(void) {
+    HlEnv *root = hl_env_new(NULL);
+    observed_root = root;
+    HlEnv *activation = hl_env_new(root);
+    hl_binding_set(activation, "captured", (HlValue){.tag=HL_STRING, .as.string="cell-live"});
+    const char *names[] = {"captured"};
+    observed_temporary = hl_closure_new(activation, 7, names, 1);
+    HlFrame frame;
+    HlFrameSlot slot;
+    observed_frame = frame;
+    observed_slot = slot;
+    if (!hl_frame_init(&observed_frame, &observed_slot, 1)) return 10;
+    if (!hl_frame_write(&observed_frame, 0,
+        (HlValue){.tag=HL_STRING, .as.string="frame-live"})) return 11;
+    hl_root_frame_push(activation, &observed_frame);
+    hl_root_value_push(activation, &observed_temporary);
+    if (!hl_env_defer(root, verify_roots_during_cleanup, NULL)) return 12;
+    HlEnv *inner = hl_env_new(activation);
+    (void)hl_copy_string(inner, "inner-live");
+    hl_fail(inner, "forced root cleanup failure");
+    return 99;
+}
+"#
+        );
+        fs::write(&c_file, source).expect("write root cleanup test");
+        let compiler = select_c_compiler().expect("C compiler");
+        let build = Command::new(&compiler)
+            .arg("-std=c11")
+            .arg("-O1")
+            .arg("-g")
+            .arg("-fsanitize=address,undefined")
+            .arg("-fno-omit-frame-pointer")
+            .arg(&c_file)
+            .arg("-o")
+            .arg(&executable)
+            .arg("-lm")
+            .output()
+            .expect("compile sanitized root cleanup test");
+        assert!(build.status.success(), "root cleanup test compilation failed: {}",
+            String::from_utf8_lossy(&build.stderr));
+        let run = Command::new(&executable).output().expect("run root cleanup test");
+        assert!(run.status.success(), "root metadata or live values were released before deferred cleanup: {:?}, stderr: {}",
+            run.status.code(), String::from_utf8_lossy(&run.stderr));
+        assert!(String::from_utf8_lossy(&run.stderr).contains("forced root cleanup failure"));
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn c_runtime_failure_rewinds_active_physical_lanes() {
         let directory = temporary_directory().expect("temporary directory");
         let c_file = directory.join("lane_failure.c");

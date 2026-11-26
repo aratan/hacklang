@@ -694,7 +694,7 @@ int main(void) {
     HlEnv *root = hl_env_new(NULL);
     observed_root = root;
     HlEnv *activation = hl_env_new(root);
-    hl_binding_set(activation, "captured", (HlValue){.tag=HL_STRING, .as.string="cell-live"});
+    hl_define(activation, "captured", (HlValue){.tag=HL_STRING, .as.string="cell-live"});
     const char *names[] = {"captured"};
     observed_temporary = hl_closure_new(activation, 7, names, 1);
     if (!hl_frame_init(&observed_frame, &observed_slot, 1)) return 10;

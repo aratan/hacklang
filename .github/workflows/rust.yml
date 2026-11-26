@@ -143,16 +143,10 @@ jobs:
 
           cat > "$temp_dir/runtime-time-budget-nested.hl" <<'EOF'
           let spin = |limit| (
-            let index = 0;
-            while (index < limit) (
-              index = index + 1;
-            )
-            return index;
+            while (true) ();
+            return limit;
           );
-          let total = 0;
-          while (true) (
-            total = total + spin(1000);
-          )
+          let result = spin(1000);
           EOF
           cargo run --quiet -- build "$temp_dir/runtime-time-budget-nested.hl" -o "$temp_dir/runtime-time-budget-nested" > /dev/null
           set +e

@@ -468,8 +468,6 @@ static void hl_binding_alias_cell(HlEnv *environment, const char *name, HlCell *
     binding->aggregate_lane = (HlArenaLane){0};
     binding->value = cell->value;
     binding->cell = cell;
-    if (getenv("HL_DEBUG_GC") && cell->value.tag == HL_NUMBER)
-        fprintf(stderr, "ALIAS %s cell=%p number=%g\\n", name, (void *)cell, cell->value.as.number);
     binding->next = environment->bindings;
     environment->bindings = binding;
 }
@@ -628,45 +626,6 @@ static void hl_collect(HlEnv *environment) {
     }
     for (HlRootValue *node = root->value_roots; node; node = node->next)
         if (node->slot) hl_trace_value(*node->slot);
-
-    if (getenv("HL_DEBUG_GC")) {
-        fprintf(stderr, "GC root=%p current=%p\\n", (void *)root, (void *)environment);
-        for (HlEnv *scope = environment; scope; scope = scope->parent)
-            for (HlBinding *binding = scope->bindings; binding; binding = binding->next)
-                fprintf(stderr, "  binding %s tag=%d value=%p cell=%p\\n", binding->name,
-                    (int)binding->value.tag,
-                    binding->value.tag == HL_MAP ? (void *)binding->value.as.map :
-                    binding->value.tag == HL_CLOSURE ? (void *)binding->value.as.closure : NULL,
-                    (void *)binding->cell);
-        for (HlEnv *scope = environment; scope; scope = scope->parent)
-            for (HlBinding *binding = scope->bindings; binding; binding = binding->next)
-                if (binding->value.tag == HL_MAP && binding->value.as.map)
-                    for (size_t i = 0; i < binding->value.as.map->length; ++i) {
-                        HlValue key = binding->value.as.map->entries[i].key;
-                        HlValue value = binding->value.as.map->entries[i].value;
-                        fprintf(stderr, "    map[%g] value-tag=%d closure=%p\\n",
-                            key.tag == HL_NUMBER ? key.as.number : -999.0,
-                            (int)value.tag,
-                            value.tag == HL_CLOSURE ? (void *)value.as.closure : NULL);
-                    }
-        for (HlRootFrame *node = root->frame_roots; node; node = node->next) {
-            HlFrame *frame = node->frame;
-            if (!frame) continue;
-            for (size_t i = 0; i < frame->slot_count; ++i)
-                if (frame->slots[i].initialized)
-                    fprintf(stderr, "  frame slot %zu tag=%d map=%p\\n", i,
-                        (int)frame->slots[i].value.tag,
-                        frame->slots[i].value.tag == HL_MAP ? (void *)frame->slots[i].value.as.map : NULL);
-        }
-        for (HlClosure *closure = root->closures; closure; closure = closure->next)
-            fprintf(stderr, "  closure=%p marked=%d captures=%zu cell0=%p\\n",
-                (void *)closure, closure->marked, closure->capture_count,
-                closure->capture_count ? (void *)closure->captures[0] : NULL);
-        for (HlCell *cell = root->cells; cell; cell = cell->next)
-            fprintf(stderr, "  cell=%p marked=%d initialized=%d number=%g\\n",
-                (void *)cell, cell->marked, cell->initialized,
-                cell->initialized && cell->value.tag == HL_NUMBER ? cell->value.as.number : -999.0);
-    }
 
     HlCell **cell_link = &root->cells;
     while (*cell_link) {
@@ -1008,8 +967,6 @@ static HlValue hl_get(HlEnv *environment, const char *name) {
     if (item->cell) {
         HlValue captured;
         if (!hl_cell_read(item->cell, &captured)) hl_fail(environment, "lectura de captura no inicializada");
-        if (getenv("HL_DEBUG_GC") && captured.tag == HL_NUMBER)
-            fprintf(stderr, "GET %s cell=%p number=%g\\n", name, (void *)item->cell, captured.as.number);
         return captured.tag == HL_ARRAY || captured.tag == HL_MAP ? hl_clone_value(environment, captured) : captured;
     }
     /* Arrays have value semantics: each read receives an independent
@@ -1374,13 +1331,10 @@ static void hl_debug_print_map(HlValue value) {
     putchar(']');
 }
 static void hl_print(HlValue value) {
-    if (getenv("HL_DEBUG_GC") && value.tag == HL_NUMBER)
-        fprintf(stderr, "PRINT number=%g\\n", value.as.number);
     switch (value.tag) {
         case HL_NUMBER: {
             char buffer[512];
             hl_number_text(value.as.number, buffer, sizeof(buffer));
-            if (getenv("HL_DEBUG_GC")) fprintf(stderr, "TEXT number=%g text=%s\\n", value.as.number, buffer);
             puts(buffer);
             break;
         }

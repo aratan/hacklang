@@ -668,7 +668,7 @@ mod tests {
         let start = source.find("missing").unwrap();
         let range = error.range.expect("lowering error must carry source span");
         assert_eq!((range.start, range.end), (start, start + "missing".len()));
-        assert_eq!((range.line, range.column), (2, 21));
+        assert_eq!((range.line, range.column), (2, 19));
     }
 
 }

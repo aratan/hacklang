@@ -468,6 +468,8 @@ static void hl_binding_alias_cell(HlEnv *environment, const char *name, HlCell *
     binding->aggregate_lane = (HlArenaLane){0};
     binding->value = cell->value;
     binding->cell = cell;
+    if (getenv("HL_DEBUG_GC") && cell->value.tag == HL_NUMBER)
+        fprintf(stderr, "ALIAS %s cell=%p number=%g\\n", name, (void *)cell, cell->value.as.number);
     binding->next = environment->bindings;
     environment->bindings = binding;
 }

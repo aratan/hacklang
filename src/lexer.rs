@@ -383,7 +383,7 @@ mod tests {
         assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
         assert_eq!(diagnostic.range.unwrap().start, 0);
 
-        let mut unterminated = Lexer::new("\\"open".to_string());
+        let mut unterminated = Lexer::new("\"open".to_string());
         let diagnostic = unterminated.tokenize_spanned_diagnostic().unwrap_err();
         assert_eq!(diagnostic.code, "HL-LEX-002");
         assert_eq!(diagnostic.range.unwrap().end, 5);

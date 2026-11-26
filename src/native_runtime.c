@@ -1374,6 +1374,8 @@ static void hl_debug_print_map(HlValue value) {
     putchar(']');
 }
 static void hl_print(HlValue value) {
+    if (getenv("HL_DEBUG_GC") && value.tag == HL_NUMBER)
+        fprintf(stderr, "PRINT number=%g\\n", value.as.number);
     switch (value.tag) {
         case HL_NUMBER: {
             char buffer[512];

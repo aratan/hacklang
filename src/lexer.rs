@@ -171,7 +171,7 @@ impl Lexer {
                     tokens.push(Self::spanned(token, token_start, self.position, &self.chars, &self.line_starts));
                 }
                 '0'..='9' => {
-                    let number = self.read_number().map_err(|error| Self::with_location(error, token_start, &self.line_starts))?;
+                    let number = self.read_number().map_err(|error| Self::with_location(error, token_start, self.position, &self.line_starts))?;
                     tokens.push(Self::spanned(Token::Number(Number(number)), token_start, self.position, &self.chars, &self.line_starts));
                 }
                 '"' => {
@@ -239,7 +239,7 @@ impl Lexer {
                     self.position += 1;
                 }
                 _ => {
-                    return Err(Self::with_location(format!("Carácter inesperado: '{}'", c), token_start, &self.line_starts));
+                    return Err(Self::with_location(format!("Carácter inesperado: '{}'", c), token_start, token_start + 1, &self.line_starts));
                 }
             }
         }
@@ -249,11 +249,11 @@ impl Lexer {
     }
 
 
-fn with_location(error: String, offset: usize, line_starts: &[usize]) -> String {
-    let line_index = line_starts.partition_point(|line_start| *line_start <= offset).saturating_sub(1);
+fn with_location(error: String, start: usize, end: usize, line_starts: &[usize]) -> String {
+    let line_index = line_starts.partition_point(|line_start| *line_start <= start).saturating_sub(1);
     let line = line_index + 1;
-    let column = offset - line_starts[line_index] + 1;
-    format!("{error} (línea {line}, columna {column})")
+    let column = start - line_starts[line_index] + 1;
+    format!("{error} (línea {line}, columna {column}, rango {start}..{end})")
 }
 
 fn spanned(token: Token, start: usize, end: usize, chars: &[char], line_starts: &[usize]) -> SpannedToken {

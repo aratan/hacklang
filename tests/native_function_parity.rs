@@ -516,32 +516,18 @@ fn many_escaped_closures_keep_distinct_loop_iteration_captures() {
     assert_interpreter_native_parity(
         "many_distinct_iteration_closures",
         r#"
-let saved = [@(), @()];
+let saved = @();
 let index = 0;
 while (index < 96) (
     let captured = index;
     let getter = || (captured);
-    let group = 0;
-    let slot = index;
-    if (index > 47) (
-        group = 1;
-        slot = index - 48;
-    )
-    saved[group][slot] = getter;
+    saved[index] = getter;
     index = index + 1;
 )
 let total = 0;
 let read_index = 0;
 while (read_index < 96) (
-    let group = 0;
-    let slot = read_index;
-    if (read_index > 47) (
-        group = 1;
-        slot = read_index - 48;
-    )
-    let bucket = saved[group];
-    let getter = bucket[slot];
-    total = total + getter();
+    total = total + saved[read_index]();
     read_index = read_index + 1;
 )
 print total;

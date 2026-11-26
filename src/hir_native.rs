@@ -693,7 +693,6 @@ fn call_dispatcher(reachable: &[crate::hir::FunctionId]) -> String {
     Generator::line(&mut out, "static HlValue hl_call(HlEnv *fn_caller, HlValue fn_callee, const HlValue *fn_args, size_t fn_arg_count) {");
     Generator::line(&mut out, "    if (fn_callee.tag != HL_CLOSURE || !fn_callee.as.closure)");
     Generator::line(&mut out, "        hl_fail(fn_caller, \"solo se pueden llamar valores de función: el valor no es una función\");");
-    Generator::line(&mut out, r#"    if (getenv("HL_DEBUG_GC") && fn_callee.as.closure->capture_count) fprintf(stderr, "CALL closure=%p cell0=%p\\n", (void *)fn_callee.as.closure, (void *)fn_callee.as.closure->captures[0]);"#);
     Generator::line(&mut out, "    switch (fn_callee.as.closure->function_id) {");
     for id in reachable {
         Generator::line(&mut out, format!("        case {}: return hl_fn_{}(fn_caller, fn_callee, fn_args, fn_arg_count);", id.0, id.0));

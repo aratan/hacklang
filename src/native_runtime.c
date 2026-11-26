@@ -156,6 +156,11 @@ struct HlEnv {
     size_t lane_mark_used;
     int owns_lane;
     int closing;
+    size_t source_start;
+    size_t source_end;
+    size_t source_line;
+    size_t source_column;
+    int has_source_range;
 };
 
 static void hl_lane_init(HlArenaLane *lane);
@@ -203,13 +208,35 @@ static void hl_json_write_string(FILE *stream, const char *value) {
     fputc('"', stream);
 }
 
+static void hl_set_source_range(HlEnv *environment, size_t start, size_t end,
+                                size_t line, size_t column) {
+    if (!environment) return;
+    environment->source_start = start;
+    environment->source_end = end;
+    environment->source_line = line;
+    environment->source_column = column;
+    environment->has_source_range = 1;
+}
+
+static void hl_clear_source_range(HlEnv *environment) {
+    if (environment) environment->has_source_range = -1;
+}
+
 static void hl_fail(HlEnv *environment, const char *message) {
+    const HlEnv *source = environment;
+    while (source && source->has_source_range == 0) source = source->parent;
     const char *diagnostics = getenv("HACKLANG_DIAGNOSTICS");
     if (diagnostics && strcmp(diagnostics, "json") == 0) {
         fputs("[{\"code\":\"HL-RUNTIME-001\",\"phase\":\"runtime\","
               "\"severity\":\"error\",\"message\":", stderr);
         hl_json_write_string(stderr, message ? message : "Error de ejecución desconocido");
-        fputs(",\"range\":null}]\n", stderr);
+        if (source && source->has_source_range > 0) {
+            fprintf(stderr, ",\"range\":{\"start\":%zu,\"end\":%zu,\"line\":%zu,\"column\":%zu}}]\n",
+                    source->source_start, source->source_end,
+                    source->source_line, source->source_column);
+        } else {
+            fputs(",\"range\":null}]\n", stderr);
+        }
     } else {
         fprintf(stderr, "Error en tiempo de ejecución: %s\n", message);
     }

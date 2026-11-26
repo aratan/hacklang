@@ -26,6 +26,9 @@ pub struct Program {
     pub scopes: Vec<Scope>,
     pub bindings: Vec<Binding>,
     pub functions: Vec<Function>,
+    /// Stable HIR statement identity to original source location. Synthetic or
+    /// span-less statements are intentionally absent.
+    pub statement_spans: HashMap<StmtId, SourceSpan>,
     pub capture_storage: crate::capture::CaptureStoragePlan,
 }
 
@@ -164,6 +167,7 @@ struct Lowerer {
     expression_depth: usize,
     current_statement_span: Option<SourceSpan>,
     current_expression_span: Option<SourceSpan>,
+    lowered_statement_spans: HashMap<StmtId, SourceSpan>,
 }
 
 impl Lowerer {
@@ -186,6 +190,7 @@ impl Lowerer {
             expression_depth: 0,
             current_statement_span: None,
             current_expression_span: None,
+            lowered_statement_spans: HashMap::new(),
         }
     }
 
@@ -326,7 +331,11 @@ impl Lowerer {
         self.current_statement_span = self.statement_spans
             .get(self.statement_span_cursor).copied().flatten();
         self.statement_span_cursor += 1;
+        let source_span = self.current_statement_span;
         let result = self.stmt_inner(ast);
+        if let (Ok(statement), Some(span)) = (&result, source_span) {
+            self.lowered_statement_spans.insert(statement.id, span);
+        }
         self.current_statement_span = previous_span;
         result
     }
@@ -473,6 +482,7 @@ pub fn lower_with_spans(program: &AstProgram, spans: &AstSpanMap) -> Result<Prog
         scopes: lowerer.scopes,
         bindings: lowerer.bindings,
         functions: lowerer.functions,
+        statement_spans: lowerer.lowered_statement_spans,
         capture_storage: crate::capture::CaptureStoragePlan::default(),
     };
     program.functions = crate::capture::analyze(&program)

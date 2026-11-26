@@ -178,6 +178,15 @@ impl Generator {
         Ok(())
     }
     fn stmt(&mut self, p: &Program, s: &Statement, out: &mut String) -> Result<(), String> {
+        if let Some(span) = p.statement_spans.get(&s.id) {
+            Self::line(out, format!(
+                "hl_set_source_range(env, {}, {}, {}, {});",
+                span.start, span.end, span.line, span.column
+            ));
+        } else {
+            // A synthetic statement must not inherit a misleading parent range.
+            Self::line(out, "hl_clear_source_range(env);");
+        }
         match &s.kind {
             StmtKind::Let { binding, value } => {
                 // A captured binding is predeclared with an uninitialized cell
@@ -626,6 +635,7 @@ fn function_definition(
     ));
     Generator::line(&mut out, "    HlEnv *env = hl_env_new(fn_parent);");
     Generator::line(&mut out, "    HlEnv *fn_activation = env;");
+    Generator::line(&mut out, "    hl_clear_source_range(env);");
     if function.captures.is_empty() {
         Generator::line(&mut out, "    (void)fn_closure;");
     } else {

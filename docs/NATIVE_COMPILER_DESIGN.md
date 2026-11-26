@@ -25,10 +25,10 @@ hl check programa.hl
 
 - Cargo define un único paquete y binario Rust `hl`; no hay dependencias externas.
 - `main.rs` reutiliza lexer (`tokenize_spanned`), parser (`Parser::new_spanned` / `new_compact_spanned`), formatter, checker (`TypeChecker::check`) y evaluador (`Evaluator`). `run` y `check` están implementados, se mantiene la invocación legacy y las opciones existentes. `build` llama a `native::compile_to_executable`, ejecuta AST→HIR, genera C desde HIR mediante `hir_native::generate_c`, incorpora `native_runtime.c` y ejecuta `cc`, GCC o Clang.
-- El lexer ya produce `SpannedToken` y el parser acepta tokens con spans para enriquecer errores sintácticos. El AST (`Program`, `Statement`, `Expression`) todavía no conserva spans: no se debe volver a implementar tokenización ni localización desde cero. La mejora pendiente es propagar los spans existentes hasta nodos/diagnósticos del AST.
+- El lexer produce `SpannedToken`; el parser conserva rangos en un sidecar asociado al AST. Los spans ya se propagan a diagnósticos de parser, checker, lowering y backend. El HIR/runtime nativo también conserva provenance de sentencia para traps JSON; no volver a implementar tokenización ni localización desde cero.
 - El checker admite `Unknown` y es deliberadamente no bloqueante. No puede usarse como garantía de que todos los tipos están resueltos.
 - `prototypes/output.c` es un prototipo histórico incompleto, no un backend reutilizable ni un runtime funcional.
-- El evaluador limita la profundidad de evaluación a 256. El parser también tiene límites defensivos de anidamiento.
+- El evaluador y el parser aplican límites configurables de profundidad con valor predeterminado de 256. El intérprete Rust tiene además un presupuesto de 1.000.000 de pasos por ejecución. El runtime C limita 1.000.000 de instrucciones, 256 MiB de arenas, 256 MiB de heap auxiliar y 30 segundos de CPU por defecto; estos presupuestos se pueden ajustar mediante variables de entorno.
 - La semántica que sigue se ha contrastado con `src/ast.rs` y `src/evaluador.rs`; debe convertirse en pruebas de conformidad antes de declarar paridad nativa.
 
 ## Semántica que el backend debe respetar
@@ -80,7 +80,7 @@ La suma Number/String y String/Number concatena la representación del número c
 - El cuerpo de un `while` comparte el entorno creado para ese bucle entre iteraciones.
 - La condición de `if` se evalúa antes de crear el entorno de la rama.
 - `Expression::Block` (bloque usado como cuerpo de lambda) ejecuta sus sentencias en el entorno de llamada ya creado; no crea otro entorno adicional.
-- La asignación indexada solo acepta actualmente el nombre de una variable como destino directo.
+- La asignación indexada toma un binding raíz y admite rutas anidadas de arrays/mapas, por ejemplo `a[0][1] = x`; cada índice se evalúa en orden una sola vez.
 
 ### Funciones y flujo
 
@@ -190,24 +190,27 @@ Aceptación: pruebas CLI de uso, argumentos inválidos, archivo inexistente y au
 
 - `HlValue` etiquetado para Number, Bool, String, Array, Map y Closure; entornos léxicos, variables, truthiness, operadores, colecciones, indexación, `len` e impresión.
 - El runtime está embebido con `include_str!` y enlazado en cada build.
-- Usa arenas bump por lane/ámbito, registros LIFO de limpieza y buffers propiedad de bindings. `hl_fail` limpia los entornos activos antes de terminar con código 1.
+- Usa arenas bump por lane/ámbito, registros LIFO de limpieza, buffers propiedad de bindings, celdas estables y tracing collector para ciclos de closures. `hl_fail` limpia la cadena de entornos activos antes de terminar con código 1.
+- Las asignaciones auxiliares de heap se contabilizan mediante un allocator con cabecera y contabilidad de memoria viva; `free` y `realloc` actualizan el presupuesto.
+- Presupuestos por defecto: 256 MiB de arenas, 256 MiB de heap auxiliar y 30 segundos de CPU, además del límite de 1.000.000 de instrucciones. Son límites del runtime, no un límite absoluto de RSS ni un mecanismo para interrumpir llamadas bloqueantes.
 - Los arrays y mapas se clonan recursivamente al almacenarse en otro binding, conservando la semántica de valor del intérprete.
 
-Pendiente: ampliar las pruebas diferenciales de mapas y errores, ejecutar sanitizers y completar las garantías de propiedad para recursos/grafos que escapan.
+Pendiente: ampliar pruebas de estrés de asignación/liberación y límites; no reabrir la arquitectura de closures/memoria sin una regresión reproducible.
 
 ### N3 — Backend por HIR (subconjunto ampliado)
 
-`src/hir_native.rs` genera C desde HIR para Number/Bool/String, variables y asignación, operadores, ternario, bloques, `if`, `while`, `break`, `continue`, `print`, arrays, mapas, lectura e indexación anidada, asignación indexada anidada y `len`.
+`src/hir_native.rs` genera C desde HIR para Number/Bool/String, variables y asignación, operadores, ternario, bloques, `if`, `while`, `break`, `continue`, `print`, arrays, mapas, lectura e indexación anidada, asignación indexada anidada, indexación Unicode de strings y `len`.
 
-La HIR ya representa funciones, parámetros, llamadas, `return`, capturas y closures. El runtime C puede construir descriptores de closure y celdas capturadas con identidad compartida, pero `generate_c` rechaza las llamadas porque todavía no emite cuerpos de función ni activaciones/frames nativos. Por tanto, construir una closure no significa que pueda invocarse desde un ejecutable nativo.
+La HIR representa funciones, parámetros, llamadas, `return`, capturas y closures. El backend emite cuerpos de función, activaciones/frames, llamadas directas y dinámicas, higher-order calls, recursión y recursión mutua.
 
-Pendiente: ampliar paridad diferencial (especialmente mapas y errores), cubrir indexación de strings si se incorpora al contrato nativo, y diseñar/empezar el ABI de llamadas y activaciones solo después de cerrar las pruebas de memoria.
+La suite diferencial cubre errores de índices de arrays, mapas y strings; los tests ASan/UBSan cubren fallos durante llamadas recursivas y unwinding con capturas mutadas. `tests/native_cell_lifetime.rs` comprueba que los cleanups se ejecutan una sola vez y en orden LIFO. Pendiente: ampliar stress tests de límites de recursos y seguir cerrando cualquier divergencia semántica demostrada.
 
 ### N4 — Build y pruebas diferenciales (build operativo; conformidad pendiente)
 
 - `hl build` ya genera C temporal, compila y enlaza el runtime y produce un ejecutable nativo.
-- La CI ya compara un programa smoke del subconjunto nativo con el intérprete y comprueba que ambos devuelven error ante una división por cero.
-- Falta ampliar el corpus diferencial y comparar de forma sistemática stdout, stderr y códigos de salida para más construcciones.
+- La CI ejecuta todos los ejemplos compatibles, compara el intérprete y el backend nativo y valida errores de runtime. `tests/native_array_parity.rs` y `tests/native_function_parity.rs` comparan resultados y clasificación de errores para colecciones, indexación, strings, funciones y closures.
+- `src/native.rs` compila y ejecuta programas nativos completos con ASan/UBSan, incluidos índices inválidos, fallos recursivos y unwinding de capturas anidadas. `tests/native_cell_lifetime.rs` comprueba que los cleanups se ejecutan una sola vez y en orden LIFO.
+- La conformidad sigue siendo parcial: ampliar el corpus con casos nuevos, no volver a crear pruebas equivalentes a las ya existentes.
 - Añadir pruebas de memoria y ejecución repetida para detectar crecimiento no acotado o corrupción.
 
 Aceptación: ningún programa dentro del subconjunto declarado produce divergencias sin documentar.
@@ -237,7 +240,7 @@ La arquitectura objetivo está especificada en [MEMORY_MODEL.md](MEMORY_MODEL.md
 
 **Estado: integración parcial ya operativa.** El evaluador Rust mantiene su arena de entornos con mark-and-sweep de frames. En C, `MemoryPlan` se consume durante codegen: `scope_stacks` selecciona lanes físicas, los slots `Inline` se materializan en `HlFrame` y los valores dinámicos usan arenas/buffers propiedad de sus bindings. Las promociones integradas son por copia para preservar la vida de valores que escapan; no existe todavía análisis de escape transitivo completo ni un sistema general de movimiento/propiedad para grafos y closures.
 
-La matriz MEM de `MEMORY_MODEL.md` sigue siendo el contrato de pruebas. Arrays, mapas e indexación están implementados en el backend nativo, con paridad diferencial de arrays, mapas anidados y clasificación de errores de tipos. La invocación nativa de funciones y closures está habilitada para llamadas directas y dinámicas (higher-order), incluida la recursividad y la recursividad mutua: las celdas de captura de módulo se predeclaran antes de ejecutar el programa y el runtime ejecuta un trazado de ciclos sobre células y descriptores de closure en los límites de sentencia. Queda pendiente reclamar los valores clonados en la lane raíz y el análisis de escape transitivo.
+La matriz MEM de `MEMORY_MODEL.md` sigue siendo el contrato de pruebas. Arrays, mapas e indexación están implementados en el backend nativo, con paridad diferencial para rutas anidadas, tipos de índice y errores de claves/rango. La invocación nativa de funciones y closures está habilitada para llamadas directas y dinámicas, recursividad y recursividad mutua; el runtime ejecuta un tracing collector para ciclos de celdas/closures. Las pruebas ASan/UBSan cubren escapes, grafos anidados y unwinding. Quedan pendientes el análisis de escape transitivo y ampliar la cobertura de estrés de recursos.
 
 
 ### Planificación de memoria previa al backend

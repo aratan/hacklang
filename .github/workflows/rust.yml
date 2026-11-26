@@ -141,6 +141,27 @@ jobs:
           test "$time_status" -eq 1
           grep -q "presupuesto de tiempo de CPU de ejecución nativa" "$temp_dir/runtime-time-budget.err"
 
+          cat > "$temp_dir/runtime-time-budget-nested.hl" <<'EOF'
+          let spin = |limit| (
+            let index = 0;
+            while (index < limit) (
+              index = index + 1;
+            )
+            return index;
+          );
+          let total = 0;
+          while (true) (
+            total = total + spin(1000);
+          )
+          EOF
+          cargo run --quiet -- build "$temp_dir/runtime-time-budget-nested.hl" -o "$temp_dir/runtime-time-budget-nested" > /dev/null
+          set +e
+          HACKLANG_MAX_EVAL_STEPS=1000000000 HACKLANG_MAX_EVAL_MILLIS=50 "$temp_dir/runtime-time-budget-nested" > "$temp_dir/runtime-time-budget-nested.out" 2> "$temp_dir/runtime-time-budget-nested.err"
+          nested_time_status=$?
+          set -e
+          test "$nested_time_status" -eq 1
+          grep -q "presupuesto de tiempo de CPU de ejecución nativa" "$temp_dir/runtime-time-budget-nested.err"
+
           payload="$(head -c 8192 /dev/zero | tr '\0' 'a')"
           printf 'let payload = "%s";\nprint 1;\n' "$payload" > "$temp_dir/runtime-memory-budget.hl"
           cargo run --quiet -- build "$temp_dir/runtime-memory-budget.hl" -o "$temp_dir/runtime-memory-budget" > /dev/null

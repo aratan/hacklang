@@ -1593,6 +1593,43 @@ int main(void) {
     }
 
     #[test]
+    fn sanitized_recursive_failure_unwinds_mutated_nested_captures() {
+        let directory = temporary_directory().expect("temporary directory");
+        let failure = sanitized_native_build(
+            r#"
+let state = @("payload": [[1, 2], [3, 4]]);
+let fail = |n| (
+    state["payload"][1][0] = n;
+    let churn = [n, n + 1, n + 2, n + 3];
+    if (n < 1) (
+        print state["payload"][1][0];
+        return [1][8];
+    )
+    return fail(n - 1);
+);
+fail(5);
+"#,
+            &directory,
+            "sanitized_recursive_capture_unwind",
+        );
+        let run = Command::new(&failure)
+            .output()
+            .expect("run sanitized recursive capture failure");
+        assert!(
+            !run.status.success(),
+            "out-of-range read in recursive captured mutation unexpectedly succeeded"
+        );
+        assert_no_sanitizer_report(&run.stderr, "recursive_capture_unwind");
+        assert!(
+            String::from_utf8_lossy(&run.stderr).contains("índice")
+                || String::from_utf8_lossy(&run.stderr).contains("index"),
+            "expected runtime bounds error, got: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn sanitized_direct_calls_keep_activation_frames_and_error_paths_safe() {
         let directory = temporary_directory().expect("temporary directory");
         let success = sanitized_native_build(

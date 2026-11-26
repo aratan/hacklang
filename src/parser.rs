@@ -16,13 +16,14 @@ enum Precedence {
     Comparison, // < , >
 }
 
-const MAX_PARSE_DEPTH: usize = 256;
+const DEFAULT_MAX_PARSE_DEPTH: usize = 256;
 
 pub struct Parser {
     tokens: Vec<Token>,
     position: usize,
     precedences: HashMap<Token, Precedence>,
     compact: bool,
+    max_depth: usize,
     expression_depth: usize,
     statement_depth: usize,
     spans: Option<Vec<SourceSpan>>,
@@ -32,30 +33,46 @@ pub struct Parser {
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self::with_mode(tokens, false)
+        Self::new_with_max_depth(tokens, DEFAULT_MAX_PARSE_DEPTH)
+    }
+
+    pub fn new_with_max_depth(tokens: Vec<Token>, max_depth: usize) -> Self {
+        Self::with_mode(tokens, false, max_depth)
     }
 
     pub fn new_compact(tokens: Vec<Token>) -> Self {
-        Self::with_mode(tokens, true)
+        Self::new_compact_with_max_depth(tokens, DEFAULT_MAX_PARSE_DEPTH)
+    }
+
+    pub fn new_compact_with_max_depth(tokens: Vec<Token>, max_depth: usize) -> Self {
+        Self::with_mode(tokens, true, max_depth)
     }
 
     pub fn new_spanned(tokens: Vec<SpannedToken>) -> Self {
-        Self::with_spanned_mode(tokens, false)
+        Self::new_spanned_with_max_depth(tokens, DEFAULT_MAX_PARSE_DEPTH)
+    }
+
+    pub fn new_spanned_with_max_depth(tokens: Vec<SpannedToken>, max_depth: usize) -> Self {
+        Self::with_spanned_mode(tokens, false, max_depth)
     }
 
     pub fn new_compact_spanned(tokens: Vec<SpannedToken>) -> Self {
-        Self::with_spanned_mode(tokens, true)
+        Self::new_compact_spanned_with_max_depth(tokens, DEFAULT_MAX_PARSE_DEPTH)
     }
 
-    fn with_spanned_mode(tokens: Vec<SpannedToken>, compact: bool) -> Self {
+    pub fn new_compact_spanned_with_max_depth(tokens: Vec<SpannedToken>, max_depth: usize) -> Self {
+        Self::with_spanned_mode(tokens, true, max_depth)
+    }
+
+    fn with_spanned_mode(tokens: Vec<SpannedToken>, compact: bool, max_depth: usize) -> Self {
         let (plain, spans): (Vec<Token>, Vec<SourceSpan>) = tokens.into_iter()
             .map(|item| (item.token, item.span)).unzip();
-        let mut parser = Self::with_mode(plain, compact);
+        let mut parser = Self::with_mode(plain, compact, max_depth);
         parser.spans = Some(spans);
         parser
     }
 
-    fn with_mode(tokens: Vec<Token>, compact: bool) -> Self {
+    fn with_mode(tokens: Vec<Token>, compact: bool, max_depth: usize) -> Self {
         let mut precedences = HashMap::new();
         precedences.insert(Token::Plus, Precedence::Sum);
         precedences.insert(Token::Minus, Precedence::Sum);
@@ -73,6 +90,7 @@ impl Parser {
             position: 0,
             precedences,
             compact,
+            max_depth,
             expression_depth: 0,
             statement_depth: 0,
             spans: None,
@@ -134,8 +152,8 @@ impl Parser {
     }
 
     fn parse_statement(&mut self) -> Result<Statement, String> {
-        if self.statement_depth >= MAX_PARSE_DEPTH {
-            return Err(format!("Límite de anidamiento de sentencias excedido ({MAX_PARSE_DEPTH})"));
+        if self.statement_depth >= self.max_depth {
+            return Err(format!("Límite de anidamiento de sentencias excedido ({})", self.max_depth));
         }
         let span_slot = self.statement_spans.len();
         let start = self.position;
@@ -502,8 +520,8 @@ impl Parser {
     }
 
     fn parse_expression(&mut self, precedence: Precedence) -> Result<Expression, String> {
-        if self.expression_depth >= MAX_PARSE_DEPTH {
-            return Err(format!("Límite de profundidad de expresiones excedido ({MAX_PARSE_DEPTH})"));
+        if self.expression_depth >= self.max_depth {
+            return Err(format!("Límite de profundidad de expresiones excedido ({})", self.max_depth));
         }
         let root_expression = self.expression_depth == 0;
         let span_slot = if root_expression {
@@ -1089,6 +1107,24 @@ mod tests {
         let mut parser = Parser::new(tokens);
         let error = parser.parse_program().unwrap_err();
         assert!(error.contains("Límite de anidamiento"));
+    }
+
+    #[test]
+    fn custom_parse_depth_is_enforced() {
+        let mut lexer = crate::lexer::Lexer::new("let x = (((((1)))));".to_string());
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new_with_max_depth(tokens, 3);
+        let error = parser.parse_program().unwrap_err();
+        assert!(error.contains("Límite de profundidad"));
+        assert!(error.contains("(3)"));
+    }
+
+    #[test]
+    fn custom_parse_depth_can_be_raised() {
+        let mut lexer = crate::lexer::Lexer::new("let x = (((((1)))));".to_string());
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new_with_max_depth(tokens, 32);
+        assert!(parser.parse_program().is_ok());
     }
 
     #[test]

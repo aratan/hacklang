@@ -72,7 +72,7 @@ struct Environment {
     alive: bool,
 }
 
-const MAX_EVAL_DEPTH: usize = 256;
+const DEFAULT_MAX_EVAL_DEPTH: usize = 256;
 
 #[derive(Debug)]
 pub struct Evaluator {
@@ -82,17 +82,23 @@ pub struct Evaluator {
     free_env_ids: Vec<usize>,
     current_env: usize,
     eval_depth: usize,
+    max_eval_depth: usize,
     // Values held only by an in-progress call must remain visible to mark-and-sweep.
     temporary_roots: Vec<Value>,
 }
 
 impl Evaluator {
     pub fn new() -> Self {
+        Self::new_with_max_depth(DEFAULT_MAX_EVAL_DEPTH)
+    }
+
+    pub fn new_with_max_depth(max_eval_depth: usize) -> Self {
         Evaluator {
             environments: vec![Environment { parent: None, values: HashMap::new(), alive: true }],
             free_env_ids: Vec::new(),
             current_env: 0,
             eval_depth: 0,
+            max_eval_depth,
             temporary_roots: Vec::new(),
         }
     }
@@ -343,8 +349,8 @@ impl Evaluator {
     }
 
     fn eval_expression(&mut self, expr: &Expression) -> Result<Value, String> {
-        if self.eval_depth >= MAX_EVAL_DEPTH {
-            return Err(format!("Límite de profundidad de evaluación excedido ({MAX_EVAL_DEPTH})"));
+        if self.eval_depth >= self.max_eval_depth {
+            return Err(format!("Límite de profundidad de evaluación excedido ({})", self.max_eval_depth));
         }
         self.eval_depth += 1;
         let result = self.eval_expression_inner(expr);
@@ -880,6 +886,18 @@ mod tests {
     fn deep_recursion_returns_error_instead_of_overflowing_stack() {
         let result = eval_program("let loop = |n| loop(n + 1); loop(0);");
         assert!(result.unwrap_err().contains("Límite de profundidad de evaluación"));
+    }
+
+    #[test]
+    fn custom_evaluation_depth_is_enforced() {
+        let mut lexer = crate::lexer::Lexer::new("let loop = |n| loop(n + 1); loop(0);".to_string());
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = crate::parser::Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+        let mut evaluator = Evaluator::new_with_max_depth(8);
+        let error = evaluator.evaluate(&program).unwrap_err();
+        assert!(error.contains("Límite de profundidad de evaluación"));
+        assert!(error.contains("(8)"));
     }
 
     #[test]

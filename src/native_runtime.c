@@ -524,7 +524,7 @@ static void hl_env_free(HlEnv *environment) {
         HlAllocation *next = allocation->next;
         hl_ownership_invalidate_allocation(allocation);
         allocation->cleanup(allocation->context);
-        free(allocation);
+        hl_heap_free(allocation);
         allocation = next;
     }
     /* Token tombstones live in the root until all descendant callbacks have run. */

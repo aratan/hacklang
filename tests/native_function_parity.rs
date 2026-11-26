@@ -421,7 +421,7 @@ print saved[0]["call"]();
 fn invalid_array_index_type_errors_match_interpreter() {
     assert_interpreter_native_runtime_error(
         "invalid_array_index_type",
-        "let values = [1];\\nprint values[\"not-an-index\"];\\n",
+        "let values = [1];\nprint values[\"not-an-index\"];\n",
         "El índice de un array debe ser entero no negativo",
     );
 }
@@ -430,7 +430,7 @@ fn invalid_array_index_type_errors_match_interpreter() {
 fn invalid_string_index_type_errors_match_interpreter() {
     assert_interpreter_native_runtime_error(
         "invalid_string_index_type",
-        "let value = \"hacklang\";\\nprint value[true];\\n",
+        "let value = \"hacklang\";\nprint value[true];\n",
         "El índice de una cadena debe ser entero no negativo",
     );
 }

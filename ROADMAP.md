@@ -65,7 +65,7 @@ HackLang es un lenguaje de programación de propósito general. Debe permitir co
 - Introducir errores tipados con código, fase, mensaje y ubicación; mantener mensajes legibles y salida JSON estable.
 - Límites configurables de profundidad: implementados en PR #20 para parser y evaluador, con valor predeterminado compatible de 256 y opciones CLI validadas. Los límites de pasos/instrucciones, memoria y tiempo siguen pendientes; no se consideran cubiertos por esta tarea.
 - Evaluador y parser: límites defensivos de 256 niveles ya implementados; añadir configuración, pruebas de estrés/fuzzing y evaluar una pila explícita/trampolín si las mediciones lo justifican.
-- Añadir fuzzing para lexer/parser y pruebas de estrés adicionales para recursión, anidamiento y entradas malformadas. Ya hay tests de regresión para los límites del parser y evaluador.
+- Fuzz-smoke determinista del lexer/parser: preparado en PR #22 con corpus de regresión, 256 entradas sintéticas acotadas, ambos modos de gramática y límite de profundidad; CI ejecuta estas pruebas. No equivale a fuzzing coverage-guided. Mantener campañas largas fuera de la CI bloqueante.
 
 ### P1 — Tipos para sistemas y protocolos
 - Añadir enteros con signo/sin signo de anchuras explícitas (8/16/32/64 bits) y conversiones comprobadas.
@@ -139,7 +139,7 @@ Estado real: el backend C ya ejecuta un subconjunto amplio del lenguaje, incluid
 
 **Estado actualizado (2026-11-26):** PR #20 implementa límites de profundidad configurables para parser y evaluador, mantiene 256 como valor predeterminado, expone `--max-parse-depth` en `run`/`check`/`build` y `--max-eval-depth` en `run`, y rechaza valores inválidos o combinaciones no admitidas. La CI #1222 terminó completamente verde: type-check, build, tests unitarios, ejemplos `.hl` y comparación intérprete/nativo. La PR sigue abierta hasta actualizar esta documentación y completar la integración.
 
-**Siguiente prioridad:** P0 — fuzzing reproducible del lexer/parser. Crear un harness separado con corpus de regresiones, límites de tiempo/tamaño y smoke tests breves en CI; las campañas largas deben quedar fuera del flujo bloqueante. Primero revisar dependencias y workflows existentes para evitar duplicar infraestructura. Después, abordar límites de instrucciones, memoria y tiempo solo mediante mecanismos medibles y pruebas que demuestren su cumplimiento. No reabrir paridad de índices/unwinding ni stress de closures salvo regresión reproducible; no iniciar otra IR ni reescribir el frontend.
+**Siguiente prioridad:** P0 — evaluar fuzzing coverage-guided del lexer/parser (por ejemplo, `cargo-fuzz`/libFuzzer) como trabajo independiente. Definir harnesses para lexer y parser, reutilizar el corpus de regresiones, fijar límites de tamaño/tiempo y ejecutar un smoke corto en CI; reservar campañas prolongadas para ejecución programada/no bloqueante. No introducir la infraestructura hasta verificar que aporta cobertura real frente al smoke determinista de PR #22. Después, abordar límites de instrucciones, memoria y tiempo solo mediante mecanismos medibles y pruebas que demuestren su cumplimiento. No reabrir paridad de índices/unwinding ni stress de closures salvo regresión reproducible; no iniciar otra IR ni reescribir el frontend.
 
 No reutilizar `prototypes/output.c` como backend funcional. No hacer obligatorio el checker estático para compilar. No declarar una característica implementada hasta tener tests y CI que la demuestren.
 

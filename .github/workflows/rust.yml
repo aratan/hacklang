@@ -126,3 +126,13 @@ jobs:
           set -e
           test "$budget_status" -eq 1
           grep -q "presupuesto de instrucciones de ejecución nativa" "$temp_dir/runtime-budget.err"
+
+          payload="$(head -c 8192 /dev/zero | tr '\\0' 'a')"
+          printf 'let payload = "%s";\\nprint 1;\\n' "$payload" > "$temp_dir/runtime-memory-budget.hl"
+          cargo run --quiet -- build "$temp_dir/runtime-memory-budget.hl" -o "$temp_dir/runtime-memory-budget" > /dev/null
+          set +e
+          HACKLANG_MAX_ARENA_BYTES=4096 "$temp_dir/runtime-memory-budget" > "$temp_dir/runtime-memory-budget.out" 2> "$temp_dir/runtime-memory-budget.err"
+          memory_status=$?
+          set -e
+          test "$memory_status" -eq 1
+          grep -q "presupuesto de memoria de arenas nativas" "$temp_dir/runtime-memory-budget.err"

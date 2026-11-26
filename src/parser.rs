@@ -491,13 +491,21 @@ impl Parser {
         if self.expression_depth >= MAX_PARSE_DEPTH {
             return Err(format!("Límite de profundidad de expresiones excedido ({MAX_PARSE_DEPTH})"));
         }
-        let span_slot = self.expression_spans.len();
+        let root_expression = self.expression_depth == 0;
+        let span_slot = if root_expression {
+            let slot = self.expression_spans.len();
+            self.expression_spans.push(None);
+            Some(slot)
+        } else {
+            None
+        };
         let start = self.position;
-        self.expression_spans.push(None);
         self.expression_depth += 1;
         let result = self.parse_expression_inner(precedence);
         self.expression_depth -= 1;
-        self.expression_spans[span_slot] = self.span_for_tokens(start, self.position);
+        if let Some(slot) = span_slot {
+            self.expression_spans[slot] = self.span_for_tokens(start, self.position);
+        }
         result
     }
 

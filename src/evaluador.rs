@@ -420,7 +420,7 @@ impl Evaluator {
                     Ok(Flow::Continue)
                 })
             }
-        })();
+        }})();
         if result.is_err() && self.last_error_range.is_none() {
             self.last_error_range = self.current_statement_span;
         }

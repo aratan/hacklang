@@ -167,7 +167,7 @@ cargo run -- build --max-parse-depth 512 programa.hl
 
 ### Diagnósticos estructurados
 
-`--diagnostics-json` emite un array JSON. Cada elemento contiene `code` (identificador estable), `phase` (`lexing`, `parsing`, `type_check`, `lowering`, `native_codegen` o `runtime`), `severity` (`error` o `warning`), `message` y `range` (objeto con offsets/línea/columna o `null`). Los errores del lexer, parser, lowering HIR, compilación nativa y evaluador Rust usan este formato cuando se solicita JSON; los errores de runtime no incluyen rango mientras no exista provenance fiable. Los traps del runtime C nativo siguen pendientes. La salida textual tradicional se conserva por defecto.
+`--diagnostics-json` emite un array JSON. Cada elemento contiene `code` (identificador estable), `phase` (`lexing`, `parsing`, `type_check`, `lowering`, `native_codegen` o `runtime`), `severity` (`error` o `warning`), `message` y `range` (objeto con offsets/línea/columna o `null`). Los errores del lexer, parser, lowering HIR, compilación nativa y evaluador Rust usan este formato cuando se solicita JSON. Los traps de ejecutables nativos también pueden emitirlo con `HACKLANG_DIAGNOSTICS=json ./programa`; su rango es `null` mientras no exista provenance fiable. La salida textual tradicional se conserva por defecto.
 
 Ejemplo de forma:
 

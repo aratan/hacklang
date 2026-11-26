@@ -658,7 +658,7 @@ mod tests {
 
     #[test]
     fn lowering_error_uses_nested_statement_expression_span() {
-        let source = "\\nif (true) ( print missing; )";
+        let source = "\nif (true) ( print missing; )";
         let mut lexer = crate::lexer::Lexer::new(source.to_string());
         let tokens = lexer.tokenize_spanned().unwrap();
         let mut parser = crate::parser::Parser::new_spanned(tokens);

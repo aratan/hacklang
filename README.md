@@ -173,6 +173,14 @@ HACKLANG_MAX_EVAL_STEPS=500000 ./hello
 
 Un valor no numérico, vacío o cero no sustituye el límite predeterminado.
 
+El runtime nativo también limita las reservas acumuladas de bloques de arena a 256 MiB por ejecución. Se puede ajustar con:
+
+```bash
+HACKLANG_MAX_ARENA_BYTES=67108864 ./hello
+```
+
+Este límite contabiliza la capacidad reservada por las arenas administradas mediante `hl_alloc`; no representa un límite total de memoria del proceso ni incluye los descriptores y buffers auxiliares reservados directamente en el heap.
+
 
 ### Diagnósticos estructurados
 

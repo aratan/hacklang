@@ -153,6 +153,8 @@ struct HlEnv {
     uint64_t next_ownership_id;
     uint64_t eval_steps;
     uint64_t max_eval_steps;
+    uint64_t arena_bytes_reserved;
+    uint64_t max_arena_bytes;
     HlArenaLane *lane;
     HlArenaBlock *lane_mark_block;
     size_t lane_mark_used;
@@ -419,8 +421,13 @@ static void *hl_alloc(HlEnv *environment, size_t size) {
         size_t capacity = required > default_capacity ? required : default_capacity;
         if (capacity > SIZE_MAX - sizeof(HlArenaBlock))
             hl_fail(environment, "tamaño de región fuera de rango");
+        HlEnv *root = hl_env_root(environment);
+        if (root && (root->arena_bytes_reserved > root->max_arena_bytes ||
+            (uint64_t)capacity > root->max_arena_bytes - root->arena_bytes_reserved))
+            hl_fail(environment, "se agotó el presupuesto de memoria de arenas nativas");
         block = (HlArenaBlock *)malloc(sizeof(HlArenaBlock) + capacity);
         if (!block) hl_fail(environment, "memoria agotada");
+        if (root) root->arena_bytes_reserved += (uint64_t)capacity;
         block->next = NULL; block->capacity = capacity; block->used = 0;
         if (!lane->blocks) lane->blocks = block;
         else { HlArenaBlock *tail = lane->blocks; while (tail->next) tail = tail->next; tail->next = block; }
@@ -849,6 +856,8 @@ static HlEnv *hl_env_new_in_lane(HlEnv *parent, HlArenaLane *lane) {
     environment->next_ownership_id = 0;
     environment->eval_steps = 0;
     environment->max_eval_steps = UINT64_C(1000000);
+    environment->arena_bytes_reserved = 0;
+    environment->max_arena_bytes = UINT64_C(268435456);
     if (!parent) {
         const char *limit = getenv("HACKLANG_MAX_EVAL_STEPS");
         if (limit && *limit >= '0' && *limit <= '9') {
@@ -856,6 +865,13 @@ static HlEnv *hl_env_new_in_lane(HlEnv *parent, HlArenaLane *lane) {
             unsigned long long parsed = strtoull(limit, &end, 10);
             if (end != limit && *end == '\0' && parsed > 0)
                 environment->max_eval_steps = (uint64_t)parsed;
+        }
+        const char *memory_limit = getenv("HACKLANG_MAX_ARENA_BYTES");
+        if (memory_limit && *memory_limit >= '0' && *memory_limit <= '9') {
+            char *end = NULL;
+            unsigned long long parsed = strtoull(memory_limit, &end, 10);
+            if (end != memory_limit && *end == '\0' && parsed > 0)
+                environment->max_arena_bytes = (uint64_t)parsed;
         }
     }
     environment->lane = lane;

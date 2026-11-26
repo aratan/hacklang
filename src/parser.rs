@@ -238,24 +238,7 @@ impl Parser {
                     }))
                 }
             }
-            Token::Pipe => {
-                let start = self.position;
-                self.expression_depth += 1;
-                let lambda_result = self.parse_lambda_expression();
-                self.expression_depth -= 1;
-                let lambda = lambda_result?;
-                let span = self.span_for_tokens(start, self.position);
-                self.expression_spans.push(span);
-                if *self.current_token() == Token::Semicolon {
-                    self.advance();
-                }
-                let params = match &lambda {
-                    Expression::Lambda { params, .. } => params,
-                    _ => unreachable!("parse_lambda_expression always returns a Lambda"),
-                };
-                let name = format!("__lambda_{}", params.join("_"));
-                Ok(Statement::Let(LetStatement { name, value: lambda }))
-            },
+            Token::Pipe => self.parse_lambda_statement(),
             _ => Err(format!(
                 "Se esperaba el inicio de una sentencia, pero se encontró: {:?}",
                 self.current_token()
@@ -443,7 +426,13 @@ impl Parser {
 
     // --- Sentencia Lambda: |x, y| { cuerpo } ---
     fn parse_lambda_statement(&mut self) -> Result<Statement, String> {
-        let lambda = self.parse_lambda_expression()?;
+        let start = self.position;
+        self.expression_depth += 1;
+        let lambda_result = self.parse_lambda_expression();
+        self.expression_depth -= 1;
+        let lambda = lambda_result?;
+        let span = self.span_for_tokens(start, self.position);
+        self.expression_spans.push(span);
         if *self.current_token() == Token::Semicolon {
             self.advance();
         }

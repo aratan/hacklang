@@ -518,15 +518,16 @@ impl Parser {
         if *self.current_token() == Token::Question && precedence <= Precedence::Ternary {
             self.advance(); // consume ?
             let true_branch = self.parse_expression(Precedence::Lowest)?;
-            if *self.current_token() == Token::Colon {
-                self.advance(); // consume :
-                let false_branch = self.parse_expression(Precedence::Lowest)?;
-                left_expr = Expression::Ternary {
-                    condition: Box::new(left_expr),
-                    true_branch: Box::new(true_branch),
-                    false_branch: Box::new(false_branch),
-                };
+            if *self.current_token() != Token::Colon {
+                return Err("Se esperaba ':' entre las ramas de la expresión ternaria".to_string());
             }
+            self.advance(); // consume :
+            let false_branch = self.parse_expression(Precedence::Lowest)?;
+            left_expr = Expression::Ternary {
+                condition: Box::new(left_expr),
+                true_branch: Box::new(true_branch),
+                false_branch: Box::new(false_branch),
+            };
         }
 
         Ok(left_expr)
@@ -1056,6 +1057,16 @@ mod tests {
         let mut parser = Parser::new_spanned(tokens);
         let error = parser.parse_program().unwrap_err();
         assert!(error.contains("Se esperaba ')' al cerrar la llamada"), "{error}");
+        assert!(error.contains("línea 2, columna"), "{error}");
+    }
+
+    #[test]
+    fn spanned_parser_rejects_ternary_without_colon() {
+        let mut lexer = crate::lexer::Lexer::new("\\nlet value = true ? 1;".to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = Parser::new_spanned(tokens);
+        let error = parser.parse_program().unwrap_err();
+        assert!(error.contains("Se esperaba ':' entre las ramas de la expresión ternaria"), "{error}");
         assert!(error.contains("línea 2, columna"), "{error}");
     }
 

@@ -903,6 +903,9 @@ mod tests {
         let c = generate_c(&lowered, &memory).unwrap();
         assert!(c.contains("static void hl_eval_step(HlEnv *environment)"));
         assert!(c.contains("HACKLANG_MAX_EVAL_STEPS"));
+        assert!(c.contains("HACKLANG_MAX_EVAL_MILLIS"));
+        assert!(c.contains("max_eval_millis"));
+        assert!(c.contains("se agotó el presupuesto de tiempo de CPU de ejecución nativa"));
         assert!(c.contains("HACKLANG_MAX_ARENA_BYTES"));
         assert!(c.contains("HACKLANG_MAX_HEAP_BYTES"));
         assert!(c.contains("heap_bytes_live"));

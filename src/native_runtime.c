@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 typedef struct HlArray HlArray;
 typedef struct HlMap HlMap;
@@ -153,6 +154,9 @@ struct HlEnv {
     uint64_t next_ownership_id;
     uint64_t eval_steps;
     uint64_t max_eval_steps;
+    uint64_t max_eval_millis;
+    clock_t eval_started_at;
+    int has_eval_clock;
     uint64_t arena_bytes_reserved;
     uint64_t max_arena_bytes;
     uint64_t heap_bytes_live;
@@ -423,6 +427,25 @@ static void hl_eval_step(HlEnv *environment) {
     if (!root) return;
     if (root->eval_steps >= root->max_eval_steps)
         hl_fail(environment, "se agotó el presupuesto de instrucciones de ejecución nativa");
+    if (root->has_eval_clock) {
+        clock_t now = clock();
+        if (now == (clock_t)-1 || now < root->eval_started_at)
+            hl_fail(environment, "no se pudo consultar el reloj de ejecución nativo");
+        uint64_t elapsed_ticks = (uint64_t)(now - root->eval_started_at);
+        uint64_t max_ticks;
+        uint64_t whole_seconds = root->max_eval_millis / UINT64_C(1000);
+        uint64_t remaining_millis = root->max_eval_millis % UINT64_C(1000);
+        if (whole_seconds > UINT64_MAX / (uint64_t)CLOCKS_PER_SEC) {
+            max_ticks = UINT64_MAX;
+        } else {
+            max_ticks = whole_seconds * (uint64_t)CLOCKS_PER_SEC;
+            uint64_t fraction = (remaining_millis * (uint64_t)CLOCKS_PER_SEC + UINT64_C(999)) / UINT64_C(1000);
+            if (fraction > UINT64_MAX - max_ticks) max_ticks = UINT64_MAX;
+            else max_ticks += fraction;
+        }
+        if (elapsed_ticks >= max_ticks)
+            hl_fail(environment, "se agotó el presupuesto de tiempo de CPU de ejecución nativa");
+    }
     ++root->eval_steps;
 }
 static HlOwnershipRecord *hl_ownership_find(HlEnv *environment, uint64_t id) {
@@ -933,6 +956,9 @@ static HlEnv *hl_env_new_in_lane(HlEnv *parent, HlArenaLane *lane) {
     environment->next_ownership_id = 0;
     environment->eval_steps = 0;
     environment->max_eval_steps = UINT64_C(1000000);
+    environment->max_eval_millis = UINT64_C(30000);
+    environment->eval_started_at = (clock_t)0;
+    environment->has_eval_clock = 0;
     environment->arena_bytes_reserved = 0;
     environment->max_arena_bytes = UINT64_C(268435456);
     environment->heap_bytes_live = 0;
@@ -946,6 +972,17 @@ static HlEnv *hl_env_new_in_lane(HlEnv *parent, HlArenaLane *lane) {
             if (end != limit && *end == '\0' && parsed > 0)
                 environment->max_eval_steps = (uint64_t)parsed;
         }
+        const char *time_limit = getenv("HACKLANG_MAX_EVAL_MILLIS");
+        if (time_limit && *time_limit >= '0' && *time_limit <= '9') {
+            char *end = NULL;
+            unsigned long long parsed = strtoull(time_limit, &end, 10);
+            if (end != time_limit && *end == '\0' && parsed > 0)
+                environment->max_eval_millis = (uint64_t)parsed;
+        }
+        environment->eval_started_at = clock();
+        if (environment->eval_started_at == (clock_t)-1)
+            hl_fail(environment, "no se pudo iniciar el reloj de ejecución nativo");
+        environment->has_eval_clock = 1;
         const char *memory_limit = getenv("HACKLANG_MAX_ARENA_BYTES");
         if (memory_limit && *memory_limit >= '0' && *memory_limit <= '9') {
             char *end = NULL;

@@ -171,6 +171,14 @@ Los ejecutables nativos limitan también el trabajo de ejecución: 1.000.000 de 
 HACKLANG_MAX_EVAL_STEPS=500000 ./hello
 ```
 
+El runtime nativo también limita el tiempo de CPU de cada ejecución a 30 segundos por defecto. Se puede ajustar con `HACKLANG_MAX_EVAL_MILLIS`:
+
+```bash
+HACKLANG_MAX_EVAL_MILLIS=10000 ./hello
+```
+
+El reloj se consulta en cada punto de control del runtime (sentencias e iteraciones de `while`). Es un límite cooperativo de tiempo de CPU: no puede interrumpir una llamada externa o una operación nativa bloqueante que no vuelva al runtime.
+
 Un valor no numérico, vacío o cero no sustituye el límite predeterminado.
 
 El runtime nativo también limita las reservas acumuladas de bloques de arena a 256 MiB por ejecución. Se puede ajustar con:

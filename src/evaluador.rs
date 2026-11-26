@@ -1032,6 +1032,36 @@ mod tests {
     }
 
     #[test]
+    fn runtime_diagnostics_use_statement_source_range_when_available() {
+        let source = "let value = 1;\nprint 1 / 0;";
+        let mut lexer = crate::lexer::Lexer::new(source.to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = crate::parser::Parser::new_spanned(tokens);
+        let (program, spans) = parser.parse_program_with_spans().unwrap();
+        let mut evaluator = Evaluator::new();
+
+        let diagnostic = evaluator.evaluate_with_spans_diagnostic(&program, &spans).unwrap_err();
+        let range = diagnostic.range.expect("runtime diagnostic should point to the failing statement");
+        assert_eq!(range.line, 2);
+        assert_eq!(range.column, 1);
+        assert_eq!(diagnostic.code, "HL-RUNTIME-001");
+    }
+
+    #[test]
+    fn runtime_diagnostics_prefer_the_innermost_failing_statement() {
+        let source = "if (true) {\n  print 1 / 0;\n}";
+        let mut lexer = crate::lexer::Lexer::new(source.to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = crate::parser::Parser::new_spanned(tokens);
+        let (program, spans) = parser.parse_program_with_spans().unwrap();
+        let mut evaluator = Evaluator::new();
+
+        let diagnostic = evaluator.evaluate_with_spans_diagnostic(&program, &spans).unwrap_err();
+        let range = diagnostic.range.expect("nested runtime error should retain its statement span");
+        assert_eq!((range.line, range.column), (2, 3));
+    }
+
+    #[test]
     fn deep_recursion_returns_error_instead_of_overflowing_stack() {
         let result = eval_program("let loop = |n| loop(n + 1); loop(0);");
         assert!(result.unwrap_err().contains("Límite de profundidad de evaluación"));

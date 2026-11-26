@@ -620,7 +620,8 @@ fn function_definition(
     let mut out = String::new();
     Generator::line(&mut out, format!("static HlValue hl_fn_{id}(HlEnv *fn_parent, HlValue fn_closure, const HlValue *fn_args, size_t fn_arg_count) {{"));
     Generator::line(&mut out, format!(
-        "    if (fn_arg_count != {}) hl_fail(fn_parent, \"número de argumentos incorrecto en la llamada a la función\");",
+        "    if (fn_arg_count != {}) {{ char message[128]; snprintf(message, sizeof(message), \"La función esperaba {} argumentos y recibió %zu\", fn_arg_count); hl_fail(fn_parent, message); }}",
+        function.params.len(),
         function.params.len()
     ));
     Generator::line(&mut out, "    HlEnv *env = hl_env_new(fn_parent);");

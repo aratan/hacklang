@@ -748,3 +748,6 @@ El objetivo sigue siendo un modelo **stack-first, sin GC general y sin gestión 
 ## Arquitectura del compilador
 
 El frontend (lexer, parser y AST) es único para intérprete y compilador nativo. La HIR inicial ya está implementada en `src/hir.rs`, con IDs de expresión/sentencia, ámbitos y bindings resueltos; el backend C la consume desde `src/hir_native.rs`. La cobertura HIR/nativa sigue siendo parcial. Consulta [docs/HIR_DESIGN.md](docs/HIR_DESIGN.md) y [docs/AI_AUTHORING.md](docs/AI_AUTHORING.md).
+
+
+El intérprete Rust aplica un presupuesto temporal cooperativo predeterminado de 30 segundos por evaluación. Puede ajustarse con `HACKLANG_MAX_EVAL_MILLIS` o con `hl run --max-eval-millis N` (milisegundos). El reloj se comprueba entre sentencias, incluidas las ejecutadas dentro de llamadas anidadas; no puede interrumpir una operación individual que bloquee o no devuelva el control al evaluador.

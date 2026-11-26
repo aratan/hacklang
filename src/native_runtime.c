@@ -636,6 +636,17 @@ static void hl_collect(HlEnv *environment) {
                     binding->value.tag == HL_MAP ? (void *)binding->value.as.map :
                     binding->value.tag == HL_CLOSURE ? (void *)binding->value.as.closure : NULL,
                     (void *)binding->cell);
+        for (HlEnv *scope = environment; scope; scope = scope->parent)
+            for (HlBinding *binding = scope->bindings; binding; binding = binding->next)
+                if (binding->value.tag == HL_MAP && binding->value.as.map)
+                    for (size_t i = 0; i < binding->value.as.map->length; ++i) {
+                        HlValue key = binding->value.as.map->entries[i].key;
+                        HlValue value = binding->value.as.map->entries[i].value;
+                        fprintf(stderr, "    map[%g] value-tag=%d closure=%p\\n",
+                            key.tag == HL_NUMBER ? key.as.number : -999.0,
+                            (int)value.tag,
+                            value.tag == HL_CLOSURE ? (void *)value.as.closure : NULL);
+                    }
         for (HlRootFrame *node = root->frame_roots; node; node = node->next) {
             HlFrame *frame = node->frame;
             if (!frame) continue;

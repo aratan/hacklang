@@ -671,4 +671,33 @@ mod tests {
         assert_eq!((range.line, range.column), (2, 19));
     }
 
+    #[test]
+    fn lambda_statement_does_not_shift_following_expression_span() {
+        let source = "\\n|x| x;\\nprint missing;";
+        let mut lexer = crate::lexer::Lexer::new(source.to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = crate::parser::Parser::new_spanned(tokens);
+        let (ast, spans) = parser.parse_program_with_spans().unwrap();
+
+        let error = lower_with_spans(&ast, &spans).unwrap_err();
+        let start = source.find("missing").unwrap();
+        let range = error.range.expect("unresolved identifier must retain expression span");
+        assert_eq!((range.start, range.end), (start, start + "missing".len()));
+    }
+
+    #[test]
+    fn call_statement_uses_call_span_not_argument_span() {
+        let source = "\\nmissing(1);\\nprint 2;";
+        let mut lexer = crate::lexer::Lexer::new(source.to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = crate::parser::Parser::new_spanned(tokens);
+        let (ast, spans) = parser.parse_program_with_spans().unwrap();
+
+        let error = lower_with_spans(&ast, &spans).unwrap_err();
+        let start = source.find("missing").unwrap();
+        let end = source.find(';').unwrap();
+        let range = error.range.expect("unresolved callee must retain call span");
+        assert_eq!((range.start, range.end), (start, end));
+    }
+
 }

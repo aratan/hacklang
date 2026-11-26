@@ -798,8 +798,10 @@ int main(void) {
             include_str!("native_runtime.c"),
             r#"
 static int cleanup_order = 0;
-static int outer_digit = 1;
-static int inner_digit = 2;
+static int outer_first_digit = 1;
+static int outer_second_digit = 2;
+static int inner_first_digit = 3;
+static int inner_second_digit = 4;
 static void record_failure_cleanup(void *context) {
     cleanup_order = cleanup_order * 10 + *(int *)context;
 }
@@ -810,8 +812,10 @@ int main(void) {
     atexit(verify_failure_cleanup);
     HlEnv *outer = hl_env_new(NULL);
     HlEnv *inner = hl_env_new(outer);
-    if (!hl_env_defer(outer, record_failure_cleanup, &outer_digit)) return 10;
-    if (!hl_env_defer(inner, record_failure_cleanup, &inner_digit)) return 11;
+    if (!hl_env_defer(outer, record_failure_cleanup, &outer_first_digit)) return 10;
+    if (!hl_env_defer(outer, record_failure_cleanup, &outer_second_digit)) return 11;
+    if (!hl_env_defer(inner, record_failure_cleanup, &inner_first_digit)) return 12;
+    if (!hl_env_defer(inner, record_failure_cleanup, &inner_second_digit)) return 13;
     hl_fail(inner, "forced test failure");
     return 99;
 }
@@ -847,7 +851,7 @@ int main(void) {
             "runtime failure diagnostic was not emitted: {stderr}"
         );
         assert!(
-            stderr.contains("cleanup_order=21"),
+            stderr.contains("cleanup_order=4321"),
             "cleanup callbacks did not run inner-to-outer before process exit: {stderr}"
         );
         assert_no_sanitizer_report(&run.stderr, "runtime_failure_cleanup");

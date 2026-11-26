@@ -235,14 +235,18 @@ fn run() -> ExitCode {
 
     println!("--- Ejecutando código Hacklang ---");
     let mut evaluator = evaluador::Evaluator::new_with_max_depth(cli.max_eval_depth.unwrap_or(256));
-    match evaluator.evaluate(&ast) {
+    match evaluator.evaluate_diagnostic(&ast) {
         Ok(()) => {
             println!("--------------------------------");
             println!("Programa finalizado sin errores.");
             ExitCode::SUCCESS
         }
-        Err(error) => {
-            eprintln!("\nError en tiempo de ejecución: {error}");
+        Err(diagnostic) => {
+            if cli.diagnostics_json {
+                println!("[{}]", diagnostic.to_json());
+            } else {
+                eprintln!("\nError en tiempo de ejecución: {diagnostic}");
+            }
             ExitCode::from(1)
         }
     }

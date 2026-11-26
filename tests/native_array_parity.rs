@@ -622,3 +622,66 @@ fn type_errors_match_interpreter_error_classification() {
         "no se puede indexar por asignación",
     );
 }
+
+
+#[test]
+fn invalid_array_read_indices_cover_negative_and_wrong_type() {
+    assert_interpreter_native_failure(
+        "array_read_negative_index",
+        "let values = [1, 2];\\nlet index = 0 - 1;\\nprint values[index];\\n",
+        "entero no negativo",
+    );
+    assert_interpreter_native_failure(
+        "array_read_boolean_index",
+        "let values = [1, 2];\\nprint values[true];\\n",
+        "entero no negativo",
+    );
+    assert_interpreter_native_failure(
+        "array_read_string_index",
+        "let values = [1, 2];\\nprint values[\"first\"];\\n",
+        "entero no negativo",
+    );
+}
+
+#[test]
+fn string_index_errors_match_interpreter_classification() {
+    assert_interpreter_native_failure(
+        "string_read_out_of_range",
+        "let value = \"a\";\\nprint value[2];\\n",
+        "fuera de rango",
+    );
+    assert_interpreter_native_failure(
+        "string_read_negative_index",
+        "let value = \"a\";\\nlet index = 0 - 1;\\nprint value[index];\\n",
+        "entero no negativo",
+    );
+    assert_interpreter_native_failure(
+        "string_read_fractional_index",
+        "let value = \"abc\";\\nprint value[1.5];\\n",
+        "entero no negativo",
+    );
+}
+
+#[test]
+fn missing_map_keys_and_non_indexable_values_match_interpreter_classification() {
+    assert_interpreter_native_failure(
+        "map_read_missing_key",
+        "let values = @(\"present\": 1);\\nprint values[\"missing\"];\\n",
+        "clave no encontrada",
+    );
+    assert_interpreter_native_failure(
+        "nested_map_write_missing_intermediate",
+        "let values = @(\"present\": 1);\\nvalues[\"missing\"][\"child\"] = 2;\\n",
+        "clave no encontrada",
+    );
+    assert_interpreter_native_failure(
+        "read_non_indexable_scalar",
+        "let value = 7;\\nprint value[0];\\n",
+        "no se puede indexar",
+    );
+    assert_interpreter_native_failure(
+        "write_non_indexable_scalar",
+        "let value = 7;\\nvalue[0] = 1;\\n",
+        "no se puede indexar",
+    );
+}

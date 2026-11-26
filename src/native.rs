@@ -1,4 +1,5 @@
 use crate::ast::Program;
+use crate::diagnostic::{Diagnostic, DiagnosticPhase, DiagnosticSeverity};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -48,14 +49,48 @@ pub fn compile_to_executable_with_spans(
     source_path: &Path,
     requested_output: Option<&Path>,
 ) -> Result<PathBuf, String> {
-    // HIR es la única entrada del backend nativo. AST→HIR errors retain the
-    // source range of the statement/expression that caused the lowering failure.
     let hir = crate::hir::lower_with_spans(program, source_spans)
         .map_err(|error| format!("No se pudo construir HIR: {error}"))?;
-    // HIR codegen emits function bodies, activation frames, capture cells and
-    // the runtime dispatcher. Memory planning remains conservative: no value
-    // is assigned a shorter lifetime unless the analysis proves it safe.
-    let memory_plan = crate::memory::plan(&hir);
+    compile_hir_to_executable(&hir, source_path, requested_output)
+}
+
+/// Structured counterpart to the legacy String-returning API.
+pub fn compile_to_executable_with_spans_diagnostic(
+    program: &Program,
+    source_spans: &crate::ast::AstSpanMap,
+    source_path: &Path,
+    requested_output: Option<&Path>,
+) -> Result<PathBuf, Diagnostic> {
+    let hir = crate::hir::lower_with_spans(program, source_spans).map_err(|error| {
+        let range = error.range;
+        Diagnostic::new(
+            "HL-HIR-001",
+            DiagnosticPhase::Lowering,
+            DiagnosticSeverity::Error,
+            format!("No se pudo construir HIR: {error}"),
+            range,
+        )
+    })?;
+
+    compile_hir_to_executable(&hir, source_path, requested_output).map_err(|message| {
+        Diagnostic::new(
+            "HL-NATIVE-001",
+            DiagnosticPhase::NativeCodegen,
+            DiagnosticSeverity::Error,
+            message,
+            None,
+        )
+    })
+}
+
+fn compile_hir_to_executable(
+    hir: &crate::hir::Program,
+    source_path: &Path,
+    requested_output: Option<&Path>,
+) -> Result<PathBuf, String> {
+    // HIR is the sole input to native code generation. C compiler diagnostics
+    // describe generated C and deliberately carry no HackLang source range.
+    let memory_plan = crate::memory::plan(hir);
     let source_absolute = source_path.canonicalize()
         .map_err(|error| format!("No se pudo resolver el archivo fuente: {error}"))?;
     let output = requested_output
@@ -73,7 +108,7 @@ pub fn compile_to_executable_with_spans(
         return Err(format!("El destino '{}' ya existe; no se sobrescribirá", output.display()));
     }
 
-    let c_source = crate::hir_native::generate_c(&hir, &memory_plan)?;
+    let c_source = crate::hir_native::generate_c(hir, &memory_plan)?;
     let compiler = select_c_compiler()?;
     let temporary = temporary_directory()?;
     let c_file = temporary.join("program.c");
@@ -98,7 +133,7 @@ pub fn compile_to_executable_with_spans(
         Ok(output_result) if output_result.status.success() => Ok(output),
         Ok(output_result) => {
             let diagnostics = String::from_utf8_lossy(&output_result.stderr);
-            Err(format!("Falló la compilación C con {compiler}:\n{diagnostics}"))
+            Err(format!("Falló la compilación C con {compiler}:\\n{diagnostics}"))
         }
     }
 }

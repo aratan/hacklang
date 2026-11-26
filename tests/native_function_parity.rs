@@ -539,7 +539,9 @@ while (read_index < 96) (
         group = 1;
         slot = read_index - 48;
     )
-    total = total + saved[group][slot]();
+    let bucket = saved[group];
+    let getter = bucket[slot];
+    total = total + getter();
     read_index = read_index + 1;
 )
 print total;

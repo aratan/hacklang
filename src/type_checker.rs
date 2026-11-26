@@ -46,7 +46,7 @@ pub struct Diagnostic {
 
 impl Diagnostic {
     /// Serialize this diagnostic as one JSON object.
-    /// Source ranges are null until the AST preserves lexer spans.
+    /// Source ranges are null when callers use the legacy unspanned parser API.
     pub fn to_json(&self) -> String {
         let range = self.range.map_or_else(
             || "null".to_string(),
@@ -142,12 +142,23 @@ impl TypeChecker {
         span
     }
 
+    fn current_range(&self) -> Option<SourceSpan> {
+        match (self.current_expression_span, self.current_statement_span) {
+            (Some(expression), Some(statement))
+                if statement.start >= expression.start && statement.end <= expression.end =>
+                    Some(statement),
+            (Some(expression), _) => Some(expression),
+            (_, Some(statement)) => Some(statement),
+            (None, None) => None,
+        }
+    }
+
     fn report(&mut self, message: impl Into<String>) {
         self.diagnostics.push(Diagnostic {
             code: "HL-TYPE-001",
             severity: "warning",
             message: message.into(),
-            range: self.current_expression_span.or(self.current_statement_span),
+            range: self.current_range(),
         });
     }
 

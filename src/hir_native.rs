@@ -681,7 +681,6 @@ fn function_definition(
     Generator::line(&mut out, format!("{end_label}: ;"));
     Generator::line(&mut out, format!("    hl_root_value_pop(env, &{result_slot});"));
     Generator::line(&mut out, "    hl_root_frame_pop(env);");
-    Generator::line(&mut out, format!("    if (getenv(\\"HL_DEBUG_GC\\") && {result_slot}.tag == HL_NUMBER) fprintf(stderr, \\"RETURN fn_{id} number=%g\\\\n\\", {result_slot}.as.number);"));
     Generator::line(&mut out, format!("    HlValue fn_out_{id} = hl_clone_value(fn_parent, {result_slot});"));
     Generator::line(&mut out, "    hl_env_free(env);");
     Generator::line(&mut out, format!("    return fn_out_{id};"));

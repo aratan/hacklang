@@ -554,4 +554,24 @@ mod tests {
         assert_eq!(tokens[2].span.end_column, 9);
     }
 
+    #[test]
+    fn source_spans_count_unicode_scalars_and_place_eof_after_trailing_newline() {
+        let source = "// café🙂\\nlet value = \\"a🙂\\";\\n";
+        let mut lexer = Lexer::new(source.to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+
+        let string = tokens.iter()
+            .find(|item| matches!(item.token, Token::String(_)))
+            .expect("string token");
+        assert_eq!((string.span.start, string.span.end), (21, 25));
+        assert_eq!(
+            (string.span.line, string.span.column, string.span.end_line, string.span.end_column),
+            (2, 13, 2, 17)
+        );
+
+        let eof = tokens.last().expect("EOF token").span;
+        assert_eq!((eof.start, eof.end), (27, 27));
+        assert_eq!((eof.line, eof.column, eof.end_line, eof.end_column), (3, 1, 3, 1));
+    }
+
 }

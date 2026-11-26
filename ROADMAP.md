@@ -2,6 +2,24 @@
 
 Este documento separa las capacidades existentes de las que faltan. Las propuestas son objetivos, no funcionalidades ya implementadas. La compatibilidad con la sintaxis legacy y el modo compacto experimental es un requisito: ninguna mejora debe cambiar silenciosamente el comportamiento existente.
 
+## Protocolo de continuidad del proyecto
+
+Antes de cada intervención de código, sincronizar y revisar obligatoriamente:
+
+1. HEAD de la rama de trabajo, relación con `main`, commits recientes y diff completo de la PR activa.
+2. Descripción actual de la PR, archivos cambiados, comentarios, revisiones y estado de CI.
+3. Issues abiertas y cerradas relacionadas con el componente; no inferir pendientes solo por memoria conversacional.
+4. Roadmap y documentos de diseño pertinentes, contrastándolos con el código y sus pruebas actuales.
+5. Implementación y regresiones existentes antes de diseñar o duplicar una solución.
+
+Reglas de ejecución:
+
+- Un hito con implementación, pruebas relevantes y CI satisfactoria se considera completado para el subconjunto declarado. No se vuelve a implementar ni a planificar como pendiente sin una regresión reproducible o un requisito nuevo.
+- Los documentos históricos y los resúmenes de PR pueden quedar obsoletos: prevalecen el HEAD, el código y las pruebas actuales. Corregir la documentación cuando haya divergencias.
+- Cada intervención debe resolver un objetivo acotado, añadir o ampliar una prueba que lo demuestre y verificar CI. No encadenar cambios nuevos sobre una ejecución fallida sin corregir primero su causa.
+- Al terminar, actualizar este roadmap y la descripción de la PR con commit, evidencia de pruebas, límites restantes y siguiente tarea concreta.
+- Mantener una única fuente de verdad para el siguiente paso; no reabrir trabajo ya validado por inercia o por resúmenes antiguos.
+
 ## Objetivo prioritario: interpretación y ejecutables nativos
 
 HackLang debe poder ejecutar un mismo programa mediante el intérprete Rust o mediante un ejecutable nativo generado desde el código fuente. La compilación nativa es ahora un objetivo principal del proyecto, no una optimización aplazada a una fase futura.

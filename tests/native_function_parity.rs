@@ -538,3 +538,29 @@ print saved[95]();
     );
 }
 
+#[test]
+fn many_escaped_closures_in_map_keep_distinct_capture_cells() {
+    assert_interpreter_native_parity(
+        "many_escaped_closures_in_map",
+        r#"
+let make = |value| (|| (value));
+let functions = @("seed": 0);
+let index = 0;
+while (index < 96) (
+    functions[index] = make(index);
+    index = index + 1;
+)
+let total = 0;
+let read = 0;
+while (read < 96) (
+    total = total + functions[read]();
+    read = read + 1;
+)
+print total;
+print functions[0]();
+print functions[47]();
+print functions[95]();
+"#,
+    );
+}
+

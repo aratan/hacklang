@@ -955,7 +955,7 @@ int main(void) {
         let first_line = json_stderr.lines().next().unwrap_or_default();
         assert_eq!(
             first_line,
-            r#"[{"code":"HL-RUNTIME-001","phase":"runtime","severity":"error","message":"forced \\"test\\" failure\\nline","range":null}]"#
+            r#"[{"code":"HL-RUNTIME-001","phase":"runtime","severity":"error","message":"forced \"test\" failure\nline","range":null}]"#
         );
         assert!(json_stderr.contains("cleanup_order=4321"), "cleanup callbacks did not run before JSON-mode process exit: {json_stderr}");
         assert_no_sanitizer_report(&json_run.stderr, "runtime_failure_cleanup");

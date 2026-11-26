@@ -169,6 +169,9 @@ Los ejecutables nativos limitan también el trabajo de ejecución: 1.000.000 de 
 
 ```bash
 HACKLANG_MAX_EVAL_STEPS=500000 ./hello
+HACKLANG_MAX_EVAL_MILLIS=10000 ./hello
+
+El intérprete aplica un presupuesto temporal cooperativo predeterminado de 30 segundos por ejecución. Se puede ajustar mediante `HACKLANG_MAX_EVAL_MILLIS` o `hl run --max-eval-millis N` (milisegundos). El límite se comprueba entre sentencias y no interrumpe una operación individual que bloquee o tarde mucho sin volver al evaluador.
 ```
 
 El runtime nativo también limita el tiempo de CPU de cada ejecución a 30 segundos por defecto. Se puede ajustar con `HACKLANG_MAX_EVAL_MILLIS`:

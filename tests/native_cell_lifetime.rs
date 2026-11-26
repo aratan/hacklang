@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT_CASE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
-fn captured_cell_value_lane_is_reused_and_swept() {
+fn native_runtime_lifetime_and_unwinding_are_sanitizer_clean() {
     let id = NEXT_CASE.fetch_add(1, Ordering::Relaxed);
     let directory = std::env::temp_dir().join(format!(
         "hacklang-cell-lifetime-{}-{id}",
@@ -24,7 +24,19 @@ fn captured_cell_value_lane_is_reused_and_swept() {
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include "native_runtime.c"
+
+static int cleanup_fd = -1;
+static const char root_marker = 'R';
+static const char child_marker = 'C';
+static const char grandchild_marker = 'G';
+static void record_cleanup(void *context) {
+    const char marker = *(const char *)context;
+    (void)write(cleanup_fd, &marker, 1);
+}
 
 static size_t lane_block_count(const HlArenaLane *lane) {
     size_t count = 0;
@@ -59,6 +71,40 @@ int main(void) {
      * Collection must unlink it and destroy its private value lane. */
     hl_collect(root);
     if (root->cells != NULL) return 17;
+
+    /* A fatal runtime error must unwind every nested environment exactly once,
+     * running child cleanups before parent cleanups. The child process lets the
+     * parent inspect cleanup order despite hl_fail terminating with exit(1). */
+    int descriptors[2];
+    if (pipe(descriptors) != 0) return 18;
+    pid_t child = fork();
+    if (child < 0) return 19;
+    if (child == 0) {
+        close(descriptors[0]);
+        cleanup_fd = descriptors[1];
+        HlEnv *unwind_root = hl_env_new(NULL);
+        HlEnv *unwind_child = hl_env_new(unwind_root);
+        HlEnv *unwind_grandchild = hl_env_new(unwind_child);
+        if (!hl_env_defer(unwind_root, record_cleanup, (void *)&root_marker)) _exit(20);
+        if (!hl_env_defer(unwind_child, record_cleanup, (void *)&child_marker)) _exit(21);
+        if (!hl_env_defer(unwind_grandchild, record_cleanup, (void *)&grandchild_marker)) _exit(22);
+        hl_fail(unwind_grandchild, "fallo controlado durante unwinding");
+        _exit(23);
+    }
+
+    close(descriptors[1]);
+    char cleanup_order[4] = {0};
+    size_t received = 0;
+    while (received < 3) {
+        ssize_t count = read(descriptors[0], cleanup_order + received, 3 - received);
+        if (count <= 0) break;
+        received += (size_t)count;
+    }
+    close(descriptors[0]);
+    int child_status = 0;
+    if (waitpid(child, &child_status, 0) != child) return 24;
+    if (received != 3 || memcmp(cleanup_order, "GCR", 3) != 0) return 25;
+    if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 1) return 26;
 
     hl_env_free(root);
     free(payload);

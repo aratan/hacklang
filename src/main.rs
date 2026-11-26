@@ -33,13 +33,15 @@ struct Cli {
     compact: bool,
     format: bool,
     diagnostics_json: bool,
+    max_parse_depth: Option<usize>,
+    max_eval_depth: Option<usize>,
 }
 
 fn usage() -> &'static str {
     "Uso:
-  hl [run] [--compact] [--format] [--diagnostics-json] <archivo.hl>
-  hl check [--compact] [--diagnostics-json] <archivo.hl>
-  hl build [--compact] <archivo.hl> [-o <ejecutable>]
+  hl [run] [--compact] [--format] [--diagnostics-json] [--max-parse-depth N] [--max-eval-depth N] <archivo.hl>
+  hl check [--compact] [--diagnostics-json] [--max-parse-depth N] <archivo.hl>
+  hl build [--compact] [--max-parse-depth N] <archivo.hl> [-o <ejecutable>]
 
 La forma legacy 'hl <archivo.hl>' equivale a 'hl run <archivo.hl>'."
 }
@@ -65,6 +67,20 @@ fn parse_args(args: &[String]) -> Result<Cli, String> {
             "--compact" => cli.compact = true,
             "--format" => cli.format = true,
             "--diagnostics-json" => cli.diagnostics_json = true,
+            "--max-parse-depth" => {
+                index += 1;
+                let value = args.get(index).ok_or("Falta el valor de --max-parse-depth")?;
+                let depth = value.parse::<usize>().map_err(|_| "--max-parse-depth requiere un entero positivo")?;
+                if depth == 0 { return Err("--max-parse-depth debe ser mayor que cero".to_string()); }
+                cli.max_parse_depth = Some(depth);
+            }
+            "--max-eval-depth" => {
+                index += 1;
+                let value = args.get(index).ok_or("Falta el valor de --max-eval-depth")?;
+                let depth = value.parse::<usize>().map_err(|_| "--max-eval-depth requiere un entero positivo")?;
+                if depth == 0 { return Err("--max-eval-depth debe ser mayor que cero".to_string()); }
+                cli.max_eval_depth = Some(depth);
+            }
             "-o" => {
                 index += 1;
                 let output = args.get(index).ok_or("Falta la ruta después de -o")?;
@@ -93,6 +109,9 @@ fn parse_args(args: &[String]) -> Result<Cli, String> {
     }
     if cli.diagnostics_json && cli.format {
         return Err("--diagnostics-json y --format son modos excluyentes".to_string());
+    }
+    if cli.max_eval_depth.is_some() && matches!(cli.command, Some(Command::Check | Command::Build)) {
+        return Err("--max-eval-depth solo se admite con 'run'".to_string());
     }
     if cli.output.is_some() && cli.command != Some(Command::Build) {
         return Err("-o solo se admite con 'build'".to_string());
@@ -135,10 +154,11 @@ fn run() -> ExitCode {
         }
     };
 
+    let max_parse_depth = cli.max_parse_depth.unwrap_or(256);
     let mut parser = if cli.compact {
-        parser::Parser::new_compact_spanned(tokens)
+        parser::Parser::new_compact_spanned_with_max_depth(tokens, max_parse_depth)
     } else {
-        parser::Parser::new_spanned(tokens)
+        parser::Parser::new_spanned_with_max_depth(tokens, max_parse_depth)
     };
     let (ast, source_spans) = match parser.parse_program_with_spans() {
         Ok(parsed) => parsed,
@@ -198,7 +218,7 @@ fn run() -> ExitCode {
     }
 
     println!("--- Ejecutando código Hacklang ---");
-    let mut evaluator = evaluador::Evaluator::new();
+    let mut evaluator = evaluador::Evaluator::new_with_max_depth(cli.max_eval_depth.unwrap_or(256));
     match evaluator.evaluate(&ast) {
         Ok(()) => {
             println!("--------------------------------");
@@ -242,6 +262,16 @@ mod cli_tests {
         let cli = parse_args(&args(&["build", "program.hl", "-o", "app"])).unwrap();
         assert_eq!(cli.command, Some(Command::Build));
         assert_eq!(cli.output.as_deref(), Some("app"));
+    }
+
+    #[test]
+    fn configurable_depth_limits_are_parsed_and_validated() {
+        let cli = parse_args(&args(&["run", "--max-parse-depth", "512", "--max-eval-depth", "128", "program.hl"])).unwrap();
+        assert_eq!(cli.max_parse_depth, Some(512));
+        assert_eq!(cli.max_eval_depth, Some(128));
+        assert!(parse_args(&args(&["run", "--max-parse-depth", "0", "program.hl"])).is_err());
+        assert!(parse_args(&args(&["run", "--max-eval-depth", "abc", "program.hl"])).is_err());
+        assert!(parse_args(&args(&["check", "--max-eval-depth", "32", "program.hl"])).is_err());
     }
 
     #[test]

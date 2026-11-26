@@ -3,7 +3,17 @@
 // Es el "puente" entre el Parser y el Evaluador.
 
 // Importamos el Token de nuestro nuevo lexer, ya que la expresión Infix lo necesita.
-use crate::lexer::Token;
+use crate::lexer::{SourceSpan, Token};
+
+/// Sidecar source locations for the legacy AST. Keeping spans outside the
+/// existing node structs preserves source compatibility for AST constructors.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AstSpanMap {
+    /// Pre-order spans for statements, matching the AST's statement traversal.
+    pub statements: Vec<Option<SourceSpan>>,
+    /// Pre-order spans for expressions, matching the AST's expression traversal.
+    pub expressions: Vec<Option<SourceSpan>>,
+}
 
 // Un Programa es la raíz de nuestro AST, contiene una lista de sentencias.
 #[derive(Debug)]

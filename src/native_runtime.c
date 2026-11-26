@@ -206,10 +206,10 @@ static void hl_json_write_string(FILE *stream, const char *value) {
 static void hl_fail(HlEnv *environment, const char *message) {
     const char *diagnostics = getenv("HACKLANG_DIAGNOSTICS");
     if (diagnostics && strcmp(diagnostics, "json") == 0) {
-        fputs("[{\\"code\\":\\"HL-RUNTIME-001\\",\\"phase\\":\\"runtime\\","
-              "\\"severity\\":\\"error\\",\\"message\\":", stderr);
+        fputs("[{\"code\":\"HL-RUNTIME-001\",\"phase\":\"runtime\","
+              "\"severity\":\"error\",\"message\":", stderr);
         hl_json_write_string(stderr, message ? message : "Error de ejecución desconocido");
-        fputs(",\\"range\\":null}]\n", stderr);
+        fputs(",\"range\":null}]\n", stderr);
     } else {
         fprintf(stderr, "Error en tiempo de ejecución: %s\n", message);
     }

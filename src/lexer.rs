@@ -349,14 +349,17 @@ mod tests {
         let mut unexpected = Lexer::new("\n  §".to_string());
         let error = unexpected.tokenize_spanned().unwrap_err();
         assert!(error.contains("línea 2, columna 3"), "{error}");
+        assert!(error.contains("rango 3..4"), "{error}");
 
         let mut unterminated = Lexer::new("let x = 1;\n  \"open".to_string());
         let error = unterminated.tokenize_spanned().unwrap_err();
         assert!(error.contains("línea 2, columna 3"), "{error}");
+        assert!(error.contains("rango 13..18"), "{error}");
 
         let mut exponent = Lexer::new("let x = 1e+".to_string());
         let error = exponent.tokenize_spanned().unwrap_err();
         assert!(error.contains("línea 1, columna 9"), "{error}");
+        assert!(error.contains("rango 8..11"), "{error}");
     }
 
     #[test]

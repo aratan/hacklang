@@ -1079,7 +1079,7 @@ mod tests {
 
     #[test]
     fn parser_returns_statement_and_expression_span_sidecar() {
-        let mut lexer = crate::lexer::Lexer::new("\nlet result = true + 2;".to_string());
+        let mut lexer = crate::lexer::Lexer::new("\nlet value = (1 + 2".to_string());
         let tokens = lexer.tokenize_spanned().unwrap();
         let mut parser = Parser::new_spanned(tokens);
         let (program, spans) = parser.parse_program_with_spans().unwrap();

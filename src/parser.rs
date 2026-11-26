@@ -574,9 +574,10 @@ impl Parser {
             Token::ParenOpen => {
                 self.advance();
                 let expr = self.parse_expression(Precedence::Lowest)?;
-                if *self.current_token() == Token::ParenClose {
-                    self.advance();
+                if *self.current_token() != Token::ParenClose {
+                    return Err("Se esperaba ')' al cerrar la expresión agrupada".to_string());
                 }
+                self.advance();
                 Ok(expr)
             }
             Token::Pipe => {
@@ -1035,6 +1036,16 @@ mod tests {
         let mut parser = Parser::new_spanned(tokens);
         let error = parser.parse_program().unwrap_err();
         assert!(error.contains("línea 2, columna 5"), "{}", error);
+    }
+
+    #[test]
+    fn spanned_parser_reports_missing_grouping_parenthesis_at_eof() {
+        let mut lexer = crate::lexer::Lexer::new("\\nlet value = (1 + 2".to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = Parser::new_spanned(tokens);
+        let error = parser.parse_program().unwrap_err();
+        assert!(error.contains("Se esperaba ')' al cerrar la expresión agrupada"), "{error}");
+        assert!(error.contains("línea 2, columna"), "{error}");
     }
 
     #[test]

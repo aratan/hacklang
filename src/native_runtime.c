@@ -184,8 +184,35 @@ static void hl_cleanup_binding_aggregate(void *context) {
 
 static void hl_env_free(HlEnv *environment);
 
+static void hl_json_write_string(FILE *stream, const char *value) {
+    fputc('"', stream);
+    for (const unsigned char *cursor = (const unsigned char *)value; *cursor; ++cursor) {
+        const unsigned char ch = *cursor;
+        switch (ch) {
+            case '"': fputs("\\\"", stream); break;
+            case '\\': fputs("\\\\", stream); break;
+            case '\n': fputs("\\n", stream); break;
+            case '\r': fputs("\\r", stream); break;
+            case '\t': fputs("\\t", stream); break;
+            default:
+                if (ch < 0x20) fprintf(stream, "\\u%04x", (unsigned int)ch);
+                else fputc(ch, stream);
+                break;
+        }
+    }
+    fputc('"', stream);
+}
+
 static void hl_fail(HlEnv *environment, const char *message) {
-    fprintf(stderr, "Error en tiempo de ejecución: %s\n", message);
+    const char *diagnostics = getenv("HACKLANG_DIAGNOSTICS");
+    if (diagnostics && strcmp(diagnostics, "json") == 0) {
+        fputs("[{\"code\":\"HL-RUNTIME-001\",\"phase\":\"runtime\","
+              "\"severity\":\"error\",\"message\":", stderr);
+        hl_json_write_string(stderr, message ? message : "Error de ejecución desconocido");
+        fputs(",\"range\":null}]\n", stderr);
+    } else {
+        fprintf(stderr, "Error en tiempo de ejecución: %s\n", message);
+    }
     while (environment) {
         HlEnv *parent = environment->parent;
         hl_env_free(environment);

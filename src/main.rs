@@ -6,6 +6,7 @@ use std::process::ExitCode;
 
 // Un único front-end compartido para run/check/build.
 mod lexer;
+mod diagnostic;
 mod ast;
 mod hir;
 mod capture;
@@ -149,10 +150,14 @@ fn run() -> ExitCode {
 
     // Front-end único: los tres comandos reutilizan lexer y parser.
     let mut lexer = lexer::Lexer::new(source_code);
-    let tokens = match lexer.tokenize_spanned() {
+    let tokens = match lexer.tokenize_spanned_diagnostic() {
         Ok(tokens) => tokens,
-        Err(error) => {
-            eprintln!("Error léxico: {error}");
+        Err(diagnostic) => {
+            if cli.diagnostics_json {
+                println!("[{}]", diagnostic.to_json());
+            } else {
+                eprintln!("Error léxico: {diagnostic}");
+            }
             return ExitCode::from(1);
         }
     };
@@ -163,10 +168,14 @@ fn run() -> ExitCode {
     } else {
         parser::Parser::new_spanned_with_max_depth(tokens, max_parse_depth)
     };
-    let (ast, source_spans) = match parser.parse_program_with_spans() {
+    let (ast, source_spans) = match parser.parse_program_with_spans_diagnostic() {
         Ok(parsed) => parsed,
-        Err(error) => {
-            eprintln!("Error de análisis sintáctico: {error}");
+        Err(diagnostic) => {
+            if cli.diagnostics_json {
+                println!("[{}]", diagnostic.to_json());
+            } else {
+                eprintln!("Error de análisis sintáctico: {diagnostic}");
+            }
             return ExitCode::from(1);
         }
     };

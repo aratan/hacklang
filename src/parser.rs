@@ -3,6 +3,7 @@
 // Importamos las definiciones del AST y los Tokens del Lexer.
 // Necesitamos `Number` para poder extraer el f64 de adentro.
 use crate::ast::*;
+use crate::diagnostic::{Diagnostic, DiagnosticPhase, DiagnosticSeverity};
 use crate::lexer::{Number, SourceSpan, SpannedToken, Token};
 use std::collections::HashMap;
 
@@ -122,6 +123,21 @@ impl Parser {
                 }
             }
         }
+    }
+
+    /// Typed diagnostic API for CLI and tooling; the legacy String API remains available.
+    pub fn parse_program_with_spans_diagnostic(&mut self) -> Result<(Program, AstSpanMap), Diagnostic> {
+        self.parse_program_with_spans().map_err(|message| {
+            let range = self.spans.as_ref()
+                .and_then(|items| items.get(self.position).copied());
+            Diagnostic::new(
+                "HL-PARSE-001",
+                DiagnosticPhase::Parsing,
+                DiagnosticSeverity::Error,
+                message,
+                range,
+            )
+        })
     }
 
     fn span_for_tokens(&self, start: usize, end: usize) -> Option<SourceSpan> {
@@ -1107,6 +1123,19 @@ mod tests {
         let mut parser = Parser::new(tokens);
         let error = parser.parse_program().unwrap_err();
         assert!(error.contains("Límite de anidamiento"));
+    }
+
+    #[test]
+    fn syntax_errors_expose_stable_typed_diagnostics() {
+        let mut lexer = crate::lexer::Lexer::new("let value = ;".to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = Parser::new_spanned(tokens);
+        let diagnostic = parser.parse_program_with_spans_diagnostic().unwrap_err();
+        assert_eq!(diagnostic.code, "HL-PARSE-001");
+        assert_eq!(diagnostic.phase, DiagnosticPhase::Parsing);
+        assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
+        assert!(diagnostic.range.is_some());
+        assert!(diagnostic.message.contains("línea"));
     }
 
     #[test]

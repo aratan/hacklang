@@ -5,6 +5,8 @@
 //! runtime behavior or prevents a program from executing.
 
 use crate::ast::{AstSpanMap, Expression, Program, Statement};
+use crate::diagnostic::{DiagnosticPhase, DiagnosticSeverity};
+pub use crate::diagnostic::Diagnostic;
 use crate::lexer::SourceSpan;
 use crate::lexer::Token;
 use std::collections::HashMap;
@@ -31,59 +33,6 @@ impl std::fmt::Display for Type {
             Type::Function { arity, returns } => write!(f, "function/{arity} -> {returns}"),
             Type::Unknown => write!(f, "unknown"),
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Diagnostic {
-    /// Stable machine-readable identifier for this diagnostic family.
-    pub code: &'static str,
-    /// Static analysis is advisory and never blocks execution.
-    pub severity: &'static str,
-    pub message: String,
-    pub range: Option<SourceSpan>,
-}
-
-impl Diagnostic {
-    /// Serialize this diagnostic as one JSON object.
-    /// Source ranges are null when callers use the legacy unspanned parser API.
-    pub fn to_json(&self) -> String {
-        let range = self.range.map_or_else(
-            || "null".to_string(),
-            |span| format!(
-                "{{\"start\":{},\"end\":{},\"line\":{},\"column\":{},\"endLine\":{},\"endColumn\":{}}}",
-                span.start, span.end, span.line, span.column, span.end_line, span.end_column
-            ),
-        );
-        format!(
-            "{{\"code\":\"{}\",\"severity\":\"{}\",\"message\":\"{}\",\"range\":{}}}",
-            self.code,
-            self.severity,
-            json_escape(&self.message),
-            range
-        )
-    }
-}
-
-fn json_escape(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for ch in value.chars() {
-        match ch {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            ch if ch <= '\u{1f}' => escaped.push_str(&format!("\\u{:04x}", ch as u32)),
-            ch => escaped.push(ch),
-        }
-    }
-    escaped
-}
-
-impl std::fmt::Display for Diagnostic {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.message)
     }
 }
 
@@ -154,12 +103,13 @@ impl TypeChecker {
     }
 
     fn report(&mut self, message: impl Into<String>) {
-        self.diagnostics.push(Diagnostic {
-            code: "HL-TYPE-001",
-            severity: "warning",
-            message: message.into(),
-            range: self.current_range(),
-        });
+        self.diagnostics.push(Diagnostic::new(
+            "HL-TYPE-001",
+            DiagnosticPhase::TypeChecking,
+            DiagnosticSeverity::Warning,
+            message,
+            self.current_range(),
+        ));
     }
 
     fn push_scope(&mut self) {
@@ -664,13 +614,14 @@ mod tests {
         let diagnostics = check_source("let result = true + 2;");
         let diagnostic = diagnostics.first().unwrap();
         assert_eq!(diagnostic.code, "HL-TYPE-001");
-        assert_eq!(diagnostic.severity, "warning");
+        assert_eq!(diagnostic.phase, DiagnosticPhase::TypeChecking);
+        assert_eq!(diagnostic.severity, DiagnosticSeverity::Warning);
         assert!(diagnostic.to_json().contains("\"range\":null"));
     }
 
     #[test]
     fn diagnostic_json_escapes_quotes_slashes_and_control_characters() {
-        assert_eq!(json_escape("quote: \" slash: \\\\ newline:\n tab:\t"), r#"quote: \" slash: \\\\ newline:\n tab:\t"#);
+        assert_eq!(crate::diagnostic::json_escape("quote: \" slash: \\\\ newline:\n tab:\t"), r#"quote: \" slash: \\\\ newline:\n tab:\t"#);
     }
 
 }

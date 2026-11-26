@@ -512,20 +512,28 @@ print tally;
 }
 
 #[test]
-fn closures_created_in_separate_loop_iterations_keep_distinct_captures() {
+fn many_escaped_closures_keep_distinct_loop_iteration_captures() {
     assert_interpreter_native_parity(
-        "distinct_iteration_closures",
+        "many_distinct_iteration_closures",
         r#"
 let saved = @();
 let index = 0;
-while (index < 2) (
+while (index < 96) (
     let captured = index;
     let getter = || (captured);
     saved[index] = getter;
     index = index + 1;
 )
+let total = 0;
+let read_index = 0;
+while (read_index < 96) (
+    total = total + saved[read_index]();
+    read_index = read_index + 1;
+)
+print total;
 print saved[0]();
-print saved[1]();
+print saved[47]();
+print saved[95]();
 "#,
     );
 }

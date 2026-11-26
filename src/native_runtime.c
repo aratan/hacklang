@@ -151,6 +151,8 @@ struct HlEnv {
     HlRootFrame *frame_roots; /* active activation frames */
     HlRootValue *value_roots; /* protected evaluator temporaries */
     uint64_t next_ownership_id;
+    uint64_t eval_steps;
+    uint64_t max_eval_steps;
     HlArenaLane *lane;
     HlArenaBlock *lane_mark_block;
     size_t lane_mark_used;
@@ -333,6 +335,16 @@ static HlEnv *hl_env_root(HlEnv *environment) {
     if (!environment) return NULL;
     while (environment->parent) environment = environment->parent;
     return environment;
+}
+
+/* Charge one unit of native execution budget. The root owns the counter so
+ * nested scopes and function activations share a single program-wide limit. */
+static void hl_eval_step(HlEnv *environment) {
+    HlEnv *root = hl_env_root(environment);
+    if (!root) return;
+    if (root->eval_steps >= root->max_eval_steps)
+        hl_fail(environment, "se agotó el presupuesto de instrucciones de ejecución nativa");
+    ++root->eval_steps;
 }
 static HlOwnershipRecord *hl_ownership_find(HlEnv *environment, uint64_t id) {
     HlEnv *root = hl_env_root(environment);
@@ -835,6 +847,17 @@ static HlEnv *hl_env_new_in_lane(HlEnv *parent, HlArenaLane *lane) {
     environment->frame_roots = NULL;
     environment->value_roots = NULL;
     environment->next_ownership_id = 0;
+    environment->eval_steps = 0;
+    environment->max_eval_steps = UINT64_C(1000000);
+    if (!parent) {
+        const char *limit = getenv("HACKLANG_MAX_EVAL_STEPS");
+        if (limit && *limit) {
+            char *end = NULL;
+            unsigned long long parsed = strtoull(limit, &end, 10);
+            if (end != limit && *end == '\0' && parsed > 0)
+                environment->max_eval_steps = (uint64_t)parsed;
+        }
+    }
     environment->lane = lane;
     environment->lane_mark_block = lane->current ? lane->current : lane->blocks;
     environment->lane_mark_used = environment->lane_mark_block ? environment->lane_mark_block->used : 0;

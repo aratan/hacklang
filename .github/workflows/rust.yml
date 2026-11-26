@@ -2,7 +2,7 @@ name: Rust CI
 
 on:
   push:
-    branches: ["main", "feature/**"]
+    branches: ["main", "feat/**", "feature/**"]
   pull_request:
     branches: ["main"]
     types: [opened, synchronize, reopened, ready_for_review]
@@ -32,5 +32,83 @@ jobs:
           set -euo pipefail
           for file in examples/*.hl; do
             echo "Checking $file"
-            cargo run --quiet -- "$file"
+            if [[ "$file" == *_compact.hl ]]; then
+              cargo run --quiet -- run --compact "$file"
+            else
+              cargo run --quiet -- "$file"
+            fi
           done
+      - name: Compare interpreter and native backend
+        shell: bash
+        run: |
+          set -euo pipefail
+          temp_dir="$(mktemp -d)"
+          trap 'rm -rf "$temp_dir"' EXIT
+
+          source="examples/native_smoke.hl"
+          cargo run --quiet -- run "$source" > "$temp_dir/interpreter.log"
+          awk '
+            /^--- Ejecutando código Hacklang ---$/ { capture = 1; next }
+            /^--------------------------------$/ { capture = 0 }
+            capture { print }
+          ' "$temp_dir/interpreter.log" > "$temp_dir/interpreter.out"
+
+          cargo run --quiet -- build "$source" -o "$temp_dir/native" > /dev/null
+          "$temp_dir/native" > "$temp_dir/native.out"
+          diff -u "$temp_dir/interpreter.out" "$temp_dir/native.out"
+
+          compact_source="examples/native_smoke_compact.hl"
+          cargo run --quiet -- run --compact "$compact_source" > "$temp_dir/compact-interpreter.log"
+          awk '
+            /^--- Ejecutando código Hacklang ---$/ { capture = 1; next }
+            /^--------------------------------$/ { capture = 0 }
+            capture { print }
+          ' "$temp_dir/compact-interpreter.log" > "$temp_dir/compact-interpreter.out"
+          diff -u "$temp_dir/interpreter.out" "$temp_dir/compact-interpreter.out"
+
+          cargo run --quiet -- build --compact "$compact_source" -o "$temp_dir/native-compact" > /dev/null
+          "$temp_dir/native-compact" > "$temp_dir/native-compact.out"
+          diff -u "$temp_dir/interpreter.out" "$temp_dir/native-compact.out"
+
+          functions_source="examples/test_functions.hl"
+          cargo run --quiet -- run "$functions_source" > "$temp_dir/functions-interpreter.log"
+          awk '
+            /^--- Ejecutando código Hacklang ---$/ { capture = 1; next }
+            /^--------------------------------$/ { capture = 0 }
+            capture { print }
+          ' "$temp_dir/functions-interpreter.log" > "$temp_dir/functions-interpreter.out"
+
+          cargo run --quiet -- build "$functions_source" -o "$temp_dir/functions-native" > /dev/null
+          "$temp_dir/functions-native" > "$temp_dir/functions-native.out"
+          diff -u "$temp_dir/functions-interpreter.out" "$temp_dir/functions-native.out"
+
+          cat > "$temp_dir/unsupported.hl" <<'EOF'
+          let add = |x, y| (x + y);
+          print add(1);
+          EOF
+          if cargo run --quiet -- build "$temp_dir/unsupported.hl" -o "$temp_dir/unsupported" > /dev/null 2>&1; then
+            echo "El backend aceptó inesperadamente un programa con funciones no soportadas" >&2
+            exit 1
+          fi
+          test ! -e "$temp_dir/unsupported"
+
+          cat > "$temp_dir/runtime-error.hl" <<'EOF'
+          print 1 / 0;
+          EOF
+          set +e
+          cargo run --quiet -- run "$temp_dir/runtime-error.hl" > "$temp_dir/interpreter-error.out" 2> "$temp_dir/interpreter-error.err"
+          interpreter_status=$?
+          cargo run --quiet -- build "$temp_dir/runtime-error.hl" -o "$temp_dir/runtime-error" > /dev/null 2>&1
+          build_status=$?
+          if [ "$build_status" -ne 0 ]; then
+            echo "No se pudo compilar el caso de error de runtime" >&2
+            exit "$build_status"
+          fi
+          "$temp_dir/runtime-error" > "$temp_dir/native-error.out" 2> "$temp_dir/native-error.err"
+          native_status=$?
+          set -e
+
+          test "$interpreter_status" -eq 1
+          test "$native_status" -eq "$interpreter_status"
+          grep -q "Division by zero" "$temp_dir/interpreter-error.err"
+          grep -q "Division by zero" "$temp_dir/native-error.err"

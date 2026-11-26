@@ -97,7 +97,7 @@ pub struct AssignStatement {
 #[derive(Debug, Clone, PartialEq)]
 pub struct IndexAssignStatement {
     pub name: String,
-    pub index: Expression,
+    pub indices: Vec<Expression>,
     pub value: Expression,
 }
 

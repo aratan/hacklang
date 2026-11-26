@@ -136,19 +136,23 @@ impl Parser {
             }
             if next == Some(Token::BracketOpen) {
                 self.advance(); // consume identifier
-                self.advance(); // consume [
-                let index = self.parse_expression(Precedence::Lowest)?;
-                if *self.current_token() != Token::BracketClose {
-                    return Err("Se esperaba ']' en la asignación por índice".to_string());
+                let mut indices = Vec::new();
+                while *self.current_token() == Token::BracketOpen {
+                    self.advance(); // consume [
+                    let index = self.parse_expression(Precedence::Lowest)?;
+                    if *self.current_token() != Token::BracketClose {
+                        return Err("Se esperaba ']' en la asignación por índice".to_string());
+                    }
+                    self.advance();
+                    indices.push(index);
                 }
-                self.advance();
                 if *self.current_token() != Token::Equals {
-                    return Err("Se esperaba '=' después del índice".to_string());
+                    return Err("Se esperaba '=' después de la ruta de índices".to_string());
                 }
                 self.advance();
                 let value = self.parse_expression(Precedence::Lowest)?;
                 if *self.current_token() == Token::Semicolon { self.advance(); }
-                return Ok(Statement::IndexAssign(IndexAssignStatement { name: ident_name, index, value }));
+                return Ok(Statement::IndexAssign(IndexAssignStatement { name: ident_name, indices, value }));
             }
         }
 
@@ -169,9 +173,10 @@ impl Parser {
                 if *self.current_token() == Token::ParenOpen {
                     self.advance();
                     let args = self.parse_comma_list(Token::ParenClose)?;
-                    if *self.current_token() == Token::ParenClose {
-                        self.advance(); // consume )
+                    if *self.current_token() != Token::ParenClose {
+                        return Err("Se esperaba ')' al cerrar la llamada".to_string());
                     }
+                    self.advance(); // consume )
                     if *self.current_token() == Token::Semicolon {
                         self.advance(); // consume ;
                     }
@@ -257,6 +262,71 @@ impl Parser {
         else { (Token::ParenOpen, Token::ParenClose) }
     }
 
+    // Legacy uses parentheses both for grouped expressions and statement blocks.
+    // In lambda bodies, distinguish them before choosing the parser path.
+    fn legacy_lambda_body_is_block(&self) -> bool {
+        if self.compact || *self.current_token() != Token::ParenOpen {
+            return false;
+        }
+
+        let start = self.position + 1;
+        // Legacy lambda blocks are sometimes wrapped in an extra grouping pair:
+        // |x| ((let value = x; return value;)). Skip only leading opening parens
+        // when identifying the first statement token.
+        let mut first_index = start;
+        while matches!(self.tokens.get(first_index), Some(Token::ParenOpen)) {
+            first_index += 1;
+        }
+        let first = match self.tokens.get(first_index) {
+            Some(token) => token,
+            None => return false,
+        };
+
+        if matches!(
+            first,
+            Token::Let | Token::Print | Token::Return | Token::Break
+                | Token::Continue | Token::If | Token::While
+        ) {
+            return true;
+        }
+
+        if matches!(first, Token::Identifier(_)) {
+            match self.tokens.get(first_index + 1) {
+                Some(Token::Equals) => return true,
+                Some(Token::BracketOpen) => {
+                    let mut depth = 0usize;
+                    for (offset, token) in self.tokens.iter().enumerate().skip(first_index + 1) {
+                        match token {
+                            Token::BracketOpen => depth += 1,
+                            Token::BracketClose => {
+                                depth = depth.saturating_sub(1);
+                                if depth == 0 {
+                                    return matches!(self.tokens.get(offset + 1), Some(Token::Equals));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // A semicolon anywhere before the matching outer ')' cannot belong to
+        // a valid grouped expression, but can separate statements in a block.
+        let mut paren_depth = 0usize;
+        for token in self.tokens.iter().skip(start) {
+            match token {
+                Token::ParenOpen => paren_depth += 1,
+                Token::ParenClose if paren_depth == 0 => return false,
+                Token::ParenClose => paren_depth = paren_depth.saturating_sub(1),
+                Token::Semicolon => return true,
+                _ => {}
+            }
+        }
+        false
+    }
+
     fn parse_block_statement(&mut self) -> Result<Statement, String> {
         let (open, close) = self.block_delimiters();
         if *self.current_token() != open { return Err(format!("Se esperaba '{open:?}' al abrir el bloque")); }
@@ -314,34 +384,46 @@ impl Parser {
 
     // --- Sentencia Lambda: |x, y| { cuerpo } ---
     fn parse_lambda_statement(&mut self) -> Result<Statement, String> {
+        let lambda = self.parse_lambda_expression()?;
+        if *self.current_token() == Token::Semicolon {
+            self.advance();
+        }
+        let params = match &lambda {
+            Expression::Lambda { params, .. } => params,
+            _ => unreachable!("parse_lambda_expression always returns a Lambda"),
+        };
+        let name = format!("__lambda_{}", params.join("_"));
+        Ok(Statement::Let(LetStatement { name, value: lambda }))
+    }
+
+    // Único punto de parsing para lambdas usadas como expresión o sentencia.
+    fn parse_lambda_expression(&mut self) -> Result<Expression, String> {
         self.advance(); // consume primer |
         let params = self.parse_params()?;
-        
         if !self.is_at_end() && *self.current_token() != Token::Pipe {
             return Err("Se esperaba '|' después de los parámetros".to_string());
         }
-        self.advance(); // consume |
+        self.advance(); // consume segundo |
 
         let (block_open, block_close) = self.block_delimiters();
-        let body = if *self.current_token() == block_open {
+        let is_block = if self.compact {
+            *self.current_token() == block_open
+        } else {
+            self.legacy_lambda_body_is_block()
+        };
+        let body = if is_block {
             self.advance();
             let statements = self.parse_block()?;
-            if *self.current_token() != block_close { return Err(format!("Se esperaba '{block_close:?}' al cerrar el cuerpo de la función")); }
+            if *self.current_token() != block_close {
+                return Err(format!("Se esperaba '{block_close:?}' al cerrar el cuerpo de la función"));
+            }
             self.advance();
             Expression::Block(statements)
         } else {
             self.parse_expression(Precedence::Lowest)?
         };
 
-        if *self.current_token() == Token::Semicolon {
-            self.advance();
-        }
-
-        let name = format!("__lambda_{}", params.join("_"));
-        Ok(Statement::Let(LetStatement {
-            name,
-            value: Expression::Lambda { params, body: Box::new(body) },
-        }))
+        Ok(Expression::Lambda { params, body: Box::new(body) })
     }
 
     fn parse_params(&mut self) -> Result<Vec<String>, String> {
@@ -436,15 +518,16 @@ impl Parser {
         if *self.current_token() == Token::Question && precedence <= Precedence::Ternary {
             self.advance(); // consume ?
             let true_branch = self.parse_expression(Precedence::Lowest)?;
-            if *self.current_token() == Token::Colon {
-                self.advance(); // consume :
-                let false_branch = self.parse_expression(Precedence::Lowest)?;
-                left_expr = Expression::Ternary {
-                    condition: Box::new(left_expr),
-                    true_branch: Box::new(true_branch),
-                    false_branch: Box::new(false_branch),
-                };
+            if *self.current_token() != Token::Colon {
+                return Err("Se esperaba ':' entre las ramas de la expresión ternaria".to_string());
             }
+            self.advance(); // consume :
+            let false_branch = self.parse_expression(Precedence::Lowest)?;
+            left_expr = Expression::Ternary {
+                condition: Box::new(left_expr),
+                true_branch: Box::new(true_branch),
+                false_branch: Box::new(false_branch),
+            };
         }
 
         Ok(left_expr)
@@ -493,30 +576,14 @@ impl Parser {
             Token::ParenOpen => {
                 self.advance();
                 let expr = self.parse_expression(Precedence::Lowest)?;
-                if *self.current_token() == Token::ParenClose {
-                    self.advance();
+                if *self.current_token() != Token::ParenClose {
+                    return Err("Se esperaba ')' al cerrar la expresión agrupada".to_string());
                 }
+                self.advance();
                 Ok(expr)
             }
             Token::Pipe => {
-                // Lambda: |x, y| { body }
-                self.advance();
-                let params = self.parse_params()?;
-                if !self.is_at_end() && *self.current_token() != Token::Pipe {
-                    return Err("Se esperaba '|' después de los parámetros".to_string());
-                }
-                self.advance();
-                let (block_open, block_close) = self.block_delimiters();
-                let body = if *self.current_token() == block_open {
-                    self.advance();
-                    let statements = self.parse_block()?;
-                    if *self.current_token() != block_close { return Err(format!("Se esperaba '{block_close:?}' al cerrar el cuerpo de la función")); }
-                    self.advance();
-                    Expression::Block(statements)
-                } else {
-                    self.parse_expression(Precedence::Lowest)?
-                };
-                Ok(Expression::Lambda { params, body: Box::new(body) })
+                self.parse_lambda_expression()
             }
             Token::BracketOpen => {
                 self.advance();
@@ -751,6 +818,54 @@ mod tests {
     }
 
     #[test]
+    fn legacy_lambda_parenthesized_expression_is_not_misparsed_as_block() {
+        let program = parse("let add = |x, y| (x + y);");
+        match &program.statements[0] {
+            Statement::Let(stmt) => match &stmt.value {
+                Expression::Lambda { params, body } => {
+                    assert_eq!(params, &vec!["x".to_string(), "y".to_string()]);
+                    assert!(matches!(body.as_ref(), Expression::Infix { operator: Token::Plus, .. }));
+                }
+                other => panic!("expected Lambda, got {:?}", other),
+            },
+            other => panic!("expected Let, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn legacy_lambda_nested_parenthesized_statement_block_still_parses() {
+        let program = parse("let factory = |x| ((let inner = |y| x + y; return inner;));");
+        match &program.statements[0] {
+            Statement::Let(stmt) => match &stmt.value {
+                Expression::Lambda { body, .. } => {
+                    assert!(matches!(
+                        body.as_ref(),
+                        Expression::Block(statements)
+                            if statements.len() == 1
+                                && matches!(&statements[0], Statement::Block(inner) if inner.len() == 2)
+                    ));
+                }
+                other => panic!("expected Lambda, got {:?}", other),
+            },
+            other => panic!("expected Let, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn legacy_lambda_parenthesized_statement_block_still_parses() {
+        let program = parse("let get = |x| (let y = x; return y;);");
+        match &program.statements[0] {
+            Statement::Let(stmt) => match &stmt.value {
+                Expression::Lambda { body, .. } => {
+                    assert!(matches!(body.as_ref(), Expression::Block(statements) if statements.len() == 2));
+                }
+                other => panic!("expected Lambda, got {:?}", other),
+            },
+            other => panic!("expected Let, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn test_parse_lambda() {
         let program = parse("let add = |x, y| x + y;");
         assert_eq!(program.statements.len(), 1);
@@ -923,6 +1038,36 @@ mod tests {
         let mut parser = Parser::new_spanned(tokens);
         let error = parser.parse_program().unwrap_err();
         assert!(error.contains("línea 2, columna 5"), "{}", error);
+    }
+
+    #[test]
+    fn spanned_parser_reports_missing_grouping_parenthesis_at_eof() {
+        let mut lexer = crate::lexer::Lexer::new("\nlet value = (1 + 2".to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = Parser::new_spanned(tokens);
+        let error = parser.parse_program().unwrap_err();
+        assert!(error.contains("Se esperaba ')' al cerrar la expresión agrupada"), "{error}");
+        assert!(error.contains("línea 2, columna"), "{error}");
+    }
+
+    #[test]
+    fn spanned_parser_reports_unclosed_statement_call_at_eof() {
+        let mut lexer = crate::lexer::Lexer::new("\nprocess(1".to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = Parser::new_spanned(tokens);
+        let error = parser.parse_program().unwrap_err();
+        assert!(error.contains("Se esperaba ')' al cerrar la llamada"), "{error}");
+        assert!(error.contains("línea 2, columna"), "{error}");
+    }
+
+    #[test]
+    fn spanned_parser_rejects_ternary_without_colon() {
+        let mut lexer = crate::lexer::Lexer::new("\nlet value = true ? 1;".to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = Parser::new_spanned(tokens);
+        let error = parser.parse_program().unwrap_err();
+        assert!(error.contains("Se esperaba ':' entre las ramas de la expresión ternaria"), "{error}");
+        assert!(error.contains("línea 2, columna"), "{error}");
     }
 
     #[test]

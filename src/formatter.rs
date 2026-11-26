@@ -21,7 +21,7 @@ fn format_statement(statement: &Statement) -> String {
     match statement {
         Statement::Let(stmt) => format!("{}:={}", stmt.name, format_expression(&stmt.value)),
         Statement::Assign(stmt) => format!("{}={}", stmt.name, format_expression(&stmt.value)),
-        Statement::IndexAssign(stmt) => format!("{}[{}]={}", stmt.name, format_expression(&stmt.index), format_expression(&stmt.value)),
+        Statement::IndexAssign(stmt) => format!("{}{}={}", stmt.name, stmt.indices.iter().map(|index| format!("[{}]", format_expression(index))).collect::<String>(), format_expression(&stmt.value)),
         Statement::Print(stmt) => format!("print {}", format_expression(&stmt.value)),
         Statement::Return(expr) => format!("return {}", format_expression(expr)),
         Statement::Break => "break".to_string(),

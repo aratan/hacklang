@@ -1,0 +1,23 @@
+// Mismo programa que native_smoke.hl, usando sintaxis compacta.
+total:=0
+i:=0
+while i<6{
+  i=i+1
+  if i~3{continue}
+  if i~5{break}
+  total=total+i
+}
+print total
+print "sum="+total
+print total>0?"ok":"bad"
+print 100000000000000000000
+print 0.0000000001
+
+shadow:=10
+if true{
+  shadow:=20
+  print shadow
+  shadow=21
+  print shadow
+}
+print shadow

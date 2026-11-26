@@ -147,22 +147,41 @@ impl TypeChecker {
                     self.check_compatible(&format!("asignación a '{}'", stmt.name), &expected, &actual);
                 }
                 Statement::IndexAssign(stmt) => {
-                    let target = self.lookup(&stmt.name);
-                    let index = self.infer(&stmt.index);
-                    let value = self.infer(&stmt.value);
-                    match target {
-                        Type::Array(element) => {
-                            if index != Type::Unknown && index != Type::Number {
-                                self.report(format!("el índice de '{}' debe ser number, no {}", stmt.name, index));
+                    let mut target = self.lookup(&stmt.name);
+                    for (position, expression) in stmt.indices.iter().enumerate() {
+                        let index = self.infer(expression);
+                        let is_last = position + 1 == stmt.indices.len();
+                        match target {
+                            Type::Array(element) => {
+                                if index != Type::Unknown && index != Type::Number {
+                                    self.report(format!("el índice {} de '{}' debe ser number, no {}", position, stmt.name, index));
+                                }
+                                if is_last {
+                                    let value = self.infer(&stmt.value);
+                                    self.check_compatible(&format!("elemento de '{}'", stmt.name), &element, &value);
+                                }
+                                target = *element;
                             }
-                            self.check_compatible(&format!("elemento de '{}'", stmt.name), &element, &value);
+                            Type::Map(key, map_value) if is_last => {
+                                self.check_compatible(&format!("clave de '{}'", stmt.name), &key, &index);
+                                let value = self.infer(&stmt.value);
+                                self.check_compatible(&format!("valor de '{}'", stmt.name), &map_value, &value);
+                                target = *map_value;
+                            }
+                            Type::Map(key, map_value) => {
+                                self.check_compatible(&format!("clave de '{}' en nivel {}", stmt.name, position), &key, &index);
+                                target = *map_value;
+                            }
+                            Type::Unknown => {
+                                if is_last { self.infer(&stmt.value); }
+                                target = Type::Unknown;
+                            }
+                            other => {
+                                self.report(format!("no se puede indexar el nivel {} de '{}' de tipo {}", position, stmt.name, other));
+                                if is_last { self.infer(&stmt.value); }
+                                target = Type::Unknown;
+                            }
                         }
-                        Type::Map(key, map_value) => {
-                            self.check_compatible(&format!("clave de '{}'", stmt.name), &key, &index);
-                            self.check_compatible(&format!("valor de '{}'", stmt.name), &map_value, &value);
-                        }
-                        Type::Unknown => {}
-                        other => self.report(format!("no se puede asignar por índice a '{}' de tipo {}", stmt.name, other)),
                     }
                 }
                 Statement::Print(stmt) => { self.infer(&stmt.value); }
@@ -254,7 +273,14 @@ impl TypeChecker {
                 self.infer(condition);
                 let yes = self.infer(true_branch);
                 let no = self.infer(false_branch);
-                if yes == no { yes } else { Type::Unknown }
+                if yes == Type::Unknown || no == Type::Unknown {
+                    Type::Unknown
+                } else if yes == no {
+                    yes
+                } else {
+                    self.report(format!("ramas de expresión ternaria con tipos incompatibles: {yes} y {no}"));
+                    Type::Unknown
+                }
             }
             Expression::Lambda { params, body } => {
                 self.push_scope();
@@ -324,13 +350,20 @@ impl TypeChecker {
     }
 
     fn merge_return_types(&mut self, returns: Vec<Type>) -> Type {
-        let Some(first) = returns.first().cloned() else { return Type::Unknown; };
-        if returns.iter().all(|ty| *ty == first) {
-            first
-        } else {
-            self.report("una función devuelve tipos incompatibles en distintas ramas");
-            Type::Unknown
+        let mut known = Type::Unknown;
+        for returned in returns {
+            known = match (known, returned) {
+                (Type::Unknown, other) | (other, Type::Unknown) => other,
+                (left, right) if left == right => left,
+                (left, right) => {
+                    self.report(format!(
+                        "una función devuelve tipos incompatibles en distintas ramas: {left} y {right}"
+                    ));
+                    return Type::Unknown;
+                }
+            };
         }
+        known
     }
 
     fn infer_binary(&mut self, op: &Token, lhs: &Type, rhs: &Type) -> Type {
@@ -403,6 +436,21 @@ mod tests {
     }
 
     #[test]
+    fn detects_incompatible_ternary_branch_types() {
+        let diagnostics = check_source("let result = true ? 1 : \"text\";");
+        assert!(diagnostics.iter().any(|d|
+            d.message.contains("ramas de expresión ternaria")
+                && d.message.contains("number")
+                && d.message.contains("string")
+        ));
+    }
+
+    #[test]
+    fn keeps_ternary_with_unknown_branch_non_blocking() {
+        assert!(check_source("let result = true ? missing_name : 1;").is_empty());
+    }
+
+    #[test]
     fn detects_incompatible_assignment() {
         let diagnostics = check_source("let count = 1; count = false;");
         assert!(diagnostics.iter().any(|d| d.message.contains("asignación")));
@@ -429,6 +477,14 @@ mod tests {
     fn infers_explicit_return_type_from_function_block() {
         let diagnostics = check_source("let make = |x| (return 7;); let n = make(1); n = false;");
         assert!(diagnostics.iter().any(|d| d.message.contains("asignación") && d.message.contains("number")));
+    }
+
+    #[test]
+    fn unknown_function_return_branch_does_not_create_false_positive() {
+        let diagnostics = check_source(
+            "let choose = |x| (if (x) (return missing_name;) else (return 1;));"
+        );
+        assert!(!diagnostics.iter().any(|d| d.message.contains("tipos incompatibles")), "{diagnostics:?}");
     }
 
     #[test]

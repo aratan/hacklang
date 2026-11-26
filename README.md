@@ -1,6 +1,6 @@
 # HackLang
 
-Lenguaje de programación interpretado, Turing completo, implementado en Rust.
+Lenguaje de programación con frontend e intérprete en Rust y backend de compilación nativa a C. El backend nativo ya ejecuta arrays, mapas, indexación, `len`, funciones, closures, capturas mutables, llamadas de orden superior y recursión. La paridad completa con el intérprete sigue siendo un objetivo incremental.
 
 ## Arquitectura
 
@@ -11,8 +11,13 @@ flowchart LR
     C --> D["Parser<br/><i>parse_program()</i>"]
     D --> E["AST<br/><i>Program</i>"]
     E --> H["Type checker<br/><i>check()</i> (análisis no bloqueante)"]
-    H --> F["Evaluador<br/><i>evaluate()</i>"]
+    H --> F["Evaluador Rust<br/><i>evaluate()</i>"]
     F --> G["Output"]
+    E --> M["HIR<br/><i>hir.rs</i>"]
+    M --> I["Generador C<br/><i>hir_native.rs</i>"]
+    I --> J["Runtime C<br/><i>native_runtime.c</i>"]
+    J --> K["GCC / Clang"]
+    K --> L["Ejecutable nativo"]
 ```
 
 ### Componentes
@@ -130,11 +135,32 @@ Los ejemplos ejecutables de la versión actual están en `examples/`. Los boceto
 Desde la raíz del repositorio:
 
 ```bash
+# Interpretar (se conserva la invocación legacy)
+cargo run -- run examples/test.hl
 cargo run -- examples/test.hl
-cargo run -- --compact programa-compacto.hl
-cargo run -- --format programa.hl
-cargo run -- --diagnostics-json programa.hl
+
+# Compilar un programa del subconjunto nativo actual
+cat > hello.hl <<'EOF'
+let answer = 40 + 2;
+print answer;
+EOF
+cargo run -- build hello.hl
+./hello
+
+# Elegir el nombre del ejecutable
+cargo run -- build hello.hl -o hello-custom
+./hello-custom
+
+# Comprobar sintaxis y mostrar avisos del análisis estático, sin ejecutar
+cargo run -- check examples/test.hl
+
+# Sintaxis compacta, formateo y diagnósticos JSON
+cargo run -- run --compact programa-compacto.hl
+cargo run -- run --format programa.hl
+cargo run -- check --diagnostics-json programa.hl
 ```
+
+`hl build programa.hl [-o ejecutable]` genera un ejecutable nativo mediante GCC o Clang. El subconjunto nativo incluye números, booleanos, cadenas, variables, operadores, ternarios, `if`, `while`, `break`/`continue`, `print`, arrays, mapas, lectura y asignación indexada (también anidada) y `len(x)` para strings, arrays y mapas. Las llamadas directas y dinámicas a funciones/closures están soportadas, incluidas capturas, llamadas de orden superior y recursión. `len` es el builtin de colecciones implementado actualmente.
 
 Para generar el ejecutable optimizado `hl`:
 
@@ -187,17 +213,26 @@ cargo run -- --diagnostics-json programa.hl
 
 En esta primera versión se compactan las declaraciones (`:=`), los bloques (`{}`), las condiciones de `if/while`, los cuerpos de lambdas y los mapas (`@{}`). En modo legacy, las declaraciones usan `let`, los bloques usan `(...)` y los mapas usan `@(...)`. Se mantienen `print`, `return`, `break` y `continue` como palabras clave para evitar colisiones con operadores existentes. No se exige punto y coma entre sentencias cuando el siguiente token permite determinar el final de la expresión.
 
+## Compilación nativa: primer subconjunto operativo
+
+La CLI dispone de `hl run`, `hl build` y `hl check`; `hl archivo.hl` sigue siendo el alias de interpretación. `build` reutiliza el mismo lexer, parser y AST, lo reduce a HIR con bindings y ámbitos resueltos, y genera C desde HIR mediante GCC o Clang.
+
+El backend admite literales, variables, operadores, control de flujo, arrays, mapas, indexación (incluida la de cadenas), `len(x)` y funciones/closures con cuerpos de expresión o bloque, parámetros, `return`, capturas compartidas mutables, llamadas de orden superior y recursión. HIR resuelve identificadores a `BindingId`, contiene el análisis de capturas y el plan lógico de almacenamiento; es la entrada del generador C.
+
+El runtime C usa valores etiquetados, arenas bump por ámbito/lane y slots físicos `HlFrame` para escalares. `MemoryPlan.scope_stacks` se materializa como lanes reutilizables; arrays y mapas se clonan recursivamente para preservar semántica de valor. Las llamadas crean entornos y frames de activación; los bindings capturados viven en celdas estables compartidas, incluso cuando escapan de la activación creadora. Un registro de frames activos y raíces temporales permite trazar celdas y closures, incluidas las anidadas en arrays/mapas, y recoger ciclos de closures inalcanzables. Es un recolector especializado para el grafo de celdas/closures, no un GC general de todos los objetos. La integración del plan de memoria es parcial: aún falta completar el análisis transitivo de escapes y demostrar todos los contratos de propiedad/liberación. Los errores fatales limpian los entornos activos y terminan con código 1. No se crea un parser ni un AST alternativo, y el checker estático no es requisito para compilar. Diseño y límites: [docs/NATIVE_COMPILER_DESIGN.md](docs/NATIVE_COMPILER_DESIGN.md).
+
 ## Metodología
 
 ### Pipeline de ejecución
 
-HackLang sigue el patrón clásico de **intérprete sin IR** (Intermediate Representation). El flujo principal pasa por tres fases: lexer, parser y evaluador. No hay generación de código ni una representación intermedia adicional:
+HackLang mantiene un único front-end compartido. El intérprete recorre el AST en Rust; el backend nativo transforma AST→HIR y genera C desde HIR. La HIR es la frontera semántica del backend, no un segundo frontend:
 
 ```
-Source (.hl)  ──[Lexer]──▶  Tokens  ──[Parser]──▶  AST  ──[Evaluator]──▶  Output
+Source (.hl) ─▶ Lexer ─▶ Parser ─▶ AST ─┬─▶ Evaluator Rust ─▶ Output
+                                        └─▶ HIR ─▶ C Generator ─▶ Runtime C ─▶ GCC/Clang ─▶ Executable
 ```
 
-Cada fase es un módulo independiente de Rust (`lexer.rs`, `parser.rs`, `evaluador.rs`) que se comunica con el siguiente solo a través de su tipo de salida (`Vec<Token>` → `Program` → `Result<(), String>`). El análisis estático es una pasada independiente y no bloqueante entre el parser y el evaluador. No hay IR, optimizaciones ni generación de código.
+Cada fase es un módulo independiente de Rust (`lexer.rs`, `parser.rs`, `evaluador.rs`, `hir.rs`, `hir_native.rs`) que se comunica con la siguiente mediante tipos explícitos. El análisis estático sigue siendo una pasada independiente y no bloqueante entre el parser y el evaluador. HIR resuelve ámbitos e identidad de bindings; todavía no hay optimizaciones de alto nivel ni paridad nativa completa.
 
 ### Flujo de errores
 
@@ -310,7 +345,7 @@ Cada decisión de diseño se tomó preguntando "¿esto añade complejidad sin ne
 
 ### YAGNI (You Aren't Gonna Need It)
 
-El runtime implementa primero las construcciones necesarias para ejecutar programas pequeños: funciones, closures léxicas, arrays, mapas e indexación. Las características que aún no existen deben fallar explícitamente; no deben simularse con valores por defecto ni con resultados silenciosos.
+El intérprete Rust y el backend C ejecutan funciones y closures. El backend genera cuerpos y frames de activación, conserva celdas capturadas compartidas y despacha llamadas directas o dinámicas. Las características todavía no soportadas deben fallar explícitamente, nunca simularse con valores por defecto.
 
 ### DRY — con límites
 
@@ -333,7 +368,7 @@ El lexer y el parser devuelven `Result`: los caracteres desconocidos, las cadena
 
 ## Estado
 
-El CLI se construye como el ejecutable `hl`. En desarrollo se invoca con `cargo run -- ...`; en release, Cargo genera `target/release/hl` (o `hl.exe` en Windows). No existe actualmente un comando `compile` ni generación de binarios nativos a partir de `.hl`.
+El CLI se construye como el ejecutable `hl`. En desarrollo se invoca con `cargo run -- ...`; en release, Cargo genera `target/release/hl` (o `hl.exe` en Windows). `hl build` genera ejecutables nativos mediante el backend C para el subconjunto descrito en «Compilación nativa»; no equivale aún a cobertura completa del lenguaje.
 
 | Componente | Estado |
 |---|---|
@@ -342,9 +377,10 @@ El CLI se construye como el ejecutable `hl`. En desarrollo se invoca con `cargo 
 | **Evaluador** | ✅ Evaluación de expresiones, booleanos, sentencias, ámbitos léxicos y colecciones |
 | **Funciones** | ✅ Lambdas, closures léxicas, recursividad, llamadas de primera clase y aridad |
 | **Control de flujo** | ✅ `return`, `break` y `continue` |
-| **Memoria** | ✅ Mark-and-sweep de frames de entorno; los demás valores los gestiona Rust |
+| **Memoria actual** | Rust: mark-and-sweep de entornos. C: arenas bump, slots de activación, celdas capturadas estables y tracing especializado de ciclos de closures/celdas. Integración parcial; escape analysis transitiva y propiedad general aún incompletas |
 | **Análisis de tipos** | ✅ Primera pasada no bloqueante: tipos primitivos, retornos explícitos, arrays/mapas con tipos de elemento/clave/valor, indexación, asignaciones, operadores y aridad de llamadas |
-| **Tests** | Tests Rust y ejecución de todos los `examples/*.hl` en GitHub Actions |
+| **Compilador nativo** | Backend HIR→C con arrays, mapas, indexación, strings, `len`, funciones, closures, capturas, llamadas de orden superior y recursión. Paridad diferencial en expansión |
+| **Tests** | Tests Rust, ejecución de todos los ejemplos y smoke diferencial intérprete/nativo, incluida división por cero; falta ampliar la matriz de conformidad |
 
 
 ## Funcionalidad del runtime
@@ -358,7 +394,7 @@ El CLI se construye como el ejecutable `hl`. En desarrollo se invoca con `cargo 
 - La indexación de cadenas devuelve el carácter solicitado.
 - Los errores al evaluar condiciones de `while` se propagan; ya no se convierten silenciosamente en una condición falsa.
 
-Limitaciones actuales: la asignación por índice solo admite como destino una variable identificada directamente (no indexación anidada); los mapas se representan como pares ordenados. El comprobador estático inicial es deliberadamente no bloqueante: informa de incompatibilidades demostrables y deja como `unknown` los casos que aún no puede inferir. El runtime mantiene la conversión dinámica de números, cadenas y colecciones en condiciones por compatibilidad. Las comparaciones numéricas producen `true` o `false`, no `1` o `0`.
+Limitaciones actuales: los mapas se representan como pares ordenados y su búsqueda es lineal. El comprobador estático inicial es deliberadamente no bloqueante: informa de incompatibilidades demostrables y deja como `unknown` los casos que aún no puede inferir. La indexación de strings está implementada en ambos runtimes y debe mantenerse bajo paridad diferencial. Las comparaciones numéricas producen `true` o `false`, no `1` o `0`.
 
 
 ## Modelo de memoria y ejecución
@@ -375,6 +411,14 @@ El lexer expone `tokenize() -> Result<Vec<Token>, String>` y el parser `parse_pr
 
 
 
+## Modelo de memoria objetivo
+
+El objetivo sigue siendo un modelo **stack-first, sin GC general y sin gestión manual del usuario**. El evaluador Rust conserva su recolector de entornos. En C, `MemoryPlan` dirige lanes regionales y slots inline; las activaciones usan frames, y las capturas viven en celdas estables. Un tracing collector limitado al grafo de celdas/closures rompe ciclos inalcanzables; no gestiona de forma general todos los objetos. Arrays, mapas, strings indexables, llamadas y closures ya tienen soporte nativo con pruebas diferenciales. La integración del modelo de memoria sigue siendo parcial: falta completar escape analysis transitiva, la propiedad de todos los valores dinámicos y la validación exhaustiva con sanitizers. La matriz de diseño y su cobertura están en [docs/MEMORY_MODEL.md](docs/MEMORY_MODEL.md).
+
 ## Biblioteca estándar inicial
 
 - `len(x)`: número de caracteres Unicode en strings o cantidad de elementos en arrays y mapas. Acepta un argumento y valida tipos en análisis estático.
+
+## Arquitectura del compilador
+
+El frontend (lexer, parser y AST) es único para intérprete y compilador nativo. La HIR inicial ya está implementada en `src/hir.rs`, con IDs de expresión/sentencia, ámbitos y bindings resueltos; el backend C la consume desde `src/hir_native.rs`. La cobertura HIR/nativa sigue siendo parcial. Consulta [docs/HIR_DESIGN.md](docs/HIR_DESIGN.md) y [docs/AI_AUTHORING.md](docs/AI_AUTHORING.md).

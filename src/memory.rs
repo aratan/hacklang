@@ -1,0 +1,2387 @@
+//! Conservative storage planning for HIR.
+//!
+//! This module is analysis-only: it does not allocate memory or change runtime
+//! semantics. Unknown lifetimes are promoted to an owned region, never shortened.
+
+use crate::hir::{BindingId, BinaryOp, ExprKind, Expression, FunctionId, Program, ScopeId, StmtId, StmtKind, Statement};
+use std::collections::HashMap;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageClass {
+    /// Immediate scalar with no dynamic payload.
+    Inline,
+    /// Dynamic payload is confined to the binding's lexical scope.
+    ScopeRegion(ScopeId),
+    /// Payload may outlive its declaring scope; use a longer-lived owner.
+    OwnedRegion,
+}
+
+/// Stable index of a compiler-planned data stack within one activation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct DataStackId(pub u32);
+
+/// Lexical scope to data-stack assignment. Sibling scopes at the same depth
+/// reuse a lane; nested scopes receive a distinct lane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScopeStackPlan {
+    pub scope: ScopeId,
+    pub stack: DataStackId,
+    pub depth: u32,
+}
+
+/// Conservative usage facts collected from HIR. These are not yet a
+/// control-flow liveness proof and must not be used to shorten storage lives.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BindingUsage {
+    pub read_count: u32,
+    pub assignment_count: u32,
+    /// Monotonic event index at which the binding is declared.
+    pub declaration_position: Option<u32>,
+    pub first_use_position: Option<u32>,
+    pub last_use_position: Option<u32>,
+    pub last_write_position: Option<u32>,
+    /// True when a loop may read/write this binding across iterations.
+    pub loop_carried: bool,
+    /// Lexical scopes in which this binding is read, sorted and deduplicated.
+    pub read_scopes: Vec<ScopeId>,
+}
+
+
+/// Basic block in a control-flow graph built from structured HIR.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlFlowBlock {
+    pub id: u32,
+    pub uses: std::collections::HashSet<BindingId>,
+    pub defs: std::collections::HashSet<BindingId>,
+    pub successors: Vec<u32>,
+    pub live_in: std::collections::HashSet<BindingId>,
+    pub live_out: std::collections::HashSet<BindingId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ControlFlowGraph {
+    pub blocks: Vec<ControlFlowBlock>,
+    pub entry: u32,
+    pub exit: u32,
+}
+
+/// Physical slot assignment within a planned data stack. Metadata only:
+/// the runtime does not consume these offsets yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BindingSlotPlan {
+    pub stack: DataStackId,
+    pub slot: u32,
+}
+
+/// Why a dynamic value must outlive the scope where it is produced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromotionReason {
+    /// A value produced in a nested scope is assigned to an outer binding.
+    AssignedToLongerLivedBinding,
+    /// A value read from a nested-scope binding is assigned to an outer binding.
+    ReadFromShorterLivedBinding,
+}
+
+/// Where the value expression gets its semantic value from. This is
+/// deliberately separate from the storage owner: reading a binding does not
+/// imply that ownership was moved out of that binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueOrigin {
+    Literal,
+    Binding(BindingId),
+    Computed,
+    Unknown,
+}
+
+/// Logical owner known to the planner. `Binding` denotes the conservative
+/// owned storage associated with a binding, not a runtime allocation handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StorageOwner {
+    Inline,
+    Scope(ScopeId),
+    Binding(BindingId),
+    Unknown,
+}
+
+/// Stable planner identity for an ownership acquisition site. The runtime may
+/// create multiple distinct dynamic handles when that site executes repeatedly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct OwnershipTokenId(pub u64);
+
+/// Lifecycle actions have distinct meanings: Move transfers the unique owner,
+/// Promote extends the owner's lifetime, and Drop ends the resource lifetime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnershipAction {
+    Acquire { token: OwnershipTokenId, owner: StorageOwner },
+    Move { token: OwnershipTokenId, from: StorageOwner, to: StorageOwner },
+    Promote { token: OwnershipTokenId, from: StorageOwner, to: StorageOwner },
+    Drop { token: OwnershipTokenId, owner: StorageOwner },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnershipError {
+    UnknownToken,
+    AlreadyDropped,
+    OwnerMismatch,
+    InvalidOwner,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OwnershipRecord {
+    owner: StorageOwner,
+    dropped: bool,
+}
+
+/// Small backend-neutral lifecycle state machine.
+///
+/// The ledger keeps tombstones after Drop, so a second destruction is
+/// rejected instead of silently becoming a second free. A successful Move or
+/// Promote updates the sole logical owner; it never creates another token.
+/// This is a specification/test utility, not runtime integration.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct OwnershipLedger {
+    next_token: u64,
+    records: HashMap<OwnershipTokenId, OwnershipRecord>,
+    /// Active cleanup registrations, ordered by acquisition for each owner.
+    cleanup_order: HashMap<StorageOwner, Vec<OwnershipTokenId>>,
+}
+
+impl OwnershipLedger {
+    pub fn acquire(&mut self, owner: StorageOwner) -> Result<OwnershipTokenId, OwnershipError> {
+        if matches!(owner, StorageOwner::Inline | StorageOwner::Unknown) {
+            return Err(OwnershipError::InvalidOwner);
+        }
+        let token = OwnershipTokenId(self.next_token);
+        self.next_token = self.next_token.checked_add(1).ok_or(OwnershipError::InvalidOwner)?;
+        self.records.insert(token, OwnershipRecord { owner, dropped: false });
+        self.cleanup_order.entry(owner).or_default().push(token);
+        Ok(token)
+    }
+
+    pub fn owner(&self, token: OwnershipTokenId) -> Result<StorageOwner, OwnershipError> {
+        let record = self.records.get(&token).ok_or(OwnershipError::UnknownToken)?;
+        if record.dropped { return Err(OwnershipError::AlreadyDropped); }
+        Ok(record.owner)
+    }
+
+    pub fn move_to(
+        &mut self,
+        token: OwnershipTokenId,
+        expected_owner: StorageOwner,
+        new_owner: StorageOwner,
+    ) -> Result<OwnershipAction, OwnershipError> {
+        self.reassign(token, expected_owner, new_owner, false)
+    }
+
+    /// Reassigns a token to a caller-proven longer-lived owner.
+    ///
+    /// The ledger checks token identity and the expected current owner, but
+    /// cannot prove lexical lifetime ordering from StorageOwner alone. The
+    /// caller must establish that precondition before requesting promotion.
+    pub fn promote_to(
+        &mut self,
+        token: OwnershipTokenId,
+        expected_owner: StorageOwner,
+        longer_lived_owner: StorageOwner,
+    ) -> Result<OwnershipAction, OwnershipError> {
+        self.reassign(token, expected_owner, longer_lived_owner, true)
+    }
+
+    fn reassign(
+        &mut self,
+        token: OwnershipTokenId,
+        expected_owner: StorageOwner,
+        new_owner: StorageOwner,
+        promotion: bool,
+    ) -> Result<OwnershipAction, OwnershipError> {
+        if matches!(new_owner, StorageOwner::Inline | StorageOwner::Unknown) {
+            return Err(OwnershipError::InvalidOwner);
+        }
+        let record = self.records.get(&token).ok_or(OwnershipError::UnknownToken)?;
+        if record.dropped { return Err(OwnershipError::AlreadyDropped); }
+        if record.owner != expected_owner { return Err(OwnershipError::OwnerMismatch); }
+        // A same-owner move/promotion is a lifecycle no-op. In particular,
+        // do not remove and append the token: that would silently change the
+        // owner's LIFO destruction order despite no ownership transfer.
+        if expected_owner != new_owner {
+            if let Some(entries) = self.cleanup_order.get_mut(&expected_owner) {
+                entries.retain(|entry| *entry != token);
+            }
+            self.cleanup_order.entry(new_owner).or_default().push(token);
+            self.records.get_mut(&token).expect("record validated above").owner = new_owner;
+        }
+        Ok(if promotion {
+            OwnershipAction::Promote { token, from: expected_owner, to: new_owner }
+        } else {
+            OwnershipAction::Move { token, from: expected_owner, to: new_owner }
+        })
+    }
+
+    pub fn drop_token(
+        &mut self,
+        token: OwnershipTokenId,
+        expected_owner: StorageOwner,
+    ) -> Result<OwnershipAction, OwnershipError> {
+        let record = self.records.get_mut(&token).ok_or(OwnershipError::UnknownToken)?;
+        if record.dropped { return Err(OwnershipError::AlreadyDropped); }
+        if record.owner != expected_owner { return Err(OwnershipError::OwnerMismatch); }
+        record.dropped = true;
+        if let Some(entries) = self.cleanup_order.get_mut(&expected_owner) {
+            entries.retain(|entry| *entry != token);
+        }
+        Ok(OwnershipAction::Drop { token, owner: expected_owner })
+    }
+
+    /// Consume every active cleanup registration for an owner in LIFO order.
+    /// The returned actions are the exact Drop sequence a backend must execute
+    /// before reclaiming that owner's storage.
+    pub fn drain_owner(
+        &mut self,
+        owner: StorageOwner,
+    ) -> Result<Vec<OwnershipAction>, OwnershipError> {
+        // Validate the complete batch before mutating either index. A stale
+        // or inconsistent registration must not partially consume the owner's
+        // cleanup stack and make the remaining resources unreachable.
+        let tokens = self.cleanup_order.get(&owner).cloned().unwrap_or_default();
+        for token in &tokens {
+            let record = self.records.get(token).ok_or(OwnershipError::UnknownToken)?;
+            if record.dropped { return Err(OwnershipError::AlreadyDropped); }
+            if record.owner != owner { return Err(OwnershipError::OwnerMismatch); }
+        }
+
+        self.cleanup_order.remove(&owner);
+        let mut actions = Vec::with_capacity(tokens.len());
+        for token in tokens.into_iter().rev() {
+            self.records.get_mut(&token).expect("cleanup batch validated above").dropped = true;
+            actions.push(OwnershipAction::Drop { token, owner });
+        }
+        Ok(actions)
+    }
+}
+
+/// Backend-neutral lifetime extension discovered for one HIR assignment.
+/// The native backend consumes this for string promotion-by-copy; it is not
+/// aggregate/string ownership registration or a general graph move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryOperationKind { Promote }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemoryOperation {
+    pub statement: StmtId,
+    pub kind: MemoryOperationKind,
+    /// The destination binding's planned ownership site; dynamic handles are allocated at runtime.
+    pub origin: ValueOrigin,
+    pub source_owner: StorageOwner,
+    pub destination_owner: StorageOwner,
+    pub destination: BindingId,
+    pub ownership_token: OwnershipTokenId,
+    pub source: Option<BindingId>,
+    pub produced_in: ScopeId,
+    pub destination_scope: ScopeId,
+    pub reason: PromotionReason,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivationBindingSlot {
+    Frame(u32),
+    CaptureCell(u32),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunctionActivationPlan {
+    /// Conservative storage classes for parameters and locals in this activation.
+    pub bindings: HashMap<BindingId, StorageClass>,
+    /// Locals that require stable identity because another closure captures them.
+    pub captured_cells: Vec<BindingId>,
+    /// Deterministic cell indexes for captured bindings; never reused as frame slots.
+    pub cell_slots: HashMap<BindingId, u32>,
+    /// Deterministic activation-frame slots for non-captured parameters and locals.
+    pub frame_slots: HashMap<BindingId, u32>,
+    pub frame_slot_count: u32,
+    /// Parameter destinations in source argument order, including captured parameters.
+    pub parameter_slots: Vec<ActivationBindingSlot>,
+    pub ownership_tokens: HashMap<BindingId, OwnershipTokenId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryPlan {
+    pub bindings: HashMap<BindingId, StorageClass>,
+    /// Per-function storage metadata. It is not yet consumed by native codegen.
+    pub function_activations: HashMap<FunctionId, FunctionActivationPlan>,
+    /// Module bindings captured by closures, ordered by BindingId.
+    pub module_cells: Vec<BindingId>,
+    /// Deterministic root-environment cell indexes for module captures.
+    pub module_cell_slots: HashMap<BindingId, u32>,
+    /// Stable compiler-site identities for bindings that own dynamic resources.
+    /// The native runtime pairs these sites with dynamic handles and cleanup
+    /// registrations for owned strings and aggregate graphs.
+    pub scope_stacks: HashMap<ScopeId, ScopeStackPlan>,
+    /// Read/write facts for diagnostics and future escape analysis.
+    pub usage: HashMap<BindingId, BindingUsage>,
+    /// Structured control-flow graph and solved live-in/live-out sets.
+    pub cfg: ControlFlowGraph,
+    /// Interference graph for bindings eligible for frame/region slot reuse.
+    pub interference: HashMap<BindingId, std::collections::HashSet<BindingId>>,
+    /// Greedy, deterministic slot assignment, partitioned by data stack.
+    pub binding_slots: HashMap<BindingId, BindingSlotPlan>,
+    /// Number of slots reserved in each data stack.
+    pub stack_slot_counts: HashMap<DataStackId, u32>,
+    /// Proven lifetime extensions consumed by backend-specific promotion paths.
+    pub operations: Vec<MemoryOperation>,
+    pub ownership_tokens: HashMap<BindingId, OwnershipTokenId>,
+}
+
+
+fn new_cfg_block(cfg: &mut ControlFlowGraph) -> u32 {
+    let id = cfg.blocks.len() as u32;
+    cfg.blocks.push(ControlFlowBlock { id, uses: Default::default(), defs: Default::default(), successors: Vec::new(), live_in: Default::default(), live_out: Default::default() });
+    id
+}
+fn add_edge(cfg: &mut ControlFlowGraph, from: u32, to: u32) {
+    let successors = &mut cfg.blocks[from as usize].successors;
+    if !successors.contains(&to) { successors.push(to); }
+}
+fn expr_uses(expr: &Expression, uses: &mut std::collections::HashSet<BindingId>) {
+    match &expr.kind {
+        ExprKind::Read(id) => { uses.insert(*id); }
+        ExprKind::Binary { left, right, .. } => { expr_uses(left, uses); expr_uses(right, uses); }
+        ExprKind::Ternary { condition, when_true, when_false } => { expr_uses(condition, uses); expr_uses(when_true, uses); expr_uses(when_false, uses); }
+        ExprKind::Array(items) => for item in items { expr_uses(item, uses); },
+        ExprKind::Map(items) => for (key, value) in items { expr_uses(key, uses); expr_uses(value, uses); },
+        ExprKind::Index { target, index } => { expr_uses(target, uses); expr_uses(index, uses); }
+        ExprKind::Length(value) => expr_uses(value, uses),
+        ExprKind::Call { callee, args } => {
+            expr_uses(callee, uses);
+            for arg in args { expr_uses(arg, uses); }
+        }
+        ExprKind::Closure(_) | ExprKind::Number(_) | ExprKind::Bool(_) | ExprKind::String(_) => {}
+    }
+}
+fn build_cfg_sequence(
+    statements: &[Statement], incoming: Vec<u32>, cfg: &mut ControlFlowGraph,
+    breaks: &mut Vec<u32>, continues: &mut Vec<u32>,
+) -> Vec<u32> {
+    let mut current = incoming;
+    for statement in statements {
+        // A terminating break/continue leaves no fallthrough predecessor.
+        // Do not manufacture disconnected CFG blocks for subsequent dead
+        // statements: they can otherwise become false loop back-edges and
+        // contaminate liveness/interference decisions.
+        if current.is_empty() {
+            continue;
+        }
+        match &statement.kind {
+            StmtKind::Let { binding, value } | StmtKind::Assign { binding, value } => {
+                let id = new_cfg_block(cfg);
+                for prev in current.drain(..) { add_edge(cfg, prev, id); }
+                expr_uses(value, &mut cfg.blocks[id as usize].uses);
+                cfg.blocks[id as usize].defs.insert(*binding);
+                current.push(id);
+            }
+            StmtKind::IndexAssign { binding, indices, value } => {
+                let id = new_cfg_block(cfg);
+                for prev in current.drain(..) { add_edge(cfg, prev, id); }
+                for index in indices {
+                    expr_uses(index, &mut cfg.blocks[id as usize].uses);
+                }
+                expr_uses(value, &mut cfg.blocks[id as usize].uses);
+                cfg.blocks[id as usize].uses.insert(*binding);
+                cfg.blocks[id as usize].defs.insert(*binding);
+                current.push(id);
+            }
+            StmtKind::Print(value) => {
+                let id = new_cfg_block(cfg);
+                for prev in current.drain(..) { add_edge(cfg, prev, id); }
+                expr_uses(value, &mut cfg.blocks[id as usize].uses);
+                current.push(id);
+            }
+            StmtKind::Block { statements, .. } => current = build_cfg_sequence(statements, current, cfg, breaks, continues),
+            StmtKind::If { condition, then_body, else_body, .. } => {
+                let branch = new_cfg_block(cfg);
+                for prev in current.drain(..) { add_edge(cfg, prev, branch); }
+                expr_uses(condition, &mut cfg.blocks[branch as usize].uses);
+                let then_exits = build_cfg_sequence(then_body, vec![branch], cfg, breaks, continues);
+                let else_exits = if else_body.is_empty() { vec![branch] } else { build_cfg_sequence(else_body, vec![branch], cfg, breaks, continues) };
+                let join = new_cfg_block(cfg);
+                let mut has_fallthrough = false;
+                for exit in then_exits.into_iter().chain(else_exits) {
+                    add_edge(cfg, exit, join);
+                    has_fallthrough = true;
+                }
+                if has_fallthrough {
+                    current.push(join);
+                }
+            }
+            StmtKind::While { condition, body, .. } => {
+                let header = new_cfg_block(cfg);
+                for prev in current.drain(..) { add_edge(cfg, prev, header); }
+                expr_uses(condition, &mut cfg.blocks[header as usize].uses);
+                let after = new_cfg_block(cfg);
+                add_edge(cfg, header, after);
+                breaks.push(after); continues.push(header);
+                let body_exits = build_cfg_sequence(body, vec![header], cfg, breaks, continues);
+                breaks.pop(); continues.pop();
+                for exit in body_exits { add_edge(cfg, exit, header); }
+                current.push(after);
+            }
+            StmtKind::Return(value) => {
+                let id = new_cfg_block(cfg);
+                for prev in current.drain(..) { add_edge(cfg, prev, id); }
+                expr_uses(value, &mut cfg.blocks[id as usize].uses);
+                current.clear();
+            }
+            StmtKind::Break | StmtKind::Continue => {
+                let id = new_cfg_block(cfg);
+                for prev in current.drain(..) { add_edge(cfg, prev, id); }
+                let target = if matches!(&statement.kind, StmtKind::Break) { breaks.last() } else { continues.last() };
+                if let Some(target) = target { add_edge(cfg, id, *target); }
+            }
+        }
+    }
+    current
+}
+fn build_control_flow_graph(program: &Program) -> ControlFlowGraph {
+    let mut cfg = ControlFlowGraph::default();
+    let entry = new_cfg_block(&mut cfg); cfg.entry = entry;
+    let exits = build_cfg_sequence(&program.statements, vec![entry], &mut cfg, &mut Vec::new(), &mut Vec::new());
+    let exit = new_cfg_block(&mut cfg);
+    for from in exits { add_edge(&mut cfg, from, exit); }
+    cfg.exit = exit;
+    cfg
+}
+fn solve_liveness(cfg: &mut ControlFlowGraph) {
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for index in (0..cfg.blocks.len()).rev() {
+            let mut out = std::collections::HashSet::new();
+            for successor in cfg.blocks[index].successors.clone() { out.extend(cfg.blocks[successor as usize].live_in.iter().copied()); }
+            let mut input = cfg.blocks[index].uses.clone();
+            input.extend(out.difference(&cfg.blocks[index].defs).copied());
+            if out != cfg.blocks[index].live_out || input != cfg.blocks[index].live_in {
+                cfg.blocks[index].live_out = out; cfg.blocks[index].live_in = input; changed = true;
+            }
+        }
+    }
+}
+
+
+fn stack_for_binding(
+    binding: BindingId,
+    class: StorageClass,
+    program: &Program,
+    scope_stacks: &HashMap<ScopeId, ScopeStackPlan>,
+) -> Option<DataStackId> {
+    match class {
+        StorageClass::Inline => Some(DataStackId(u32::MAX)),
+        StorageClass::ScopeRegion(scope) => scope_stacks.get(&scope).map(|plan| plan.stack),
+        StorageClass::OwnedRegion => {
+            let _ = (binding, program);
+            None
+        }
+    }
+}
+
+fn build_interference(
+    cfg: &ControlFlowGraph,
+    bindings: &HashMap<BindingId, StorageClass>,
+    program: &Program,
+    scope_stacks: &HashMap<ScopeId, ScopeStackPlan>,
+) -> HashMap<BindingId, std::collections::HashSet<BindingId>> {
+    let eligible: std::collections::HashSet<BindingId> = bindings.iter()
+        .filter_map(|(id, class)| stack_for_binding(*id, *class, program, scope_stacks).map(|_| *id))
+        .collect();
+    let mut graph: HashMap<BindingId, std::collections::HashSet<BindingId>> =
+        eligible.iter().map(|id| (*id, Default::default())).collect();
+
+    let mut connect = |a: BindingId, b: BindingId| {
+        if a == b || !eligible.contains(&a) || !eligible.contains(&b) { return; }
+        let same_stack = stack_for_binding(a, bindings[&a], program, scope_stacks)
+            == stack_for_binding(b, bindings[&b], program, scope_stacks);
+        if same_stack {
+            graph.get_mut(&a).unwrap().insert(b);
+            graph.get_mut(&b).unwrap().insert(a);
+        }
+    };
+
+    for block in &cfg.blocks {
+        let mut simultaneous = block.live_in.clone();
+        simultaneous.extend(block.live_out.iter().copied());
+        for defined in &block.defs {
+            for live in &block.live_out { connect(*defined, *live); }
+        }
+        let ids: Vec<_> = simultaneous.into_iter().collect();
+        for i in 0..ids.len() {
+            for j in (i + 1)..ids.len() { connect(ids[i], ids[j]); }
+        }
+    }
+    graph
+}
+
+fn assign_binding_slots(
+    graph: &HashMap<BindingId, std::collections::HashSet<BindingId>>,
+    bindings: &HashMap<BindingId, StorageClass>,
+    program: &Program,
+    scope_stacks: &HashMap<ScopeId, ScopeStackPlan>,
+) -> (HashMap<BindingId, BindingSlotPlan>, HashMap<DataStackId, u32>) {
+    let mut ordered: Vec<_> = graph.keys().copied().collect();
+    ordered.sort_unstable_by_key(|id| {
+        (std::cmp::Reverse(graph.get(id).map_or(0, |edges| edges.len())), id.0)
+    });
+    let mut assigned: HashMap<BindingId, BindingSlotPlan> = HashMap::new();
+    let mut counts: HashMap<DataStackId, u32> = HashMap::new();
+
+    for binding in ordered {
+        let stack = stack_for_binding(binding, bindings[&binding], program, scope_stacks)
+            .expect("only eligible bindings have interference nodes");
+        let unavailable: std::collections::HashSet<u32> = graph[&binding].iter()
+            .filter_map(|neighbor| assigned.get(neighbor))
+            .filter(|slot| slot.stack == stack)
+            .map(|slot| slot.slot)
+            .collect();
+        let mut slot = 0;
+        while unavailable.contains(&slot) { slot += 1; }
+        assigned.insert(binding, BindingSlotPlan { stack, slot });
+        let count = counts.entry(stack).or_insert(0);
+        *count = (*count).max(slot + 1);
+    }
+    (assigned, counts)
+}
+
+/// Classifies supported HIR values using known binding storage facts.
+/// Unknown provenance remains conservative and is never treated as scalar.
+fn is_dynamic_string(expr: &Expression, bindings: &HashMap<BindingId, StorageClass>) -> Option<bool> {
+    match &expr.kind {
+        ExprKind::String(_) => Some(true),
+        ExprKind::Number(_) | ExprKind::Bool(_) => Some(false),
+        ExprKind::Read(binding) => match bindings.get(binding) {
+            Some(StorageClass::Inline) => Some(false),
+            Some(StorageClass::ScopeRegion(_) | StorageClass::OwnedRegion) => Some(true),
+            None => None,
+        },
+        ExprKind::Binary { op: BinaryOp::Add, left, right } => {
+            let left = is_dynamic_string(left, bindings);
+            let right = is_dynamic_string(right, bindings);
+            match (left, right) {
+                (Some(true), _) | (_, Some(true)) => Some(true),
+                (Some(false), Some(false)) => Some(false),
+                _ => None,
+            }
+        }
+        ExprKind::Binary { .. } => Some(false),
+        ExprKind::Ternary { when_true, when_false, .. } => {
+            let left = is_dynamic_string(when_true, bindings);
+            let right = is_dynamic_string(when_false, bindings);
+            match (left, right) {
+                (Some(true), _) | (_, Some(true)) => Some(true),
+                (Some(false), Some(false)) => Some(false),
+                _ => None,
+            }
+        }
+        ExprKind::Array(_) | ExprKind::Map(_) | ExprKind::Index { .. } => Some(true),
+        ExprKind::Length(_) => Some(false),
+        ExprKind::Closure(_) => Some(true),
+        ExprKind::Call { .. } => None,
+    }
+}
+
+fn scope_depth(program: &Program, scope: ScopeId) -> u32 {
+    let mut depth = 0;
+    let mut current = program.scopes[scope.0 as usize].parent;
+    while let Some(parent) = current {
+        depth += 1;
+        current = program.scopes[parent.0 as usize].parent;
+    }
+    depth
+}
+
+fn plan_scope_stacks(program: &Program, bindings: &HashMap<BindingId, StorageClass>) -> HashMap<ScopeId, ScopeStackPlan> {
+    let mut scopes: Vec<ScopeId> = bindings.values().filter_map(|class| match class {
+        StorageClass::ScopeRegion(scope) => Some(*scope),
+        StorageClass::Inline | StorageClass::OwnedRegion => None,
+    }).collect();
+    scopes.sort_unstable_by_key(|scope| scope.0);
+    scopes.dedup();
+
+    let mut result = HashMap::new();
+    for scope in scopes {
+        let depth = scope_depth(program, scope);
+        // One lane per lexical depth: parent/child scopes never share storage,
+        // while sibling scopes can safely reuse it after their scope ends.
+        result.insert(scope, ScopeStackPlan {
+            scope,
+            stack: DataStackId(depth),
+            depth,
+        });
+    }
+    result
+}
+
+
+fn touch_binding(
+    binding: BindingId,
+    position: u32,
+    usage: &mut HashMap<BindingId, BindingUsage>,
+    loop_touched: &mut [std::collections::HashSet<BindingId>],
+) {
+    let facts = usage.entry(binding).or_default();
+    facts.first_use_position = Some(facts.first_use_position.map_or(position, |old| old.min(position)));
+    facts.last_use_position = Some(facts.last_use_position.map_or(position, |old| old.max(position)));
+    for touched in loop_touched {
+        touched.insert(binding);
+    }
+}
+
+fn collect_expr_usage(
+    expr: &Expression,
+    scope: ScopeId,
+    usage: &mut HashMap<BindingId, BindingUsage>,
+    position: &mut u32,
+    loop_touched: &mut [std::collections::HashSet<BindingId>],
+) {
+    match &expr.kind {
+        ExprKind::Read(binding) => {
+            *position += 1;
+            let facts = usage.entry(*binding).or_default();
+            facts.read_count += 1;
+            facts.read_scopes.push(scope);
+            touch_binding(*binding, *position, usage, loop_touched);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            collect_expr_usage(left, scope, usage, position, loop_touched);
+            collect_expr_usage(right, scope, usage, position, loop_touched);
+        }
+        ExprKind::Ternary { condition, when_true, when_false } => {
+            collect_expr_usage(condition, scope, usage, position, loop_touched);
+            collect_expr_usage(when_true, scope, usage, position, loop_touched);
+            collect_expr_usage(when_false, scope, usage, position, loop_touched);
+        }
+        ExprKind::Array(items) => for item in items { collect_expr_usage(item, scope, usage, position, loop_touched); },
+        ExprKind::Map(items) => for (key, value) in items { collect_expr_usage(key, scope, usage, position, loop_touched); collect_expr_usage(value, scope, usage, position, loop_touched); },
+        ExprKind::Index { target, index } => { collect_expr_usage(target, scope, usage, position, loop_touched); collect_expr_usage(index, scope, usage, position, loop_touched); }
+        ExprKind::Length(value) => collect_expr_usage(value, scope, usage, position, loop_touched),
+        ExprKind::Call { callee, args } => {
+            collect_expr_usage(callee, scope, usage, position, loop_touched);
+            for arg in args { collect_expr_usage(arg, scope, usage, position, loop_touched); }
+        }
+        ExprKind::Closure(_) | ExprKind::Number(_) | ExprKind::Bool(_) | ExprKind::String(_) => {}
+    }
+}
+
+fn collect_usage(
+    statements: &[Statement],
+    scope: ScopeId,
+    usage: &mut HashMap<BindingId, BindingUsage>,
+    position: &mut u32,
+    loop_touched: &mut Vec<std::collections::HashSet<BindingId>>,
+) {
+    for statement in statements {
+        *position += 1;
+        match &statement.kind {
+            StmtKind::Let { binding, value } => {
+                usage.entry(*binding).or_default().declaration_position = Some(*position);
+                collect_expr_usage(value, scope, usage, position, loop_touched);
+            }
+            StmtKind::Print(value) | StmtKind::Return(value) => {
+                collect_expr_usage(value, scope, usage, position, loop_touched);
+            }
+            StmtKind::IndexAssign { binding, indices, value } => {
+                for index in indices {
+                    collect_expr_usage(index, scope, usage, position, loop_touched);
+                }
+                collect_expr_usage(value, scope, usage, position, loop_touched);
+                *position += 1;
+                let facts = usage.entry(*binding).or_default();
+                facts.read_count += 1;
+                facts.assignment_count += 1;
+                facts.read_scopes.push(scope);
+                facts.last_write_position = Some(*position);
+                touch_binding(*binding, *position, usage, loop_touched);
+            }
+            StmtKind::Assign { binding, value } => {
+                collect_expr_usage(value, scope, usage, position, loop_touched);
+                *position += 1;
+                let facts = usage.entry(*binding).or_default();
+                facts.assignment_count += 1;
+                facts.last_write_position = Some(*position);
+                touch_binding(*binding, *position, usage, loop_touched);
+            }
+            StmtKind::Block { scope: child, statements } => {
+                collect_usage(statements, *child, usage, position, loop_touched);
+            }
+            StmtKind::If { condition, then_scope, then_body, else_scope, else_body } => {
+                collect_expr_usage(condition, scope, usage, position, loop_touched);
+                collect_usage(then_body, *then_scope, usage, position, loop_touched);
+                if let Some(child) = else_scope {
+                    collect_usage(else_body, *child, usage, position, loop_touched);
+                }
+            }
+            StmtKind::While { scope: child, condition, body } => {
+                let mut touched = std::collections::HashSet::new();
+                loop_touched.push(std::mem::take(&mut touched));
+                collect_expr_usage(condition, *child, usage, position, loop_touched);
+                collect_usage(body, *child, usage, position, loop_touched);
+                let touched = loop_touched.pop().expect("loop tracking stack is balanced");
+                *position += 1; // Conservative loop-exit boundary.
+                for binding in touched {
+                    let facts = usage.entry(binding).or_default();
+                    facts.loop_carried = true;
+                    facts.last_use_position = Some(facts.last_use_position.map_or(*position, |old| old.max(*position)));
+                }
+            }
+            StmtKind::Break | StmtKind::Continue => {}
+        }
+    }
+}
+
+fn normalize_usage(usage: &mut HashMap<BindingId, BindingUsage>) {
+    for facts in usage.values_mut() {
+        facts.read_scopes.sort_unstable_by_key(|scope| scope.0);
+        facts.read_scopes.dedup();
+    }
+}
+
+fn is_scope_ancestor(program: &Program, ancestor: ScopeId, mut child: ScopeId) -> bool {
+    loop {
+        if ancestor == child { return true; }
+        match program.scopes[child.0 as usize].parent {
+            Some(parent) => child = parent,
+            None => return false,
+        }
+    }
+}
+
+fn collect_operations(
+    statements: &[Statement],
+    scope: ScopeId,
+    program: &Program,
+    bindings: &HashMap<BindingId, StorageClass>,
+    ownership_tokens: &HashMap<BindingId, OwnershipTokenId>,
+    operations: &mut Vec<MemoryOperation>,
+) {
+    for statement in statements {
+        match &statement.kind {
+            StmtKind::Assign { binding, value } => {
+                let destination_scope = program.bindings[binding.0 as usize].scope;
+                let source = match &value.kind { ExprKind::Read(source) => Some(*source), _ => None };
+                let dynamic = match source {
+                    Some(source) => !matches!(bindings.get(&source), Some(StorageClass::Inline)),
+                    None => is_dynamic_string(value, bindings) != Some(false),
+                };
+                let source_is_shorter = source.is_some_and(|id| {
+                    let source_scope = program.bindings[id.0 as usize].scope;
+                    !is_scope_ancestor(program, source_scope, destination_scope)
+                });
+                if dynamic && is_scope_ancestor(program, destination_scope, scope)
+                    && destination_scope != scope
+                    && (source.is_none() || source_is_shorter)
+                {
+                    let source_owner = source.map_or(StorageOwner::Scope(scope), |source_id| {
+                        match bindings.get(&source_id) {
+                            Some(StorageClass::Inline) => StorageOwner::Inline,
+                            Some(StorageClass::ScopeRegion(owner_scope)) => StorageOwner::Scope(*owner_scope),
+                            Some(StorageClass::OwnedRegion) => StorageOwner::Binding(source_id),
+                            None => StorageOwner::Unknown,
+                        }
+                    });
+                    let origin = match (&value.kind, source) {
+                        (ExprKind::String(_) | ExprKind::Number(_) | ExprKind::Bool(_), _) => ValueOrigin::Literal,
+                        (_, Some(source_id)) => ValueOrigin::Binding(source_id),
+                        (ExprKind::Binary { .. } | ExprKind::Ternary { .. }, None) => ValueOrigin::Computed,
+                        _ => ValueOrigin::Unknown,
+                    };
+                    operations.push(MemoryOperation {
+                        statement: statement.id,
+                        kind: MemoryOperationKind::Promote,
+                        origin,
+                        source_owner,
+                        destination_owner: StorageOwner::Binding(*binding),
+                        destination: *binding,
+                        ownership_token: *ownership_tokens.get(binding)
+                            .expect("owned promotion destination must have a planned ownership token"),
+                        source,
+                        produced_in: scope,
+                        destination_scope,
+                        reason: if source_is_shorter {
+                            PromotionReason::ReadFromShorterLivedBinding
+                        } else {
+                            PromotionReason::AssignedToLongerLivedBinding
+                        },
+                    });
+                }
+            }
+            StmtKind::Block { scope: child, statements } => collect_operations(statements, *child, program, bindings, ownership_tokens, operations),
+            StmtKind::If { then_scope, then_body, else_scope, else_body, .. } => {
+                collect_operations(then_body, *then_scope, program, bindings, ownership_tokens, operations);
+                if let Some(child) = else_scope { collect_operations(else_body, *child, program, bindings, ownership_tokens, operations); }
+            }
+            StmtKind::While { scope: child, body, .. } => collect_operations(body, *child, program, bindings, ownership_tokens, operations),
+            StmtKind::Let { .. } | StmtKind::IndexAssign { .. } | StmtKind::Print(_) | StmtKind::Return(_) | StmtKind::Break | StmtKind::Continue => {}
+        }
+    }
+}
+
+/// Validate that each planned promotion still points to the assignment it describes.
+pub fn validate_memory_operations(program: &Program, plan: &MemoryPlan) -> Result<(), String> {
+    fn collect(
+        statements: &[Statement],
+        scope: ScopeId,
+        found: &mut HashMap<StmtId, (BindingId, ScopeId)>,
+    ) {
+        for statement in statements {
+            match &statement.kind {
+                StmtKind::Assign { binding, .. } => { found.insert(statement.id, (*binding, scope)); }
+                StmtKind::Block { scope: child, statements } => collect(statements, *child, found),
+                StmtKind::If { then_scope, then_body, else_scope, else_body, .. } => {
+                    collect(then_body, *then_scope, found);
+                    if let Some(child) = else_scope { collect(else_body, *child, found); }
+                }
+                StmtKind::While { scope: child, body, .. } => collect(body, *child, found),
+                _ => {}
+            }
+        }
+    }
+    let mut assignments = HashMap::new();
+    collect(&program.statements, ScopeId(0), &mut assignments);
+    let mut seen = std::collections::HashSet::new();
+    for operation in &plan.operations {
+        let expected_token = plan.ownership_tokens.get(&operation.destination)
+            .ok_or_else(|| format!("token de propiedad ausente para BindingId {}", operation.destination.0))?;
+        if operation.ownership_token != *expected_token {
+            return Err(format!("token de propiedad incoherente en promoción StmtId {}", operation.statement.0));
+        }
+        if !seen.insert(operation.statement) {
+            return Err(format!("promoción duplicada para StmtId {}", operation.statement.0));
+        }
+        let (destination, statement_scope) = assignments.get(&operation.statement)
+            .ok_or_else(|| format!("promoción sin asignación para StmtId {}", operation.statement.0))?;
+        if *destination != operation.destination {
+            return Err(format!("destino de promoción incoherente en StmtId {}", operation.statement.0));
+        }
+        if *statement_scope != operation.produced_in {
+            return Err(format!("región de producción incoherente en StmtId {}", operation.statement.0));
+        }
+        let binding = program.bindings.get(operation.destination.0 as usize)
+            .ok_or_else(|| format!("destino inexistente en promoción: BindingId {}", operation.destination.0))?;
+        if binding.scope != operation.destination_scope
+            || plan.bindings.get(&operation.destination) != Some(&StorageClass::OwnedRegion) {
+            return Err(format!("propietario de promoción incoherente en StmtId {}", operation.statement.0));
+        }
+        if operation.produced_in.0 as usize >= program.scopes.len()
+            || !is_scope_ancestor(program, operation.destination_scope, operation.produced_in) {
+            return Err(format!("vida útil de promoción inválida en StmtId {}", operation.statement.0));
+        }
+        if operation.destination_owner != StorageOwner::Binding(operation.destination) {
+            return Err(format!("propietario destino inválido en promoción StmtId {}", operation.statement.0));
+        }
+        let expected_source_owner = if let Some(source) = operation.source {
+            let source_binding = program.bindings.get(source.0 as usize)
+                .ok_or_else(|| format!("origen inexistente en promoción: BindingId {}", source.0))?;
+            match plan.bindings.get(&source) {
+                Some(StorageClass::Inline) => StorageOwner::Inline,
+                Some(StorageClass::ScopeRegion(scope)) if *scope == source_binding.scope => StorageOwner::Scope(*scope),
+                Some(StorageClass::ScopeRegion(_)) => return Err(format!("región de almacenamiento incoherente para origen BindingId {}", source.0)),
+                Some(StorageClass::OwnedRegion) => StorageOwner::Binding(source),
+                None => return Err(format!("clase de almacenamiento ausente para origen BindingId {}", source.0)),
+            }
+        } else {
+            StorageOwner::Scope(operation.produced_in)
+        };
+        if operation.source_owner != expected_source_owner {
+            return Err(format!("propietario origen incoherente en promoción StmtId {}", operation.statement.0));
+        }
+        match (operation.source, operation.origin) {
+            (Some(source), ValueOrigin::Binding(origin)) if source == origin => {}
+            (Some(_), _) => return Err(format!("origen de valor incoherente en promoción StmtId {}", operation.statement.0)),
+            (None, ValueOrigin::Binding(_)) => return Err(format!("origen de binding inesperado en promoción StmtId {}", operation.statement.0)),
+            (None, _) => {}
+        }
+        let expected_reason = if operation.source.is_some() {
+            PromotionReason::ReadFromShorterLivedBinding
+        } else {
+            PromotionReason::AssignedToLongerLivedBinding
+        };
+        if operation.reason != expected_reason {
+            return Err(format!("motivo de promoción incoherente en StmtId {}", operation.statement.0));
+        }
+    }
+    Ok(())
+}
+
+/// Validate physical slot metadata before a backend consumes it.
+/// This proves planner consistency only; it does not allocate runtime memory.
+pub fn validate_slot_plan(program: &Program, plan: &MemoryPlan) -> Result<(), String> {
+    // The interference graph is the safety proof behind physical slot reuse.
+    // Reject incomplete or asymmetric metadata instead of silently treating a
+    // missing neighbor as non-interfering.
+    for binding in plan.binding_slots.keys() {
+        if !plan.interference.contains_key(binding) {
+            return Err(format!("slot para BindingId inexistente {}", binding.0));
+        }
+    }
+    // Validate graph vertices before edges so diagnostics do not depend on
+    // HashMap iteration order when a binding's slot is missing.
+    for binding in plan.interference.keys() {
+        if !plan.binding_slots.contains_key(binding) {
+            return Err(format!("MemoryPlan sin slot para BindingId {}", binding.0));
+        }
+    }
+
+    for (binding, neighbors) in &plan.interference {
+        let slot = plan.binding_slots.get(binding)
+            .ok_or_else(|| format!("MemoryPlan sin slot para BindingId {}", binding.0))?;
+        let class = plan.bindings.get(binding)
+            .ok_or_else(|| format!("MemoryPlan sin clase para BindingId {}", binding.0))?;
+        let expected_stack = stack_for_binding(*binding, *class, program, &plan.scope_stacks)
+            .ok_or_else(|| format!("MemoryPlan sin pila para BindingId {}", binding.0))?;
+        if slot.stack != expected_stack {
+            return Err(format!("Pila incorrecta para BindingId {}", binding.0));
+        }
+        for neighbor in neighbors {
+            if neighbor == binding {
+                return Err(format!("Auto-interferencia inválida para BindingId {}", binding.0));
+            }
+            let other_neighbors = plan.interference.get(neighbor)
+                .ok_or_else(|| format!("Vecino desconocido {} en el grafo de interferencias", neighbor.0))?;
+            if !other_neighbors.contains(binding) {
+                return Err(format!("Arista de interferencia asimétrica entre {} y {}", binding.0, neighbor.0));
+            }
+            let other = plan.binding_slots.get(neighbor)
+                .ok_or_else(|| format!("MemoryPlan sin slot para vecino BindingId {}", neighbor.0))?;
+            if slot.stack == other.stack && slot.slot == other.slot {
+                return Err(format!("Slots solapados para bindings {} y {}", binding.0, neighbor.0));
+            }
+        }
+    }
+    let mut observed: HashMap<DataStackId, u32> = HashMap::new();
+    for (binding, slot) in &plan.binding_slots {
+        if !program.bindings.iter().any(|item| item.id == *binding) {
+            return Err(format!("slot para BindingId inexistente {}", binding.0));
+        }
+        let count = observed.entry(slot.stack).or_insert(0);
+        *count = (*count).max(slot.slot.saturating_add(1));
+    }
+    if observed != plan.stack_slot_counts {
+        return Err("Conteos de slots inconsistentes con las asignaciones".into());
+    }
+    Ok(())
+}
+
+/// Concrete, backend-neutral slot layout derived from a validated MemoryPlan.
+/// Each stack owns a dense slot vector; each slot lists every non-interfering
+/// binding assigned to it across the activation. This is a layout description,
+/// not runtime allocation.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FrameLayout {
+    /// Each physical slot may serve multiple non-interfering bindings at
+    /// different points in the activation. The planner's interference graph
+    /// guarantees that these bindings are never simultaneously live.
+    pub stacks: HashMap<DataStackId, Vec<Vec<BindingId>>>,
+}
+
+pub fn frame_layout(program: &Program, plan: &MemoryPlan) -> Result<FrameLayout, String> {
+    validate_slot_plan(program, plan)?;
+    let mut layout = FrameLayout::default();
+    for (stack, count) in &plan.stack_slot_counts {
+        layout.stacks.insert(*stack, vec![Vec::new(); *count as usize]);
+    }
+    for (binding, assignment) in &plan.binding_slots {
+        let slots = layout.stacks.get_mut(&assignment.stack)
+            .ok_or_else(|| format!("DataStackId {} sin conteo", assignment.stack.0))?;
+        let target = slots.get_mut(assignment.slot as usize)
+            .ok_or_else(|| format!("Slot fuera del frame para BindingId {}", binding.0))?;
+        // Slot reuse is intentional: non-interfering bindings may occupy
+        // the same physical slot at disjoint points in the program.
+        target.push(*binding);
+    }
+    Ok(layout)
+}
+
+fn visit_storage_bindings(
+    statements: &[Statement],
+    program: &Program,
+    result: &mut HashMap<BindingId, StorageClass>,
+) {
+    for statement in statements {
+        match &statement.kind {
+            StmtKind::Let { binding, value } => {
+                let scope = program.bindings[binding.0 as usize].scope;
+                let class = match (&value.kind, is_dynamic_string(value, result)) {
+                    (_, Some(false)) => StorageClass::Inline,
+                    (ExprKind::Read(_), Some(true)) | (_, None) => StorageClass::OwnedRegion,
+                    (_, Some(true)) => StorageClass::ScopeRegion(scope),
+                };
+                result.insert(*binding, class);
+            }
+            StmtKind::Block { statements, .. } => visit_storage_bindings(statements, program, result),
+            StmtKind::If { then_body, else_body, .. } => {
+                visit_storage_bindings(then_body, program, result);
+                visit_storage_bindings(else_body, program, result);
+            }
+            StmtKind::While { body, .. } => visit_storage_bindings(body, program, result),
+            StmtKind::Assign { binding, value } => {
+                if is_dynamic_string(value, result) != Some(false) {
+                    result.insert(*binding, StorageClass::OwnedRegion);
+                }
+            }
+            StmtKind::IndexAssign { binding, .. } => { result.insert(*binding, StorageClass::OwnedRegion); }
+            StmtKind::Print(_) | StmtKind::Return(_) | StmtKind::Break | StmtKind::Continue => {}
+        }
+    }
+}
+
+fn plan_function_activations(program: &Program) -> HashMap<FunctionId, FunctionActivationPlan> {
+    let mut plans = HashMap::new();
+    for function in &program.functions {
+        let mut bindings = HashMap::new();
+        // Parameter types are not statically known here; keep them out of short
+        // inline/lexical storage until type and lifetime analysis proves safety.
+        for parameter in &function.params {
+            bindings.insert(*parameter, StorageClass::OwnedRegion);
+        }
+        visit_storage_bindings(&function.body.statements, program, &mut bindings);
+        // Assignment and index-assignment targets may belong to an enclosing
+        // scope or to another activation; they are not storage of this one.
+        bindings.retain(|binding, _| program.bindings
+            .get(binding.0 as usize)
+            .is_some_and(|binding| binding.function_owner == Some(function.id)));
+
+        // Include every local even if it is only referenced through a nested
+        // expression or future HIR node not yet visited by the storage walker.
+        for binding in &program.bindings {
+            if binding.function_owner == Some(function.id) {
+                bindings.entry(binding.id).or_insert(StorageClass::OwnedRegion);
+            }
+        }
+
+        let mut captured_cells: Vec<_> = program.capture_storage.bindings.iter()
+            .filter_map(|entry| match entry.storage {
+                crate::capture::CaptureStorageKind::ActivationCell(owner) if owner == function.id =>
+                    Some(entry.binding),
+                _ => None,
+            })
+            .collect();
+        captured_cells.sort_unstable();
+        captured_cells.dedup();
+        for binding in &captured_cells {
+            bindings.insert(*binding, StorageClass::OwnedRegion);
+        }
+
+        let cell_slots: HashMap<BindingId, u32> = captured_cells.iter().enumerate()
+            .map(|(slot, binding)| (*binding, slot as u32))
+            .collect();
+        let mut frame_bindings: Vec<_> = bindings.keys()
+            .filter(|binding| !captured_cells.contains(binding))
+            .copied()
+            .collect();
+        frame_bindings.sort_unstable();
+        let frame_slots: HashMap<_, _> = frame_bindings.iter().enumerate()
+            .map(|(slot, binding)| (*binding, slot as u32))
+            .collect();
+        let frame_slot_count = frame_bindings.len() as u32;
+        let parameter_slots = function.params.iter().map(|parameter| {
+            if let Some(slot) = cell_slots.get(parameter) {
+                ActivationBindingSlot::CaptureCell(*slot)
+            } else {
+                ActivationBindingSlot::Frame(*frame_slots.get(parameter)
+                    .expect("every non-captured parameter has an activation frame slot"))
+            }
+        }).collect();
+        let ownership_tokens = bindings.iter()
+            .filter_map(|(binding, class)| matches!(class, StorageClass::OwnedRegion)
+                .then_some((*binding, OwnershipTokenId(u64::from(binding.0) + 1))))
+            .collect();
+        plans.insert(function.id, FunctionActivationPlan {
+            bindings,
+            captured_cells,
+            cell_slots,
+            frame_slots,
+            frame_slot_count,
+            parameter_slots,
+            ownership_tokens,
+        });
+    }
+    plans
+}
+
+/// Validate activation-local storage before a backend consumes it.
+pub fn validate_function_activation_plan(
+    program: &Program,
+    plan: &MemoryPlan,
+) -> Result<(), String> {
+    if plan.function_activations.len() != program.functions.len() {
+        return Err("MemoryPlan: número de activaciones distinto al número de funciones".into());
+    }
+    for function in &program.functions {
+        let activation = plan.function_activations.get(&function.id)
+            .ok_or_else(|| format!("MemoryPlan sin activación para FunctionId {}", function.id.0))?;
+        let expected_bindings: std::collections::HashSet<_> = program.bindings.iter()
+            .filter(|binding| binding.function_owner == Some(function.id))
+            .map(|binding| binding.id).collect();
+        let actual_bindings: std::collections::HashSet<_> =
+            activation.bindings.keys().copied().collect();
+        if actual_bindings != expected_bindings {
+            return Err(format!("conjunto de bindings incompleto o ajeno en FunctionId {}", function.id.0));
+        }
+        let expected_owned: std::collections::HashSet<_> = activation.bindings.iter()
+            .filter_map(|(binding, class)| matches!(class, StorageClass::OwnedRegion)
+                .then_some(*binding)).collect();
+        let actual_owned: std::collections::HashSet<_> =
+            activation.ownership_tokens.keys().copied().collect();
+        if expected_owned != actual_owned {
+            return Err(format!("conjunto de tokens de propiedad incoherente en FunctionId {}", function.id.0));
+        }
+        let frame_bindings: std::collections::HashSet<_> =
+            activation.frame_slots.keys().copied().collect();
+        let cell_bindings: std::collections::HashSet<_> =
+            activation.cell_slots.keys().copied().collect();
+        let expected_frame: std::collections::HashSet<_> = expected_bindings.iter()
+            .filter(|binding| !activation.captured_cells.contains(binding))
+            .copied().collect();
+        if frame_bindings != expected_frame || cell_bindings
+            != activation.captured_cells.iter().copied().collect() {
+            return Err(format!("asignación de bindings a frame/celdas incompleta en FunctionId {}", function.id.0));
+        }
+        let mut expected_cells: Vec<_> = program.capture_storage.bindings.iter()
+            .filter_map(|entry| match entry.storage {
+                crate::capture::CaptureStorageKind::ActivationCell(owner) if owner == function.id =>
+                    Some(entry.binding),
+                _ => None,
+            }).collect();
+        expected_cells.sort_unstable();
+        expected_cells.dedup();
+        let mut actual_cells = activation.captured_cells.clone();
+        actual_cells.sort_unstable();
+        actual_cells.dedup();
+        if actual_cells != expected_cells || actual_cells.len() != activation.captured_cells.len() {
+            return Err(format!("celdas capturadas incoherentes en FunctionId {}", function.id.0));
+        }
+        if activation.cell_slots.len() != activation.captured_cells.len()
+            || activation.frame_slots.len() != activation.frame_slot_count as usize {
+            return Err(format!("conteo de slots incoherente en FunctionId {}", function.id.0));
+        }
+        for (index, binding) in activation.captured_cells.iter().enumerate() {
+            if activation.cell_slots.get(binding) != Some(&(index as u32)) {
+                return Err(format!("índice de celda no determinista para BindingId {}", binding.0));
+            }
+        }
+        let mut frame_indices: Vec<_> = activation.frame_slots.values().copied().collect();
+        frame_indices.sort_unstable();
+        if frame_indices.iter().copied().ne(0..activation.frame_slot_count) {
+            return Err(format!("slots de frame no densos en FunctionId {}", function.id.0));
+        }
+        for binding in activation.bindings.keys() {
+            let metadata = program.bindings.get(binding.0 as usize)
+                .ok_or_else(|| format!("BindingId inválido {} en activación", binding.0))?;
+            if metadata.function_owner != Some(function.id) {
+                return Err(format!("BindingId {} asignado a una activación ajena", binding.0));
+            }
+            let captured = activation.cell_slots.contains_key(binding);
+            let framed = activation.frame_slots.contains_key(binding);
+            if captured == framed {
+                return Err(format!("BindingId {} debe ocupar exactamente un slot", binding.0));
+            }
+            if matches!(activation.bindings.get(binding), Some(StorageClass::OwnedRegion))
+                != activation.ownership_tokens.contains_key(binding) {
+                return Err(format!("token de propiedad incoherente para BindingId {}", binding.0));
+            }
+        }
+        for (index, parameter) in function.params.iter().enumerate() {
+            let expected = if let Some(slot) = activation.cell_slots.get(parameter) {
+                ActivationBindingSlot::CaptureCell(*slot)
+            } else if let Some(slot) = activation.frame_slots.get(parameter) {
+                ActivationBindingSlot::Frame(*slot)
+            } else {
+                return Err(format!("parámetro BindingId {} sin slot", parameter.0));
+            };
+            if activation.parameter_slots.get(index) != Some(&expected) {
+                return Err(format!("destino de parámetro incoherente para BindingId {}", parameter.0));
+            }
+        }
+        if activation.parameter_slots.len() != function.params.len() {
+            return Err(format!("número de destinos de parámetros incorrecto en FunctionId {}", function.id.0));
+        }
+    }
+    Ok(())
+}
+
+pub fn plan(program: &Program) -> MemoryPlan {
+    let mut bindings = HashMap::new();
+    visit_storage_bindings(&program.statements, program, &mut bindings);
+    // A module binding captured by any closure must not be assigned to an
+    // ephemeral inline slot or short-lived lexical lane.
+    for entry in &program.capture_storage.bindings {
+        if entry.storage == crate::capture::CaptureStorageKind::ModuleCell {
+            bindings.insert(entry.binding, StorageClass::OwnedRegion);
+        }
+    }
+    let function_activations = plan_function_activations(program);
+    let mut module_cells: Vec<_> = program.capture_storage.bindings.iter()
+        .filter_map(|entry| (entry.storage == crate::capture::CaptureStorageKind::ModuleCell)
+            .then_some(entry.binding))
+        .collect();
+    module_cells.sort_unstable();
+    module_cells.dedup();
+    let module_cell_slots = module_cells.iter().enumerate()
+        .map(|(slot, binding)| (*binding, slot as u32))
+        .collect();
+    let scope_stacks = plan_scope_stacks(program, &bindings);
+    let mut usage = HashMap::new();
+    let mut position = 0;
+    let mut loop_touched = Vec::new();
+    collect_usage(&program.statements, ScopeId(0), &mut usage, &mut position, &mut loop_touched);
+    normalize_usage(&mut usage);
+    let mut cfg = build_control_flow_graph(program);
+    solve_liveness(&mut cfg);
+    let interference = build_interference(&cfg, &bindings, program, &scope_stacks);
+    let (binding_slots, stack_slot_counts) =
+        assign_binding_slots(&interference, &bindings, program, &scope_stacks);
+    // One deterministic compiler-site identity per owned binding. Runtime handles remain dynamic.
+    let ownership_tokens: HashMap<_, _> = bindings.iter()
+        .filter_map(|(binding, class)| matches!(class, StorageClass::OwnedRegion)
+            .then_some((*binding, OwnershipTokenId(u64::from(binding.0) + 1))))
+        .collect();
+    let mut operations = Vec::new();
+    collect_operations(&program.statements, ScopeId(0), program, &bindings, &ownership_tokens, &mut operations);
+    MemoryPlan { bindings, function_activations, module_cells, module_cell_slots, scope_stacks, usage, cfg, interference, binding_slots, stack_slot_counts, operations, ownership_tokens }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ast::{Expression as A, LetStatement, PrintStatement, Program as AP, Statement as S}, hir};
+
+    fn lower(statements: Vec<S>) -> Program { hir::lower(&AP { statements }).unwrap() }
+
+    #[test]
+    fn activation_plan_excludes_captured_outer_assignment_targets() {
+        let program = lower(vec![
+            S::Let(LetStatement { name: "total".into(), value: A::NumberLiteral(0.0) }),
+            S::Let(LetStatement {
+                name: "bump".into(),
+                value: A::Lambda {
+                    params: vec!["n".into()],
+                    body: Box::new(A::Block(vec![S::Assign(crate::ast::AssignStatement {
+                        name: "total".into(),
+                        value: A::Identifier("n".into()),
+                    })])),
+                },
+            }),
+        ]);
+        let memory = plan(&program);
+        let function = &program.functions[0];
+        let activation = &memory.function_activations[&function.id];
+        let outer = program.bindings.iter()
+            .find(|binding| binding.name == "total").unwrap().id;
+        assert!(!activation.bindings.contains_key(&outer));
+        assert!(activation.bindings.contains_key(&function.params[0]));
+        validate_function_activation_plan(&program, &memory).unwrap();
+    }
+
+    #[test]
+    fn function_memory_plan_keeps_captured_parameters_in_activation_cells() {
+        let mut lexer = crate::lexer::Lexer::new(
+            "let global_b = 2; let global_a = 1; let factory = |x, y| |z| x + y + global_b + global_a + z;".to_string()
+        );
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = crate::parser::Parser::new(tokens);
+        let ast = parser.parse_program().unwrap();
+        let program = hir::lower(&ast).unwrap();
+        let memory = plan(&program);
+
+        let global_b = program.bindings.iter().find(|binding| binding.name == "global_b").unwrap().id;
+        let global_a = program.bindings.iter().find(|binding| binding.name == "global_a").unwrap().id;
+        let x = program.bindings.iter().find(|binding| binding.name == "x").unwrap().id;
+        let y = program.bindings.iter().find(|binding| binding.name == "y").unwrap().id;
+        let outer = program.functions[0].id;
+        let inner = program.functions[1].id;
+
+        assert_eq!(memory.bindings.get(&global_a), Some(&StorageClass::OwnedRegion));
+        assert_eq!(memory.bindings.get(&global_b), Some(&StorageClass::OwnedRegion));
+        assert_eq!(memory.module_cells, vec![global_b, global_a]);
+        assert_eq!(memory.module_cell_slots.get(&global_b), Some(&0));
+        assert_eq!(memory.module_cell_slots.get(&global_a), Some(&1));
+        let outer_plan = &memory.function_activations[&outer];
+        assert_eq!(outer_plan.captured_cells, vec![x, y]);
+        assert_eq!(outer_plan.bindings.get(&x), Some(&StorageClass::OwnedRegion));
+        assert_eq!(outer_plan.bindings.get(&y), Some(&StorageClass::OwnedRegion));
+        assert_eq!(outer_plan.cell_slots.get(&x), Some(&0));
+        assert_eq!(outer_plan.cell_slots.get(&y), Some(&1));
+        assert!(outer_plan.frame_slots.is_empty());
+        assert_eq!(outer_plan.frame_slot_count, 0);
+        let inner_plan = &memory.function_activations[&inner];
+        let z = program.bindings.iter().find(|binding| binding.name == "z").unwrap().id;
+        assert_eq!(inner_plan.frame_slots.get(&z), Some(&0));
+        assert_eq!(inner_plan.frame_slot_count, 1);
+        assert_eq!(inner_plan.parameter_slots, vec![ActivationBindingSlot::Frame(0)]);
+        assert_eq!(outer_plan.parameter_slots, vec![
+            ActivationBindingSlot::CaptureCell(0),
+            ActivationBindingSlot::CaptureCell(1),
+        ]);
+    }
+
+    #[test]
+    fn ownership_sites_are_stable_and_only_assigned_to_owned_bindings() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "scoped".into(), value: A::StringLiteral("local".into()) }),
+            S::Let(LetStatement { name: "owned".into(), value: A::StringLiteral("first".into()) }),
+            S::Assign(crate::ast::AssignStatement { name: "owned".into(), value: A::StringLiteral("second".into()) }),
+        ]);
+        let memory = plan(&p);
+        let scoped = p.bindings.iter().find(|binding| binding.name == "scoped").unwrap().id;
+        let owned = p.bindings.iter().find(|binding| binding.name == "owned").unwrap().id;
+        assert!(!memory.ownership_tokens.contains_key(&scoped));
+        assert_eq!(memory.ownership_tokens.get(&owned), Some(&OwnershipTokenId(u64::from(owned.0) + 1)));
+    }
+
+    #[test]
+    fn aggregate_index_mutation_is_tracked_as_dynamic_binding_write() {
+        use crate::ast::IndexAssignStatement;
+        let p = lower(vec![
+            S::Let(LetStatement {
+                name: "items".into(),
+                value: A::Array(vec![A::Array(vec![A::NumberLiteral(1.0)])]),
+            }),
+            S::IndexAssign(IndexAssignStatement {
+                name: "items".into(),
+                indices: vec![A::NumberLiteral(0.0), A::NumberLiteral(0.0)],
+                value: A::Array(vec![A::NumberLiteral(2.0)]),
+            }),
+            S::Print(PrintStatement {
+                value: A::Index {
+                    target: Box::new(A::Identifier("items".into())),
+                    index: Box::new(A::NumberLiteral(0.0)),
+                },
+            }),
+        ]);
+        let binding = p.bindings[0].id;
+        let memory = plan(&p);
+        assert_eq!(memory.bindings.get(&binding), Some(&StorageClass::OwnedRegion));
+        let mutation = memory.cfg.blocks.iter()
+            .find(|block| block.defs.contains(&binding) && block.uses.contains(&binding))
+            .expect("index mutation must be a read-modify-write of the aggregate binding");
+        assert!(mutation.uses.contains(&binding));
+    }
+
+    #[test]
+    fn cfg_does_not_create_fallthrough_after_break_inside_nested_block() {
+        use crate::ast::{AssignStatement, WhileStatement};
+        let p = lower(vec![
+            S::Let(LetStatement {
+                name: "counter".into(),
+                value: A::NumberLiteral(0.0),
+            }),
+            S::While(WhileStatement {
+                condition: A::BoolLiteral(true),
+                body: vec![S::Block(vec![
+                    S::Assign(AssignStatement {
+                        name: "counter".into(),
+                        value: A::NumberLiteral(1.0),
+                    }),
+                    S::Break,
+                    S::Assign(AssignStatement {
+                        name: "counter".into(),
+                        value: A::NumberLiteral(2.0),
+                    }),
+                ])],
+            }),
+        ]);
+        let memory = plan(&p);
+        let counter = p.bindings.iter().find(|binding| binding.name == "counter").unwrap().id;
+        // One definition is the declaration and one is the reachable write
+        // before break. The dead write after break must not enter the CFG.
+        let definitions = memory.cfg.blocks.iter()
+            .filter(|block| block.defs.contains(&counter))
+            .count();
+        assert_eq!(definitions, 2);
+        let reachable_write = memory.cfg.blocks.iter()
+            .find(|block| block.defs.contains(&counter)
+                && block.successors.iter().any(|successor| {
+                    let next = &memory.cfg.blocks[*successor as usize];
+                    next.uses.is_empty() && next.defs.is_empty()
+                        && next.successors.len() == 1
+                }))
+            .expect("reachable write must lead to the break terminator");
+        let break_id = reachable_write.successors.iter()
+            .find(|successor| {
+                let next = &memory.cfg.blocks[**successor as usize];
+                next.uses.is_empty() && next.defs.is_empty()
+                    && next.successors.len() == 1
+            }).copied().unwrap();
+        assert_eq!(memory.cfg.blocks[break_id as usize].successors.len(), 1);
+    }
+
+    #[test]
+    fn scope_stack_plan_reuses_sibling_lanes_but_separates_nested_scopes() {
+        let p = lower(vec![
+            S::Block(vec![S::Let(LetStatement {
+                name: "left".into(), value: A::StringLiteral("left".into()),
+            })]),
+            S::Block(vec![
+                S::Let(LetStatement {
+                    name: "parent".into(), value: A::StringLiteral("parent".into()),
+                }),
+                S::Block(vec![S::Let(LetStatement {
+                    name: "child".into(), value: A::StringLiteral("child".into()),
+                })]),
+            ]),
+        ]);
+        let memory = plan(&p);
+        let scope_for = |name: &str| {
+            let binding = p.bindings.iter().find(|binding| binding.name == name).unwrap();
+            match memory.bindings[&binding.id] {
+                StorageClass::ScopeRegion(scope) => scope,
+                ref other => panic!("expected scope storage for {name}, got {other:?}"),
+            }
+        };
+        let left = memory.scope_stacks[&scope_for("left")];
+        let parent = memory.scope_stacks[&scope_for("parent")];
+        let child = memory.scope_stacks[&scope_for("child")];
+
+        assert_eq!(left.depth, parent.depth);
+        assert_eq!(left.stack, parent.stack, "sibling scopes should reuse a lane");
+        assert_eq!(child.depth, parent.depth + 1);
+        assert_ne!(child.stack, parent.stack, "nested scope must not alias its parent lane");
+    }
+
+    #[test]
+    fn frame_layout_materializes_dense_stack_slots() {
+        let p = lower(vec![S::Block(vec![S::Let(LetStatement {
+            name: "payload".into(), value: A::StringLiteral("value".into()),
+        })])]);
+        let memory = plan(&p);
+        let layout = frame_layout(&p, &memory).unwrap();
+        for (binding, assignment) in &memory.binding_slots {
+            assert!(layout.stacks[&assignment.stack][assignment.slot as usize].contains(binding));
+        }
+        for (stack, slots) in &layout.stacks {
+            assert_eq!(slots.len(), memory.stack_slot_counts[stack] as usize);
+        }
+    }
+
+    #[test]
+    fn frame_layout_preserves_non_interfering_bindings_that_reuse_a_slot() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "first".into(), value: A::NumberLiteral(1.0) }),
+            S::Print(PrintStatement { value: A::Identifier("first".into()) }),
+            S::Let(LetStatement { name: "second".into(), value: A::NumberLiteral(2.0) }),
+            S::Print(PrintStatement { value: A::Identifier("second".into()) }),
+        ]);
+        let memory = plan(&p);
+        assert_eq!(memory.binding_slots[&BindingId(0)].slot, memory.binding_slots[&BindingId(1)].slot);
+        assert!(!memory.interference[&BindingId(0)].contains(&BindingId(1)));
+
+        let layout = frame_layout(&p, &memory).unwrap();
+        let stack = memory.binding_slots[&BindingId(0)].stack;
+        let slot = memory.binding_slots[&BindingId(0)].slot as usize;
+        let occupants = &layout.stacks[&stack][slot];
+        assert_eq!(occupants.len(), 2);
+        assert!(occupants.contains(&BindingId(0)));
+        assert!(occupants.contains(&BindingId(1)));
+    }
+
+    #[test]
+    fn slot_plan_validator_accepts_planner_output_and_rejects_bad_counts() {
+        let p = lower(vec![S::Block(vec![S::Let(LetStatement {
+            name: "payload".into(), value: A::StringLiteral("value".into()),
+        })])]);
+        let memory = plan(&p);
+        assert_eq!(validate_slot_plan(&p, &memory), Ok(()));
+
+        let mut corrupted = memory.clone();
+        let stack = *corrupted.stack_slot_counts.keys().next().unwrap();
+        *corrupted.stack_slot_counts.get_mut(&stack).unwrap() += 1;
+        assert!(validate_slot_plan(&p, &corrupted)
+            .unwrap_err().contains("Conteos de slots inconsistentes"));
+    }
+
+    #[test]
+    fn slot_plan_validator_rejects_missing_slot_for_interference_neighbor() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "left".into(), value: A::NumberLiteral(1.0) }),
+            S::Let(LetStatement { name: "right".into(), value: A::NumberLiteral(2.0) }),
+            S::Print(PrintStatement { value: A::Identifier("left".into()) }),
+            S::Print(PrintStatement { value: A::Identifier("right".into()) }),
+        ]);
+        let mut memory = plan(&p);
+        assert!(memory.interference[&BindingId(0)].contains(&BindingId(1)));
+        memory.binding_slots.remove(&BindingId(1));
+        assert!(validate_slot_plan(&p, &memory)
+            .unwrap_err().contains("sin slot para BindingId"));
+    }
+
+    #[test]
+    fn slot_plan_validator_rejects_asymmetric_interference_edges() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "left".into(), value: A::NumberLiteral(1.0) }),
+            S::Let(LetStatement { name: "right".into(), value: A::NumberLiteral(2.0) }),
+            S::Print(PrintStatement { value: A::Identifier("left".into()) }),
+            S::Print(PrintStatement { value: A::Identifier("right".into()) }),
+        ]);
+        let mut memory = plan(&p);
+        memory.interference.get_mut(&BindingId(1)).unwrap().remove(&BindingId(0));
+        assert!(validate_slot_plan(&p, &memory)
+            .unwrap_err().contains("Arista de interferencia asimétrica"));
+    }
+
+    #[test]
+    fn slot_plan_validator_rejects_missing_interference_slot() {
+        let p = lower(vec![S::Block(vec![S::Let(LetStatement {
+            name: "payload".into(), value: A::StringLiteral("value".into()),
+        })])]);
+        let mut memory = plan(&p);
+        let binding = *memory.interference.keys().next().unwrap();
+        memory.binding_slots.remove(&binding);
+        assert!(validate_slot_plan(&p, &memory)
+            .unwrap_err().contains("sin slot para BindingId"));
+    }
+
+    #[test]
+    fn sibling_scopes_reuse_a_stack_lane_but_nested_scopes_do_not() {
+        let p = lower(vec![
+            S::Block(vec![S::Let(LetStatement {
+                name: "left".into(),
+                value: A::StringLiteral("left".into()),
+            })]),
+            S::Block(vec![S::Let(LetStatement {
+                name: "right".into(),
+                value: A::StringLiteral("right".into()),
+            })]),
+            S::Block(vec![
+                S::Let(LetStatement {
+                    name: "outer".into(),
+                    value: A::StringLiteral("outer".into()),
+                }),
+                S::Block(vec![S::Let(LetStatement {
+                    name: "inner".into(),
+                    value: A::StringLiteral("inner".into()),
+                })]),
+            ]),
+        ]);
+        let memory = plan(&p);
+        let left = match memory.bindings[&BindingId(0)] { StorageClass::ScopeRegion(s) => s, _ => panic!("expected scope storage") };
+        let right = match memory.bindings[&BindingId(1)] { StorageClass::ScopeRegion(s) => s, _ => panic!("expected scope storage") };
+        let outer = match memory.bindings[&BindingId(2)] { StorageClass::ScopeRegion(s) => s, _ => panic!("expected scope storage") };
+        let inner = match memory.bindings[&BindingId(3)] { StorageClass::ScopeRegion(s) => s, _ => panic!("expected scope storage") };
+        assert_eq!(memory.scope_stacks[&left].stack, memory.scope_stacks[&right].stack);
+        assert_ne!(memory.scope_stacks[&outer].stack, memory.scope_stacks[&inner].stack);
+        assert_eq!(memory.scope_stacks[&left].depth, memory.scope_stacks[&right].depth);
+        assert_eq!(memory.scope_stacks[&inner].depth, memory.scope_stacks[&outer].depth + 1);
+    }
+
+    #[test]
+    fn ownership_ledger_moves_one_token_without_creating_a_second_owner() {
+        let local = StorageOwner::Scope(ScopeId(2));
+        let outer = StorageOwner::Binding(BindingId(0));
+        let mut ledger = OwnershipLedger::default();
+        let token = ledger.acquire(local).unwrap();
+        assert_eq!(ledger.owner(token), Ok(local));
+        assert_eq!(
+            ledger.move_to(token, local, outer),
+            Ok(OwnershipAction::Move { token, from: local, to: outer })
+        );
+        assert_eq!(ledger.owner(token), Ok(outer));
+        assert_eq!(ledger.move_to(token, local, outer), Err(OwnershipError::OwnerMismatch));
+    }
+
+    #[test]
+    fn ownership_ledger_same_owner_reassignment_preserves_lifo_order() {
+        let owner = StorageOwner::Scope(ScopeId(4));
+        let mut ledger = OwnershipLedger::default();
+        let first = ledger.acquire(owner).unwrap();
+        let second = ledger.acquire(owner).unwrap();
+
+        assert_eq!(
+            ledger.move_to(first, owner, owner),
+            Ok(OwnershipAction::Move { token: first, from: owner, to: owner })
+        );
+        assert_eq!(
+            ledger.promote_to(second, owner, owner),
+            Ok(OwnershipAction::Promote { token: second, from: owner, to: owner })
+        );
+        assert_eq!(
+            ledger.drain_owner(owner),
+            Ok(vec![
+                OwnershipAction::Drop { token: second, owner },
+                OwnershipAction::Drop { token: first, owner },
+            ])
+        );
+    }
+
+    #[test]
+    fn ownership_ledger_promotes_and_rejects_double_drop() {
+        let local = StorageOwner::Scope(ScopeId(2));
+        let outer = StorageOwner::Binding(BindingId(0));
+        let mut ledger = OwnershipLedger::default();
+        let token = ledger.acquire(local).unwrap();
+        assert_eq!(
+            ledger.promote_to(token, local, outer),
+            Ok(OwnershipAction::Promote { token, from: local, to: outer })
+        );
+        assert_eq!(
+            ledger.drop_token(token, outer),
+            Ok(OwnershipAction::Drop { token, owner: outer })
+        );
+        assert_eq!(ledger.drop_token(token, outer), Err(OwnershipError::AlreadyDropped));
+        assert_eq!(ledger.owner(token), Err(OwnershipError::AlreadyDropped));
+    }
+
+    #[test]
+    fn ownership_ledger_drains_moved_tokens_in_backend_lifo_order() {
+        let child = StorageOwner::Scope(ScopeId(2));
+        let parent = StorageOwner::Scope(ScopeId(1));
+        let mut ledger = OwnershipLedger::default();
+        let first = ledger.acquire(child).unwrap();
+        let second = ledger.acquire(child).unwrap();
+        assert_eq!(ledger.move_to(first, child, parent), Ok(OwnershipAction::Move {
+            token: first, from: child, to: parent,
+        }));
+        let child_drops = ledger.drain_owner(child).unwrap();
+        assert_eq!(child_drops, vec![OwnershipAction::Drop { token: second, owner: child }]);
+        let parent_drops = ledger.drain_owner(parent).unwrap();
+        assert_eq!(parent_drops, vec![OwnershipAction::Drop { token: first, owner: parent }]);
+        assert_eq!(ledger.drain_owner(parent).unwrap(), Vec::new());
+        assert_eq!(ledger.drop_token(first, parent), Err(OwnershipError::AlreadyDropped));
+    }
+
+    #[test]
+    fn ownership_ledger_rejects_invalid_owners_and_unknown_tokens() {
+        let mut ledger = OwnershipLedger::default();
+        assert_eq!(ledger.acquire(StorageOwner::Inline), Err(OwnershipError::InvalidOwner));
+        assert_eq!(ledger.owner(OwnershipTokenId(99)), Err(OwnershipError::UnknownToken));
+    }
+
+    #[test]
+    fn scalar_bindings_are_inline_and_strings_start_in_their_scope_region() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "n".into(), value: A::NumberLiteral(7.0) }),
+            S::Let(LetStatement { name: "s".into(), value: A::StringLiteral("hello".into()) }),
+        ]);
+        let plan = plan(&p);
+        assert_eq!(plan.bindings[&BindingId(0)], StorageClass::Inline);
+        assert_eq!(plan.bindings[&BindingId(1)], StorageClass::ScopeRegion(ScopeId(0)));
+    }
+
+    #[test]
+    fn string_values_assigned_to_existing_bindings_are_conservatively_promoted() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "message".into(), value: A::StringLiteral("outer".into()) }),
+            S::Block(vec![
+                S::Assign(crate::ast::AssignStatement { name: "message".into(), value: A::StringLiteral("inner".into()) }),
+            ]),
+        ]);
+        let plan = plan(&p);
+        assert_eq!(plan.bindings[&BindingId(0)], StorageClass::OwnedRegion);
+    }
+
+    #[test]
+    fn string_concatenation_is_treated_as_dynamic_storage() {
+        let p = lower(vec![S::Let(LetStatement {
+            name: "message".into(),
+            value: A::Infix {
+                left: Box::new(A::StringLiteral("value=".into())),
+                operator: crate::lexer::Token::Plus,
+                right: Box::new(A::NumberLiteral(3.0)),
+            },
+        })]);
+        let plan = plan(&p);
+        assert_eq!(plan.bindings[&BindingId(0)], StorageClass::ScopeRegion(ScopeId(0)));
+    }
+    #[test]
+    fn unknown_read_assignment_is_promoted_instead_of_assumed_stack_safe() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "source".into(), value: A::StringLiteral("value".into()) }),
+            S::Let(LetStatement { name: "target".into(), value: A::NumberLiteral(0.0) }),
+            S::Assign(crate::ast::AssignStatement {
+                name: "target".into(),
+                value: A::Identifier("source".into()),
+            }),
+        ]);
+        let plan = plan(&p);
+        assert_eq!(plan.bindings[&BindingId(1)], StorageClass::OwnedRegion);
+    }
+
+    #[test]
+    fn conditional_string_assignment_is_promoted_across_all_control_flow_paths() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "target".into(), value: A::NumberLiteral(0.0) }),
+            S::If(crate::ast::IfStatement {
+                condition: A::BoolLiteral(true),
+                true_body: vec![S::Assign(crate::ast::AssignStatement {
+                    name: "target".into(),
+                    value: A::StringLiteral("escaped".into()),
+                })],
+                false_body: Some(vec![S::Assign(crate::ast::AssignStatement {
+                    name: "target".into(),
+                    value: A::NumberLiteral(1.0),
+                })]),
+            }),
+        ]);
+        let plan = plan(&p);
+        assert_eq!(plan.bindings[&BindingId(0)], StorageClass::OwnedRegion);
+    }
+
+    #[test]
+    fn string_temporary_from_outer_binding_is_never_confined_to_inner_scope() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "source".into(), value: A::StringLiteral("outer".into()) }),
+            S::Block(vec![
+                S::Let(LetStatement {
+                    name: "copy".into(),
+                    value: A::Identifier("source".into()),
+                }),
+            ]),
+        ]);
+        let plan = plan(&p);
+        assert_eq!(plan.bindings[&BindingId(0)], StorageClass::ScopeRegion(ScopeId(0)));
+        assert_eq!(plan.bindings[&BindingId(1)], StorageClass::OwnedRegion);
+    }
+
+
+    #[test]
+    fn promotion_operations_are_validated_against_their_exact_assignment() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "outer".into(), value: A::StringLiteral("initial".into()) }),
+            S::Block(vec![S::Assign(crate::ast::AssignStatement {
+                name: "outer".into(), value: A::StringLiteral("inner".into()),
+            })]),
+        ]);
+        let mut memory = plan(&p);
+        assert_eq!(memory.operations.len(), 1);
+        let expected_token = memory.ownership_tokens[&BindingId(0)];
+        assert_eq!(memory.operations[0].ownership_token, expected_token);
+        assert!(validate_memory_operations(&p, &memory).is_ok());
+        memory.operations[0].ownership_token = OwnershipTokenId(expected_token.0 + 1);
+        assert!(validate_memory_operations(&p, &memory)
+            .unwrap_err().contains("token de propiedad incoherente"));
+        memory.operations[0].ownership_token = expected_token;
+        memory.operations[0].statement = StmtId(u32::MAX);
+        assert!(validate_memory_operations(&p, &memory).unwrap_err().contains("promoción sin asignación"));
+    }
+
+    #[test]
+    fn promotion_validation_rejects_stale_source_owner() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "outer".into(), value: A::StringLiteral("initial".into()) }),
+            S::Block(vec![S::Assign(crate::ast::AssignStatement {
+                name: "outer".into(), value: A::StringLiteral("inner".into()),
+            })]),
+        ]);
+        let mut memory = plan(&p);
+        memory.operations[0].source_owner = StorageOwner::Unknown;
+        assert!(validate_memory_operations(&p, &memory)
+            .unwrap_err().contains("propietario origen incoherente"));
+    }
+
+    #[test]
+    fn promotion_validation_rejects_wrong_statement_production_scope() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "outer".into(), value: A::StringLiteral("initial".into()) }),
+            S::Block(vec![S::Assign(crate::ast::AssignStatement {
+                name: "outer".into(), value: A::StringLiteral("inner".into()),
+            })]),
+        ]);
+        let mut memory = plan(&p);
+        memory.operations[0].produced_in = ScopeId(0);
+        assert!(validate_memory_operations(&p, &memory)
+            .unwrap_err().contains("región de producción incoherente"));
+    }
+
+    #[test]
+    fn promotion_validation_rejects_source_region_that_disagrees_with_binding_scope() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "outer".into(), value: A::StringLiteral("initial".into()) }),
+            S::Block(vec![
+                S::Let(LetStatement { name: "inner".into(), value: A::StringLiteral("temporary".into()) }),
+                S::Assign(crate::ast::AssignStatement {
+                    name: "outer".into(), value: A::Identifier("inner".into()),
+                }),
+            ]),
+        ]);
+        let mut memory = plan(&p);
+        memory.bindings.insert(BindingId(1), StorageClass::ScopeRegion(ScopeId(u32::MAX)));
+        assert!(validate_memory_operations(&p, &memory)
+            .unwrap_err().contains("región de almacenamiento incoherente"));
+    }
+
+    #[test]
+    fn promotion_validation_rejects_origin_that_disagrees_with_source_binding() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "outer".into(), value: A::StringLiteral("initial".into()) }),
+            S::Block(vec![S::Assign(crate::ast::AssignStatement {
+                name: "outer".into(), value: A::StringLiteral("inner".into()),
+            })]),
+        ]);
+        let mut memory = plan(&p);
+        memory.operations[0].origin = ValueOrigin::Binding(BindingId(999));
+        assert!(validate_memory_operations(&p, &memory)
+            .unwrap_err().contains("origen de binding inesperado"));
+    }
+
+    #[test]
+    fn records_promotion_when_inner_dynamic_value_is_assigned_to_outer_binding() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "outer".into(), value: A::StringLiteral("initial".into()) }),
+            S::Block(vec![S::Assign(crate::ast::AssignStatement {
+                name: "outer".into(), value: A::StringLiteral("inner".into()),
+            })]),
+        ]);
+        let memory = plan(&p);
+        assert_eq!(memory.operations.len(), 1);
+        let decision = memory.operations[0];
+        assert_eq!(decision.destination, BindingId(0));
+        assert_eq!(decision.ownership_token, memory.ownership_tokens[&BindingId(0)]);
+        assert_eq!(decision.source, None);
+        assert_eq!(decision.destination_scope, ScopeId(0));
+        assert_eq!(decision.kind, MemoryOperationKind::Promote);
+        assert_eq!(decision.origin, ValueOrigin::Literal);
+        assert_eq!(decision.source_owner, StorageOwner::Scope(ScopeId(1)));
+        assert_eq!(decision.destination_owner, StorageOwner::Binding(BindingId(0)));
+        assert_eq!(decision.reason, PromotionReason::AssignedToLongerLivedBinding);
+        assert_eq!(memory.bindings[&BindingId(0)], StorageClass::OwnedRegion);
+    }
+
+    #[test]
+    fn records_source_binding_when_shorter_lived_value_flows_to_outer_owner() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "outer".into(), value: A::StringLiteral("initial".into()) }),
+            S::Block(vec![
+                S::Let(LetStatement { name: "inner".into(), value: A::StringLiteral("temporary".into()) }),
+                S::Assign(crate::ast::AssignStatement {
+                    name: "outer".into(), value: A::Identifier("inner".into()),
+                }),
+            ]),
+        ]);
+        let memory = plan(&p);
+        assert_eq!(memory.operations.len(), 1);
+        let decision = memory.operations[0];
+        assert_eq!(decision.destination, BindingId(0));
+        assert_eq!(decision.source, Some(BindingId(1)));
+        assert_eq!(decision.origin, ValueOrigin::Binding(BindingId(1)));
+        assert_eq!(decision.source_owner, StorageOwner::Scope(ScopeId(1)));
+        assert_eq!(decision.destination_owner, StorageOwner::Binding(BindingId(0)));
+        assert_eq!(decision.reason, PromotionReason::ReadFromShorterLivedBinding);
+    }
+
+
+
+    #[test]
+    fn promotes_dynamic_expression_with_unknown_read_provenance_conservatively() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "source".into(), value: A::StringLiteral("prefix".into()) }),
+            S::Let(LetStatement { name: "target".into(), value: A::StringLiteral("initial".into()) }),
+            S::Block(vec![S::Assign(crate::ast::AssignStatement {
+                name: "target".into(),
+                value: A::Infix {
+                    left: Box::new(A::Identifier("source".into())),
+                    operator: crate::lexer::Token::Plus,
+                    right: Box::new(A::StringLiteral("suffix".into())),
+                },
+            })]),
+        ]);
+        let memory = plan(&p);
+        assert_eq!(memory.operations.len(), 1);
+        assert_eq!(memory.operations[0].kind, MemoryOperationKind::Promote);
+        assert_eq!(memory.operations[0].source, None);
+        assert_eq!(memory.operations[0].origin, ValueOrigin::Computed);
+        assert_eq!(memory.operations[0].source_owner, StorageOwner::Scope(ScopeId(1)));
+        assert_eq!(memory.operations[0].destination_owner, StorageOwner::Binding(BindingId(1)));
+    }
+
+    #[test]
+    fn does_not_promote_value_read_from_an_outer_scope() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "outer".into(), value: A::StringLiteral("stable".into()) }),
+            S::Block(vec![S::Assign(crate::ast::AssignStatement {
+                name: "outer".into(), value: A::Identifier("outer".into()),
+            })]),
+        ]);
+        assert!(plan(&p).operations.is_empty());
+    }
+
+    #[test]
+    fn does_not_emit_promotion_for_same_scope_assignment() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "value".into(), value: A::StringLiteral("initial".into()) }),
+            S::Assign(crate::ast::AssignStatement { name: "value".into(), value: A::StringLiteral("next".into()) }),
+        ]);
+        assert!(plan(&p).operations.is_empty());
+    }
+
+    #[test]
+    fn usage_analysis_counts_reads_and_records_nested_lexical_scopes() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "value".into(), value: A::NumberLiteral(1.0) }),
+            S::Block(vec![
+                S::Print(PrintStatement { value: A::Identifier("value".into()) }),
+                S::Print(PrintStatement { value: A::Identifier("value".into()) }),
+            ]),
+            S::Print(PrintStatement { value: A::Identifier("value".into()) }),
+        ]);
+        let memory = plan(&p);
+        let facts = &memory.usage[&BindingId(0)];
+        assert_eq!(facts.read_count, 3);
+        assert_eq!(facts.read_scopes.len(), 2);
+        assert_eq!(facts.read_scopes[0], ScopeId(0));
+        assert_eq!(facts.read_scopes[1], ScopeId(1));
+        assert_eq!(facts.assignment_count, 0);
+    }
+
+    #[test]
+    fn usage_analysis_counts_assignments_without_treating_them_as_reads() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "value".into(), value: A::NumberLiteral(1.0) }),
+            S::Assign(crate::ast::AssignStatement { name: "value".into(), value: A::NumberLiteral(2.0) }),
+        ]);
+        let facts = &plan(&p).usage[&BindingId(0)];
+        assert_eq!(facts.read_count, 0);
+        assert_eq!(facts.assignment_count, 1);
+    }
+
+    #[test]
+    fn usage_analysis_builds_conservative_live_interval_for_reads_after_nested_scope() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "value".into(), value: A::NumberLiteral(1.0) }),
+            S::Block(vec![S::Print(PrintStatement { value: A::Identifier("value".into()) })]),
+            S::Print(PrintStatement { value: A::Identifier("value".into()) }),
+        ]);
+        let facts = &plan(&p).usage[&BindingId(0)];
+        assert!(facts.declaration_position.is_some());
+        assert!(facts.first_use_position.unwrap() > facts.declaration_position.unwrap());
+        assert!(facts.last_use_position.unwrap() >= facts.first_use_position.unwrap());
+        assert!(!facts.loop_carried);
+    }
+
+    #[test]
+    fn usage_inside_loop_is_kept_live_through_the_loop_exit() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "counter".into(), value: A::NumberLiteral(3.0) }),
+            S::While(crate::ast::WhileStatement {
+                condition: A::Infix {
+                    left: Box::new(A::Identifier("counter".into())),
+                    operator: crate::lexer::Token::Greater,
+                    right: Box::new(A::NumberLiteral(0.0)),
+                },
+                body: vec![S::Print(PrintStatement { value: A::Identifier("counter".into()) })],
+            }),
+            S::Print(PrintStatement { value: A::Identifier("counter".into()) }),
+        ]);
+        let facts = &plan(&p).usage[&BindingId(0)];
+        assert!(facts.loop_carried);
+        assert!(facts.last_use_position.unwrap() > facts.first_use_position.unwrap());
+        assert!(facts.last_use_position.unwrap() >= facts.last_write_position.unwrap_or(0));
+    }
+
+
+    #[test]
+    fn cfg_liveness_flows_through_if_branches_and_joins() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "x".into(), value: A::NumberLiteral(1.0) }),
+            S::If(crate::ast::IfStatement {
+                condition: A::BoolLiteral(true),
+                true_body: vec![S::Assign(crate::ast::AssignStatement { name: "x".into(), value: A::NumberLiteral(2.0) })],
+                false_body: Some(vec![S::Assign(crate::ast::AssignStatement { name: "x".into(), value: A::NumberLiteral(3.0) })]),
+            }),
+            S::Print(PrintStatement { value: A::Identifier("x".into()) }),
+        ]);
+        let cfg = &plan(&p).cfg;
+        assert!(cfg.blocks.iter().any(|block| block.successors.len() > 1));
+        assert!(cfg.blocks.iter().any(|block| block.live_out.contains(&BindingId(0))));
+    }
+
+    #[test]
+    fn cfg_liveness_creates_back_edge_for_while_loop() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "x".into(), value: A::NumberLiteral(1.0) }),
+            S::While(crate::ast::WhileStatement {
+                condition: A::Infix {
+                    left: Box::new(A::Identifier("x".into())),
+                    operator: crate::lexer::Token::Greater,
+                    right: Box::new(A::NumberLiteral(0.0)),
+                },
+                body: vec![S::Assign(crate::ast::AssignStatement { name: "x".into(), value: A::NumberLiteral(0.0) })],
+            }),
+            S::Print(PrintStatement { value: A::Identifier("x".into()) }),
+        ]);
+        let cfg = &plan(&p).cfg;
+        assert!(cfg.blocks.iter().any(|block| block.successors.iter().any(|next| (*next as usize) <= block.id as usize)));
+        assert!(cfg.blocks.iter().any(|block| block.live_in.contains(&BindingId(0))));
+    }
+
+    #[test]
+    fn cfg_does_not_create_join_after_both_if_branches_terminate() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "x".into(), value: A::NumberLiteral(1.0) }),
+            S::While(crate::ast::WhileStatement {
+                condition: A::BoolLiteral(true),
+                body: vec![
+                    S::If(crate::ast::IfStatement {
+                        condition: A::BoolLiteral(true),
+                        true_body: vec![S::Break],
+                        false_body: Some(vec![S::Continue]),
+                    }),
+                    S::Assign(crate::ast::AssignStatement {
+                        name: "x".into(),
+                        value: A::NumberLiteral(2.0),
+                    }),
+                ],
+            }),
+            S::Print(PrintStatement { value: A::Identifier("x".into()) }),
+        ]);
+        let cfg = &plan(&p).cfg;
+        assert_eq!(
+            cfg.blocks.iter().filter(|block| block.defs.contains(&BindingId(0))).count(),
+            1,
+            "an if whose branches both terminate must not create a fallthrough join"
+        );
+    }
+
+    #[test]
+    fn cfg_does_not_create_fallthrough_after_break_or_continue() {
+        let after_break = lower(vec![
+            S::Let(LetStatement { name: "x".into(), value: A::NumberLiteral(1.0) }),
+            S::While(crate::ast::WhileStatement {
+                condition: A::BoolLiteral(true),
+                body: vec![
+                    S::Break,
+                    S::Assign(crate::ast::AssignStatement { name: "x".into(), value: A::NumberLiteral(2.0) }),
+                ],
+            }),
+            S::Print(PrintStatement { value: A::Identifier("x".into()) }),
+        ]);
+        let cfg = &plan(&after_break).cfg;
+        assert_eq!(
+            cfg.blocks.iter().filter(|block| block.defs.contains(&BindingId(0))).count(),
+            1,
+            "statement after break must not create a CFG definition"
+        );
+
+        let after_continue = lower(vec![
+            S::Let(LetStatement { name: "x".into(), value: A::NumberLiteral(1.0) }),
+            S::While(crate::ast::WhileStatement {
+                condition: A::BoolLiteral(true),
+                body: vec![
+                    S::Continue,
+                    S::Assign(crate::ast::AssignStatement { name: "x".into(), value: A::NumberLiteral(2.0) }),
+                ],
+            }),
+            S::Print(PrintStatement { value: A::Identifier("x".into()) }),
+        ]);
+        let cfg = &plan(&after_continue).cfg;
+        assert_eq!(
+            cfg.blocks.iter().filter(|block| block.defs.contains(&BindingId(0))).count(),
+            1,
+            "statement after continue must not create a CFG definition"
+        );
+    }
+
+    #[test]
+    fn non_overlapping_scalar_lifetimes_reuse_the_same_frame_slot() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "first".into(), value: A::NumberLiteral(1.0) }),
+            S::Print(PrintStatement { value: A::Identifier("first".into()) }),
+            S::Let(LetStatement { name: "second".into(), value: A::NumberLiteral(2.0) }),
+            S::Print(PrintStatement { value: A::Identifier("second".into()) }),
+        ]);
+        let memory = plan(&p);
+        assert!(!memory.interference[&BindingId(0)].contains(&BindingId(1)));
+        assert_eq!(memory.binding_slots[&BindingId(0)].stack, memory.binding_slots[&BindingId(1)].stack);
+        assert_eq!(memory.binding_slots[&BindingId(0)].slot, memory.binding_slots[&BindingId(1)].slot);
+        assert_eq!(memory.stack_slot_counts[&DataStackId(u32::MAX)], 1);
+    }
+
+    #[test]
+    fn simultaneously_live_scalar_bindings_receive_distinct_slots() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "first".into(), value: A::NumberLiteral(1.0) }),
+            S::Let(LetStatement { name: "second".into(), value: A::NumberLiteral(2.0) }),
+            S::Print(PrintStatement { value: A::Identifier("first".into()) }),
+            S::Print(PrintStatement { value: A::Identifier("second".into()) }),
+        ]);
+        let memory = plan(&p);
+        assert!(memory.interference[&BindingId(0)].contains(&BindingId(1)));
+        assert_ne!(memory.binding_slots[&BindingId(0)].slot, memory.binding_slots[&BindingId(1)].slot);
+        assert_eq!(memory.stack_slot_counts[&DataStackId(u32::MAX)], 2);
+    }
+
+    #[test]
+    fn mutually_exclusive_branch_temporaries_can_reuse_a_frame_slot() {
+        let p = lower(vec![
+            S::If(crate::ast::IfStatement {
+                condition: A::BoolLiteral(true),
+                true_body: vec![
+                    S::Let(LetStatement { name: "left".into(), value: A::NumberLiteral(1.0) }),
+                    S::Print(PrintStatement { value: A::Identifier("left".into()) }),
+                ],
+                false_body: Some(vec![
+                    S::Let(LetStatement { name: "right".into(), value: A::NumberLiteral(2.0) }),
+                    S::Print(PrintStatement { value: A::Identifier("right".into()) }),
+                ]),
+            }),
+        ]);
+        let memory = plan(&p);
+        assert_eq!(memory.binding_slots[&BindingId(0)].slot, memory.binding_slots[&BindingId(1)].slot);
+        assert!(!memory.interference[&BindingId(0)].contains(&BindingId(1)));
+    }
+
+    #[test]
+    fn binary_concatenation_propagates_dynamic_source_binding() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "source".into(), value: A::StringLiteral("prefix".into()) }),
+            S::Let(LetStatement { name: "result".into(), value: A::Infix {
+                left: Box::new(A::Identifier("source".into())),
+                operator: crate::lexer::Token::Plus,
+                right: Box::new(A::StringLiteral("suffix".into())),
+            }}),
+        ]);
+        let memory = plan(&p);
+        assert_eq!(memory.bindings[&BindingId(1)], StorageClass::ScopeRegion(ScopeId(0)));
+    }
+
+    #[test]
+    fn ternary_propagates_dynamic_and_scalar_binding_facts() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "text".into(), value: A::StringLiteral("dynamic".into()) }),
+            S::Let(LetStatement { name: "number".into(), value: A::NumberLiteral(1.0) }),
+            S::Let(LetStatement { name: "choice".into(), value: A::Ternary {
+                condition: Box::new(A::BoolLiteral(true)),
+                true_branch: Box::new(A::Identifier("text".into())),
+                false_branch: Box::new(A::Identifier("number".into())),
+            }}),
+        ]);
+        let memory = plan(&p);
+        assert_eq!(memory.bindings[&BindingId(1)], StorageClass::Inline);
+        assert_eq!(memory.bindings[&BindingId(2)], StorageClass::ScopeRegion(ScopeId(0)));
+    }
+
+    #[test]
+    fn scalar_read_does_not_force_owned_storage() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "source".into(), value: A::NumberLiteral(4.0) }),
+            S::Let(LetStatement { name: "copy".into(), value: A::Identifier("source".into()) }),
+        ]);
+        let memory = plan(&p);
+        assert_eq!(memory.bindings[&BindingId(1)], StorageClass::Inline);
+    }
+
+    #[test]
+    fn assignment_facts_are_available_to_later_binding_initializers() {
+        let p = lower(vec![
+            S::Let(LetStatement { name: "source".into(), value: A::NumberLiteral(1.0) }),
+            S::Assign(crate::ast::AssignStatement { name: "source".into(), value: A::StringLiteral("now dynamic".into()) }),
+            S::Let(LetStatement { name: "copy".into(), value: A::Infix {
+                left: Box::new(A::Identifier("source".into())),
+                operator: crate::lexer::Token::Plus,
+                right: Box::new(A::StringLiteral("!".into())),
+            }}),
+        ]);
+        let memory = plan(&p);
+        assert_eq!(memory.bindings[&BindingId(0)], StorageClass::OwnedRegion);
+        assert_eq!(memory.bindings[&BindingId(1)], StorageClass::ScopeRegion(ScopeId(0)));
+    }
+
+
+    #[test]
+    fn ownership_cleanup_drains_in_lifo_order() {
+        let owner = StorageOwner::Scope(ScopeId(7));
+        let mut ledger = OwnershipLedger::default();
+        let first = ledger.acquire(owner).unwrap();
+        let second = ledger.acquire(owner).unwrap();
+        let third = ledger.acquire(owner).unwrap();
+
+        assert_eq!(
+            ledger.drain_owner(owner).unwrap(),
+            vec![
+                OwnershipAction::Drop { token: third, owner },
+                OwnershipAction::Drop { token: second, owner },
+                OwnershipAction::Drop { token: first, owner },
+            ]
+        );
+        assert_eq!(ledger.owner(first), Err(OwnershipError::AlreadyDropped));
+        assert_eq!(ledger.drain_owner(owner), Ok(vec![]));
+    }
+
+    #[test]
+    fn ownership_drain_is_atomic_when_a_registration_is_inconsistent() {
+        let owner = StorageOwner::Scope(ScopeId(20));
+        let wrong_owner = StorageOwner::Scope(ScopeId(21));
+        let mut ledger = OwnershipLedger::default();
+        let first = ledger.acquire(owner).unwrap();
+        let second = ledger.acquire(owner).unwrap();
+
+        // Simulate corrupted/stale internal state: the cleanup index still
+        // lists the token under owner, but its record claims another owner.
+        ledger.records.get_mut(&second).unwrap().owner = wrong_owner;
+        assert_eq!(ledger.drain_owner(owner), Err(OwnershipError::OwnerMismatch));
+
+        // Failure must leave the entire batch available for diagnosis/recovery.
+        assert_eq!(ledger.cleanup_order.get(&owner), Some(&vec![first, second]));
+        assert_eq!(ledger.records.get(&first).unwrap().dropped, false);
+        assert_eq!(ledger.records.get(&second).unwrap().dropped, false);
+
+        ledger.records.get_mut(&second).unwrap().owner = owner;
+        assert_eq!(
+            ledger.drain_owner(owner),
+            Ok(vec![
+                OwnershipAction::Drop { token: second, owner },
+                OwnershipAction::Drop { token: first, owner },
+            ])
+        );
+    }
+
+    #[test]
+    fn ownership_move_rejects_wrong_source_without_mutating_cleanup_order() {
+        let local = StorageOwner::Scope(ScopeId(10));
+        let outer = StorageOwner::Binding(BindingId(10));
+        let unrelated = StorageOwner::Scope(ScopeId(11));
+        let mut ledger = OwnershipLedger::default();
+        let first = ledger.acquire(local).unwrap();
+        let second = ledger.acquire(local).unwrap();
+
+        assert_eq!(
+            ledger.move_to(first, unrelated, outer),
+            Err(OwnershipError::OwnerMismatch)
+        );
+        assert_eq!(ledger.owner(first), Ok(local));
+        assert_eq!(
+            ledger.drain_owner(local).unwrap(),
+            vec![
+                OwnershipAction::Drop { token: second, owner: local },
+                OwnershipAction::Drop { token: first, owner: local },
+            ]
+        );
+        assert_eq!(ledger.drain_owner(outer), Ok(vec![]));
+    }
+
+    #[test]
+    fn ownership_promote_rejects_unknown_or_inline_destination_without_mutation() {
+        let local = StorageOwner::Scope(ScopeId(12));
+        let mut ledger = OwnershipLedger::default();
+        let token = ledger.acquire(local).unwrap();
+        assert_eq!(ledger.promote_to(token, local, StorageOwner::Inline), Err(OwnershipError::InvalidOwner));
+        assert_eq!(ledger.promote_to(token, local, StorageOwner::Unknown), Err(OwnershipError::InvalidOwner));
+        assert_eq!(ledger.owner(token), Ok(local));
+        assert_eq!(ledger.drain_owner(local).unwrap(), vec![OwnershipAction::Drop { token, owner: local }]);
+    }
+
+    #[test]
+    fn ownership_cleanup_moves_registration_with_token() {
+        let local = StorageOwner::Scope(ScopeId(8));
+        let outer = StorageOwner::Binding(BindingId(4));
+        let mut ledger = OwnershipLedger::default();
+        let retained = ledger.acquire(outer).unwrap();
+        let escaping = ledger.acquire(local).unwrap();
+
+        assert_eq!(
+            ledger.promote_to(escaping, local, outer),
+            Ok(OwnershipAction::Promote { token: escaping, from: local, to: outer })
+        );
+        assert_eq!(
+            ledger.drain_owner(local),
+            Ok(vec![])
+        );
+        assert_eq!(
+            ledger.drain_owner(outer).unwrap(),
+            vec![
+                OwnershipAction::Drop { token: escaping, owner: outer },
+                OwnershipAction::Drop { token: retained, owner: outer },
+            ]
+        );
+    }
+
+    #[test]
+    fn explicit_drop_removes_cleanup_registration() {
+        let owner = StorageOwner::Scope(ScopeId(9));
+        let mut ledger = OwnershipLedger::default();
+        let token = ledger.acquire(owner).unwrap();
+        assert_eq!(
+            ledger.drop_token(token, owner),
+            Ok(OwnershipAction::Drop { token, owner })
+        );
+        assert_eq!(ledger.drain_owner(owner), Ok(vec![]));
+    }
+
+    #[test]
+    fn function_activation_validator_rejects_inconsistent_frame_layout() {
+        let program = lower(vec![
+            S::Let(crate::ast::LetStatement {
+                name: "identity".into(),
+                value: A::Lambda {
+                    params: vec!["value".into()],
+                    body: Box::new(A::Identifier("value".into())),
+                },
+            }),
+        ]);
+        let mut memory = plan(&program);
+        validate_function_activation_plan(&program, &memory).unwrap();
+        let function_id = program.functions[0].id;
+        memory.function_activations.get_mut(&function_id).unwrap().frame_slot_count += 1;
+        let error = validate_function_activation_plan(&program, &memory).unwrap_err();
+        assert!(error.contains("conteo de slots incoherente"));
+    }
+
+    #[test]
+    fn function_activation_validator_checks_capture_cell_indices() {
+        let program = lower(vec![
+            S::Let(crate::ast::LetStatement {
+                name: "factory".into(),
+                value: A::Lambda {
+                    params: vec!["captured".into()],
+                    body: Box::new(A::Lambda {
+                        params: vec!["argument".into()],
+                        body: Box::new(A::Infix {
+                            left: Box::new(A::Identifier("captured".into())),
+                            operator: crate::lexer::Token::Plus,
+                            right: Box::new(A::Identifier("argument".into())),
+                        }),
+                    }),
+                },
+            }),
+        ]);
+        let mut memory = plan(&program);
+        validate_function_activation_plan(&program, &memory).unwrap();
+        let outer = program.functions[0].id;
+        let activation = memory.function_activations.get_mut(&outer).unwrap();
+        let captured = activation.captured_cells[0];
+        activation.cell_slots.insert(captured, 7);
+        let error = validate_function_activation_plan(&program, &memory).unwrap_err();
+        assert!(error.contains("índice de celda no determinista"));
+    }
+
+    #[test]
+    fn function_activation_validator_rejects_missing_local_binding() {
+        let program = lower(vec![S::Let(LetStatement {
+            name: "identity".into(),
+            value: A::Lambda {
+                params: vec!["value".into()],
+                body: Box::new(A::Identifier("value".into())),
+            },
+        })]);
+        let mut memory = plan(&program);
+        let function_id = program.functions[0].id;
+        memory.function_activations.get_mut(&function_id).unwrap().bindings.clear();
+        let error = validate_function_activation_plan(&program, &memory).unwrap_err();
+        assert!(error.contains("conjunto de bindings incompleto"));
+    }
+
+    #[test]
+    fn function_activation_validator_rejects_orphan_ownership_token() {
+        let program = lower(vec![S::Let(LetStatement {
+            name: "factory".into(),
+            value: A::Lambda {
+                params: vec!["captured".into()],
+                body: Box::new(A::Lambda {
+                    params: vec![],
+                    body: Box::new(A::Identifier("captured".into())),
+                }),
+            },
+        })]);
+        let mut memory = plan(&program);
+        let function_id = program.functions[0].id;
+        let activation = memory.function_activations.get_mut(&function_id).unwrap();
+        activation.ownership_tokens.clear();
+        let error = validate_function_activation_plan(&program, &memory).unwrap_err();
+        assert!(error.contains("conjunto de tokens de propiedad incoherente"));
+    }
+
+}

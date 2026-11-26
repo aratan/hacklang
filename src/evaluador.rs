@@ -14,6 +14,38 @@ pub enum Value {
     Function { params: Vec<String>, body: Box<Expression>, captured_env: usize },
 }
 
+fn assign_nested_value(target: &mut Value, indices: &[Value], value: Value) -> Result<(), String> {
+    if indices.is_empty() {
+        return Err("La asignación por índice requiere al menos un índice".to_string());
+    }
+    let is_last = indices.len() == 1;
+    match target {
+        Value::Array(items) => {
+            let index = match &indices[0] {
+                Value::Number(number) if number.is_finite() && *number >= 0.0 && number.fract() == 0.0 => *number as usize,
+                other => return Err(format!("El índice de un array debe ser entero no negativo: {:?}", other)),
+            };
+            let item = items.get_mut(index)
+                .ok_or_else(|| format!("Índice de array fuera de rango: {}", index))?;
+            if is_last { *item = value; Ok(()) }
+            else { assign_nested_value(item, &indices[1..], value) }
+        }
+        Value::Map(entries) => {
+            let key = &indices[0];
+            if let Some((_, existing)) = entries.iter_mut().find(|(candidate, _)| candidate == key) {
+                if is_last { *existing = value; Ok(()) }
+                else { assign_nested_value(existing, &indices[1..], value) }
+            } else if is_last {
+                entries.push((key.clone(), value));
+                Ok(())
+            } else {
+                Err(format!("Clave no encontrada en mapa: {:?}", key))
+            }
+        }
+        other => Err(format!("No se puede indexar por asignación el valor {:?}", other)),
+    }
+}
+
 impl Value {
     fn as_bool(&self) -> bool {
         match self {
@@ -50,6 +82,8 @@ pub struct Evaluator {
     free_env_ids: Vec<usize>,
     current_env: usize,
     eval_depth: usize,
+    // Values held only by an in-progress call must remain visible to mark-and-sweep.
+    temporary_roots: Vec<Value>,
 }
 
 impl Evaluator {
@@ -59,6 +93,7 @@ impl Evaluator {
             free_env_ids: Vec::new(),
             current_env: 0,
             eval_depth: 0,
+            temporary_roots: Vec::new(),
         }
     }
 
@@ -94,6 +129,9 @@ impl Evaluator {
         let mut marked = vec![false; self.environments.len()];
         let mut pending = vec![0, self.current_env];
         if let Some(value) = temporary_root {
+            Self::mark_value(value, &mut pending);
+        }
+        for value in &self.temporary_roots {
             Self::mark_value(value, &mut pending);
         }
 
@@ -254,31 +292,18 @@ impl Evaluator {
     }
 
     fn eval_index_assign(&mut self, stmt: &IndexAssignStatement) -> Result<(), String> {
-        let index = self.eval_expression(&stmt.index)?;
+        let indices = stmt.indices.iter()
+            .map(|index| self.eval_expression(index))
+            .collect::<Result<Vec<_>, _>>()?;
+        if indices.is_empty() {
+            return Err("La asignación por índice requiere al menos un índice".to_string());
+        }
         let value = self.eval_expression(&stmt.value)?;
         let environment = self.find_environment(&stmt.name)
             .ok_or_else(|| format!("Variable '{}' no definida para asignación", stmt.name))?;
         let target = self.environments[environment].values.get_mut(&stmt.name).unwrap();
-        match target {
-            Value::Array(items) => match index {
-                Value::Number(n) if n >= 0.0 && n.fract() == 0.0 => {
-                    let item = items.get_mut(n as usize)
-                        .ok_or_else(|| format!("Índice de array fuera de rango: {}", n))?;
-                    *item = value;
-                    Ok(())
-                }
-                other => Err(format!("El índice de un array debe ser entero no negativo: {:?}", other)),
-            },
-            Value::Map(entries) => {
-                if let Some((_, existing)) = entries.iter_mut().find(|(key, _)| key == &index) {
-                    *existing = value;
-                } else {
-                    entries.push((index, value));
-                }
-                Ok(())
-            }
-            other => Err(format!("No se puede asignar por índice al valor {:?}", other)),
-        }
+
+        assign_nested_value(target, &indices, value)
     }
 
     fn eval_print(&mut self, stmt: &PrintStatement) -> Result<(), String> {
@@ -360,21 +385,31 @@ impl Evaluator {
                     }
                 }
                 let function = self.eval_expression(func)?;
-                let (params, body, captured_env) = match function {
-                    Value::Function { params, body, captured_env } => (params, body, captured_env),
-                    other => return Err(format!("El valor {:?} no es una función", other)),
-                };
-                if params.len() != args.len() {
-                    return Err(format!("La función esperaba {} argumentos y recibió {}", params.len(), args.len()));
-                }
-                let mut values = Vec::with_capacity(args.len());
-                for arg in args { values.push(self.eval_expression(arg)?); }
-                self.with_environment(captured_env, |this| {
-                    for (name, value) in params.iter().cloned().zip(values) {
-                        this.environments[this.current_env].values.insert(name, value);
+                let root_depth = self.temporary_roots.len();
+                self.temporary_roots.push(function.clone());
+                let result = (|| {
+                    let (params, body, captured_env) = match function {
+                        Value::Function { params, body, captured_env } => (params, body, captured_env),
+                        other => return Err(format!("El valor {:?} no es una función", other)),
+                    };
+                    if params.len() != args.len() {
+                        return Err(format!("La función esperaba {} argumentos y recibió {}", params.len(), args.len()));
                     }
-                    this.eval_expression(&body)
-                })
+                    let mut values = Vec::with_capacity(args.len());
+                    for arg in args {
+                        let value = self.eval_expression(arg)?;
+                        self.temporary_roots.push(value.clone());
+                        values.push(value);
+                    }
+                    self.with_environment(captured_env, |this| {
+                        for (name, value) in params.iter().cloned().zip(values) {
+                            this.environments[this.current_env].values.insert(name, value);
+                        }
+                        this.eval_expression(&body)
+                    })
+                })();
+                self.temporary_roots.truncate(root_depth);
+                result
             }
             Expression::Array(items) => {
                 let mut values = Vec::with_capacity(items.len());
@@ -435,7 +470,7 @@ impl Evaluator {
             Token::Greater => Ok(Value::Bool(l > r)),
             Token::Tilde => Ok(Value::Bool(l == r)),
             Token::Caret => Ok(Value::Bool((l - r).abs() > f64::EPSILON)),
-            _ => Ok(Value::Number(0.0)),
+            _ => Err(format!("Operador numérico no soportado: {:?}", op)),
         }
     }
 
@@ -548,6 +583,14 @@ mod tests {
         assert_eq!(ev.get_var("result"), Some(&Value::Number(5.0)));
     }
 
+    #[test]
+    fn test_call_keeps_temporary_returned_closure_rooted_while_evaluating_arguments() {
+        let ev = eval_program(
+            "let make = |x| |y| x + y; let tick = |z| (let temporary = 0; return 5;); let result = make(10)(tick(0));"
+        ).unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(15.0)));
+    }
+
     // -- Number literal tests --
 
     #[test]
@@ -612,6 +655,13 @@ mod tests {
         let result = eval_expr("10 / 0");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Division by zero"));
+    }
+
+    #[test]
+    fn unsupported_numeric_operator_returns_error_instead_of_zero() {
+        let evaluator = Evaluator::new();
+        let error = evaluator.num_op(4.0, 2.0, &Token::At).unwrap_err();
+        assert!(error.contains("Operador numérico no soportado"));
     }
 
     #[test]
@@ -843,6 +893,145 @@ mod tests {
         let ev = eval_program("let add = |x| x + 1; add(1); add(2); add(3); add(4); add(5);").unwrap();
         assert!(ev.environments.len() <= 2, "frames should be reclaimed and reused");
         assert!(!ev.free_env_ids.is_empty(), "a returned frame should be available for reuse");
+    }
+
+
+    // -- MEM-004..MEM-017: observable lifetime/ownership semantics baseline --
+    // These tests pin current language behavior; they do not claim stack/region
+    // placement is implemented. Placement and release are verified in later phases.
+
+    #[test]
+    fn mem_004_returned_array_remains_valid_after_creator_returns() {
+        let ev = eval_program("let make = |x| [x, x + 1]; let values = make(40); let result = values[1];").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(41.0)));
+    }
+
+    #[test]
+    fn mem_005_nested_map_and_array_values_survive_escape() {
+        let ev = eval_program("let make = |x| @(\"payload\": [x, x + 1]); let data = make(8); let result = data[\"payload\"][1];").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(9.0)));
+    }
+
+    #[test]
+    fn mem_006_string_inside_returned_array_remains_valid() {
+        let ev = eval_program("let make = |x| [x, \"alive\"]; let values = make(1); let result = values[1];").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::String("alive".into())));
+    }
+
+    #[test]
+    fn mem_007_returned_closure_keeps_immutable_capture() {
+        let ev = eval_program("let make = |x| |y| x + y; let add = make(30); let result = add(12);").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(42.0)));
+    }
+
+    #[test]
+    fn mem_008_returned_closure_observes_mutable_capture() {
+        let ev = eval_program("let make = |x| (let change = |n| (x = x + n; return x;); return change;); let change = make(10); let first = change(2); let second = change(3);").unwrap();
+        assert_eq!(ev.get_var("first"), Some(&Value::Number(12.0)));
+        assert_eq!(ev.get_var("second"), Some(&Value::Number(15.0)));
+    }
+
+    #[test]
+    fn mem_009_sibling_closures_share_the_same_mutable_capture() {
+        let ev = eval_program("let make = |x| (let increment = |n| (x = x + n; return x;); let read = |n| x; return [increment, read];); let pair = make(10); let changed = pair[0](5); let observed = pair[1](0);").unwrap();
+        assert_eq!(ev.get_var("changed"), Some(&Value::Number(15.0)));
+        assert_eq!(ev.get_var("observed"), Some(&Value::Number(15.0)));
+    }
+
+    #[test]
+    fn mem_010_recursive_closure_remains_callable() {
+        let ev = eval_program("let factorial = |n| n < 2 ? 1 : n * factorial(n - 1); let result = factorial(6);").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(720.0)));
+    }
+
+    #[test]
+    fn mem_011_mutually_recursive_closures_resolve_shared_scope() {
+        let ev = eval_program("let even = |n| n ~ 0 ? true : odd(n - 1); let odd = |n| n ~ 0 ? false : even(n - 1); let result = even(8);").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Bool(true)));
+    }
+
+    #[test]
+    fn mem_012_closure_nested_in_escaping_collection_keeps_capture_alive() {
+        let ev = eval_program("let make = |x| [|y| x + y]; let functions = make(20); let add = functions[0]; let result = add(22);").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(42.0)));
+    }
+
+    #[test]
+    fn mem_013_repeated_loop_calls_reuse_environment_frames() {
+        let ev = eval_program("let identity = |x| x; let i = 0; let sum = 0; while (i < 100) (sum = sum + identity(i); i = i + 1;); let result = sum;").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(4950.0)));
+        assert!(ev.environments.len() <= 4, "repeated calls should not retain one frame per iteration");
+    }
+
+    #[test]
+    fn mem_014_break_and_continue_leave_nested_scopes_consistent() {
+        let ev = eval_program("let i = 0; let sum = 0; while (i < 8) ((let temporary = i; i = i + 1; if (temporary ~ 2) (continue;); if (temporary ~ 6) (break;); sum = sum + temporary;)); let result = sum;").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(13.0)));
+    }
+
+    #[test]
+    fn mem_015_return_from_nested_control_flow_preserves_returned_value() {
+        let ev = eval_program("let find = |n| (while (n > 0) (if (n ~ 3) (return [n, \"found\"];); n = n - 1;); return [0, \"missing\"];); let result = find(5); let label = result[1];").unwrap();
+        assert_eq!(ev.get_var("label"), Some(&Value::String("found".into())));
+    }
+
+    #[test]
+    fn mem_016_error_during_nested_evaluation_is_reported() {
+        let error = eval_program("let make = |x| [x, x + 1]; let values = make(1); let result = values[99];").unwrap_err();
+        assert!(error.contains("fuera de rango"));
+    }
+
+    #[test]
+    fn mem_017_reassigning_collection_keeps_new_value_observable() {
+        let ev = eval_program("let values = [1, 2]; values = [7, 8, 9]; let result = values[2];").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(9.0)));
+    }
+
+    #[test]
+    fn mem_020_huge_collection_index_fails_without_panicking() {
+        let error = eval_program("let stable = 42; let values = [1]; let result = values[1e300];").unwrap_err();
+        assert!(error.contains("fuera de rango"));
+    }
+
+    #[test]
+    fn mem_021_deep_recursion_fails_with_controlled_error() {
+        let error = eval_program("let recurse = |n| recurse(n + 1); recurse(0);").unwrap_err();
+        assert!(error.contains("Límite de profundidad de evaluación"));
+    }
+
+    #[test]
+    fn mem_022_collection_and_closure_semantics_are_stable_across_nested_calls() {
+        let ev = eval_program("let build = |base| (let values = [base, base + 1]; let mapper = |offset| values[1] + offset; return mapper;); let mapper = build(40); let result = mapper(1);").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(42.0)));
+    }
+
+    #[test]
+    fn mem_023_array_assignment_has_value_semantics_not_shared_identity() {
+        let ev = eval_program("let original = [1, 2]; let copy = original; copy[0] = 9; let result = original[0];").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(1.0)));
+    }
+
+    #[test]
+    fn mem_024_map_assignment_copies_nested_collection_values() {
+        let ev = eval_program("let original = @(\"payload\": [1]); let copy = original; copy[\"payload\"] = [9]; let result = original[\"payload\"][0];").unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(1.0)));
+    }
+
+
+    #[test]
+    fn mem_028_nested_array_reads_are_independent_values() {
+        let ev = eval_program(
+            "let source = [[1]]; let copy = source[0]; copy[0] = 2; let result = source[0][0];"
+        ).unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(1.0)));
+    }
+
+    #[test]
+    fn mem_029_nested_map_array_reads_are_independent_values() {
+        let ev = eval_program(
+            r#"let source = @("items":[1]); let copy = source["items"]; copy[0] = 2; let result = source["items"][0];"#
+        ).unwrap();
+        assert_eq!(ev.get_var("result"), Some(&Value::Number(1.0)));
     }
 
 }

@@ -133,7 +133,7 @@ fn compile_hir_to_executable(
         Ok(output_result) if output_result.status.success() => Ok(output),
         Ok(output_result) => {
             let diagnostics = String::from_utf8_lossy(&output_result.stderr);
-            Err(format!("Falló la compilación C con {compiler}:\\n{diagnostics}"))
+            Err(format!("Falló la compilación C con {compiler}:\n{diagnostics}"))
         }
     }
 }

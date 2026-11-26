@@ -169,18 +169,13 @@ Los ejecutables nativos limitan también el trabajo de ejecución: 1.000.000 de 
 
 ```bash
 HACKLANG_MAX_EVAL_STEPS=500000 ./hello
-HACKLANG_MAX_EVAL_MILLIS=10000 ./hello
-
-El intérprete aplica un presupuesto temporal cooperativo predeterminado de 30 segundos por ejecución. Se puede ajustar mediante `HACKLANG_MAX_EVAL_MILLIS` o `hl run --max-eval-millis N` (milisegundos). El límite se comprueba entre sentencias y no interrumpe una operación individual que bloquee o tarde mucho sin volver al evaluador.
 ```
 
-El runtime nativo también limita el tiempo de CPU de cada ejecución a 30 segundos por defecto. Se puede ajustar con `HACKLANG_MAX_EVAL_MILLIS`:
+El intérprete Rust y el runtime nativo aplican un presupuesto temporal cooperativo predeterminado de 30 segundos por ejecución. Se puede ajustar con `HACKLANG_MAX_EVAL_MILLIS`; para el intérprete también está disponible `hl run --max-eval-millis N` (milisegundos). El intérprete comprueba el reloj entre sentencias, también dentro de llamadas anidadas; el runtime nativo lo comprueba en sentencias e iteraciones de `while`. Ninguno puede interrumpir una llamada externa o una operación individual bloqueante que no devuelva el control.
 
 ```bash
 HACKLANG_MAX_EVAL_MILLIS=10000 ./hello
 ```
-
-El reloj se consulta en cada punto de control del runtime (sentencias e iteraciones de `while`). Es un límite cooperativo de tiempo de CPU: no puede interrumpir una llamada externa o una operación nativa bloqueante que no vuelva al runtime.
 
 Un valor no numérico, vacío o cero no sustituye el límite predeterminado.
 
@@ -749,5 +744,3 @@ El objetivo sigue siendo un modelo **stack-first, sin GC general y sin gestión 
 
 El frontend (lexer, parser y AST) es único para intérprete y compilador nativo. La HIR inicial ya está implementada en `src/hir.rs`, con IDs de expresión/sentencia, ámbitos y bindings resueltos; el backend C la consume desde `src/hir_native.rs`. La cobertura HIR/nativa sigue siendo parcial. Consulta [docs/HIR_DESIGN.md](docs/HIR_DESIGN.md) y [docs/AI_AUTHORING.md](docs/AI_AUTHORING.md).
 
-
-El intérprete Rust aplica un presupuesto temporal cooperativo predeterminado de 30 segundos por evaluación. Puede ajustarse con `HACKLANG_MAX_EVAL_MILLIS` o con `hl run --max-eval-millis N` (milisegundos). El reloj se comprueba entre sentencias, incluidas las ejecutadas dentro de llamadas anidadas; no puede interrumpir una operación individual que bloquee o no devuelva el control al evaluador.

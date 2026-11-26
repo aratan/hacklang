@@ -104,6 +104,7 @@ int main(void) {
     HlValue initial;
     initial.tag = HL_STRING;
     initial.as.string = payload;
+    initial.string_length = 16384;
     HlCell *cell = hl_cell_new(root, initial, 1);
     if (!cell || !cell->value_lane.blocks) return 12;
     if (cell->value_lane.blocks == root->lane->blocks) return 13;

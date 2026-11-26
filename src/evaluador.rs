@@ -152,6 +152,7 @@ struct Environment {
 }
 
 const DEFAULT_MAX_EVAL_DEPTH: usize = 256;
+pub const DEFAULT_MAX_EVAL_STEPS: usize = 1_000_000;
 
 #[derive(Debug)]
 pub struct Evaluator {
@@ -162,6 +163,8 @@ pub struct Evaluator {
     current_env: usize,
     eval_depth: usize,
     max_eval_depth: usize,
+    eval_steps: usize,
+    max_eval_steps: usize,
     // Values held only by an in-progress call must remain visible to mark-and-sweep.
     temporary_roots: Vec<Value>,
     statement_spans_by_ptr: HashMap<usize, SourceSpan>,
@@ -171,21 +174,37 @@ pub struct Evaluator {
 
 impl Evaluator {
     pub fn new() -> Self {
-        Self::new_with_max_depth(DEFAULT_MAX_EVAL_DEPTH)
+        Self::new_with_limits(DEFAULT_MAX_EVAL_DEPTH, DEFAULT_MAX_EVAL_STEPS)
     }
 
     pub fn new_with_max_depth(max_eval_depth: usize) -> Self {
+        Self::new_with_limits(max_eval_depth, DEFAULT_MAX_EVAL_STEPS)
+    }
+
+    pub fn new_with_limits(max_eval_depth: usize, max_eval_steps: usize) -> Self {
+        assert!(max_eval_depth > 0, "max_eval_depth must be positive");
+        assert!(max_eval_steps > 0, "max_eval_steps must be positive");
         Evaluator {
             environments: vec![Environment { parent: None, values: HashMap::new(), alive: true }],
             free_env_ids: Vec::new(),
             current_env: 0,
             eval_depth: 0,
             max_eval_depth,
+            eval_steps: 0,
+            max_eval_steps,
             temporary_roots: Vec::new(),
             statement_spans_by_ptr: HashMap::new(),
             current_statement_span: None,
             last_error_range: None,
         }
+    }
+
+    fn consume_step(&mut self) -> Result<(), String> {
+        if self.eval_steps >= self.max_eval_steps {
+            return Err(format!("Límite de instrucciones de evaluación excedido ({})", self.max_eval_steps));
+        }
+        self.eval_steps += 1;
+        Ok(())
     }
 
     fn push_environment(&mut self, parent: usize) -> usize {
@@ -289,6 +308,7 @@ impl Evaluator {
     }
 
     pub fn evaluate(&mut self, program: &Program) -> Result<(), String> {
+        self.eval_steps = 0;
         self.last_error_range = None;
         self.current_statement_span = None;
         for stmt in &program.statements {
@@ -345,6 +365,7 @@ impl Evaluator {
         let previous_span = self.current_statement_span;
         self.current_statement_span = self.statement_span(stmt).or(previous_span);
         let result = (|| -> Result<Flow, String> {
+            self.consume_step()?;
             match stmt {
             Statement::Let(l) => self.eval_let(l).map(|_| Flow::Continue),
             Statement::Assign(a) => self.eval_assign(a).map(|_| Flow::Continue),
@@ -482,6 +503,7 @@ impl Evaluator {
     }
 
     fn eval_expression(&mut self, expr: &Expression) -> Result<Value, String> {
+        self.consume_step()?;
         if self.eval_depth >= self.max_eval_depth {
             return Err(format!("Límite de profundidad de evaluación excedido ({})", self.max_eval_depth));
         }
@@ -1065,6 +1087,29 @@ mod tests {
     fn deep_recursion_returns_error_instead_of_overflowing_stack() {
         let result = eval_program("let loop = |n| loop(n + 1); loop(0);");
         assert!(result.unwrap_err().contains("Límite de profundidad de evaluación"));
+    }
+
+    #[test]
+    fn custom_instruction_budget_stops_looping_programs() {
+        let mut lexer = crate::lexer::Lexer::new("let i = 0; while (true) ( i = i + 1; )".to_string());
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = crate::parser::Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+        let mut evaluator = Evaluator::new_with_limits(256, 40);
+        let error = evaluator.evaluate(&program).unwrap_err();
+        assert!(error.contains("Límite de instrucciones de evaluación"));
+        assert!(error.contains("(40)"));
+    }
+
+    #[test]
+    fn instruction_budget_resets_for_each_program_evaluation() {
+        let mut lexer = crate::lexer::Lexer::new("print 1;".to_string());
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = crate::parser::Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+        let mut evaluator = Evaluator::new_with_limits(256, 4);
+        evaluator.evaluate(&program).unwrap();
+        evaluator.evaluate(&program).unwrap();
     }
 
     #[test]

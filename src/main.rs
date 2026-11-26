@@ -39,11 +39,12 @@ struct Cli {
     diagnostics_json: bool,
     max_parse_depth: Option<usize>,
     max_eval_depth: Option<usize>,
+    max_eval_steps: Option<usize>,
 }
 
 fn usage() -> &'static str {
     "Uso:
-  hl [run] [--compact] [--format] [--diagnostics-json] [--max-parse-depth N] [--max-eval-depth N] <archivo.hl>
+  hl [run] [--compact] [--format] [--diagnostics-json] [--max-parse-depth N] [--max-eval-depth N] [--max-eval-steps N] <archivo.hl>
   hl check [--compact] [--diagnostics-json] [--max-parse-depth N] <archivo.hl>
   hl build [--compact] [--max-parse-depth N] [--diagnostics-json] <archivo.hl> [-o <ejecutable>]
 
@@ -85,6 +86,13 @@ fn parse_args(args: &[String]) -> Result<Cli, String> {
                 if depth == 0 { return Err("--max-eval-depth debe ser mayor que cero".to_string()); }
                 cli.max_eval_depth = Some(depth);
             }
+            "--max-eval-steps" => {
+                index += 1;
+                let value = args.get(index).ok_or("Falta el valor de --max-eval-steps")?;
+                let steps = value.parse::<usize>().map_err(|_| "--max-eval-steps requiere un entero positivo")?;
+                if steps == 0 { return Err("--max-eval-steps debe ser mayor que cero".to_string()); }
+                cli.max_eval_steps = Some(steps);
+            }
             "-o" => {
                 index += 1;
                 let output = args.get(index).ok_or("Falta la ruta después de -o")?;
@@ -114,8 +122,8 @@ fn parse_args(args: &[String]) -> Result<Cli, String> {
     if cli.diagnostics_json && cli.format {
         return Err("--diagnostics-json y --format son modos excluyentes".to_string());
     }
-    if cli.max_eval_depth.is_some() && matches!(cli.command, Some(Command::Check | Command::Build)) {
-        return Err("--max-eval-depth solo se admite con 'run'".to_string());
+    if (cli.max_eval_depth.is_some() || cli.max_eval_steps.is_some()) && matches!(cli.command, Some(Command::Check | Command::Build)) {
+        return Err("--max-eval-depth y --max-eval-steps solo se admiten con 'run'".to_string());
     }
     if cli.output.is_some() && cli.command != Some(Command::Build) {
         return Err("-o solo se admite con 'build'".to_string());
@@ -234,7 +242,10 @@ fn run() -> ExitCode {
     }
 
     println!("--- Ejecutando código Hacklang ---");
-    let mut evaluator = evaluador::Evaluator::new_with_max_depth(cli.max_eval_depth.unwrap_or(256));
+    let mut evaluator = evaluador::Evaluator::new_with_limits(
+        cli.max_eval_depth.unwrap_or(256),
+        cli.max_eval_steps.unwrap_or(evaluador::DEFAULT_MAX_EVAL_STEPS),
+    );
     match evaluator.evaluate_with_spans_diagnostic(&ast, &source_spans) {
         Ok(()) => {
             println!("--------------------------------");
@@ -292,6 +303,16 @@ mod cli_tests {
         assert!(parse_args(&args(&["run", "--max-parse-depth", "0", "program.hl"])).is_err());
         assert!(parse_args(&args(&["run", "--max-eval-depth", "abc", "program.hl"])).is_err());
         assert!(parse_args(&args(&["check", "--max-eval-depth", "32", "program.hl"])).is_err());
+    }
+
+    #[test]
+    fn instruction_budget_flag_is_parsed_and_validated() {
+        let cli = parse_args(&args(&["run", "--max-eval-steps", "500", "program.hl"])).unwrap();
+        assert_eq!(cli.max_eval_steps, Some(500));
+        assert!(parse_args(&args(&["run", "--max-eval-steps", "0", "program.hl"])).is_err());
+        assert!(parse_args(&args(&["run", "--max-eval-steps", "abc", "program.hl"])).is_err());
+        assert!(parse_args(&args(&["check", "--max-eval-steps", "500", "program.hl"])).is_err());
+        assert!(parse_args(&args(&["build", "--max-eval-steps", "500", "program.hl"])).is_err());
     }
 
     #[test]

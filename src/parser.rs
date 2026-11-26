@@ -173,9 +173,10 @@ impl Parser {
                 if *self.current_token() == Token::ParenOpen {
                     self.advance();
                     let args = self.parse_comma_list(Token::ParenClose)?;
-                    if *self.current_token() == Token::ParenClose {
-                        self.advance(); // consume )
+                    if *self.current_token() != Token::ParenClose {
+                        return Err("Se esperaba ')' al cerrar la llamada".to_string());
                     }
+                    self.advance(); // consume )
                     if *self.current_token() == Token::Semicolon {
                         self.advance(); // consume ;
                     }
@@ -1045,6 +1046,16 @@ mod tests {
         let mut parser = Parser::new_spanned(tokens);
         let error = parser.parse_program().unwrap_err();
         assert!(error.contains("Se esperaba ')' al cerrar la expresión agrupada"), "{error}");
+        assert!(error.contains("línea 2, columna"), "{error}");
+    }
+
+    #[test]
+    fn spanned_parser_reports_unclosed_statement_call_at_eof() {
+        let mut lexer = crate::lexer::Lexer::new("\\nprocess(1".to_string());
+        let tokens = lexer.tokenize_spanned().unwrap();
+        let mut parser = Parser::new_spanned(tokens);
+        let error = parser.parse_program().unwrap_err();
+        assert!(error.contains("Se esperaba ')' al cerrar la llamada"), "{error}");
         assert!(error.contains("línea 2, columna"), "{error}");
     }
 

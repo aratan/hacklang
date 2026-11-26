@@ -273,7 +273,14 @@ impl TypeChecker {
                 self.infer(condition);
                 let yes = self.infer(true_branch);
                 let no = self.infer(false_branch);
-                if yes == no { yes } else { Type::Unknown }
+                if yes == Type::Unknown || no == Type::Unknown {
+                    Type::Unknown
+                } else if yes == no {
+                    yes
+                } else {
+                    self.report(format!("ramas de expresión ternaria con tipos incompatibles: {yes} y {no}"));
+                    Type::Unknown
+                }
             }
             Expression::Lambda { params, body } => {
                 self.push_scope();
@@ -419,6 +426,21 @@ mod tests {
     fn detects_definite_numeric_type_mismatch() {
         let diagnostics = check_source("let result = true + 2;");
         assert!(diagnostics.iter().any(|d| d.message.contains("operando")));
+    }
+
+    #[test]
+    fn detects_incompatible_ternary_branch_types() {
+        let diagnostics = check_source("let result = true ? 1 : \"text\";");
+        assert!(diagnostics.iter().any(|d|
+            d.message.contains("ramas de expresión ternaria")
+                && d.message.contains("number")
+                && d.message.contains("string")
+        ));
+    }
+
+    #[test]
+    fn keeps_ternary_with_unknown_branch_non_blocking() {
+        assert!(check_source("let result = true ? missing_name : 1;").is_empty());
     }
 
     #[test]

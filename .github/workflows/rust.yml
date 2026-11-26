@@ -112,3 +112,17 @@ jobs:
           test "$native_status" -eq "$interpreter_status"
           grep -q "Division by zero" "$temp_dir/interpreter-error.err"
           grep -q "Division by zero" "$temp_dir/native-error.err"
+
+          cat > "$temp_dir/runtime-budget.hl" <<'EOF'
+          let counter = 0;
+          while (true) (
+            counter = counter + 1;
+          )
+          EOF
+          cargo run --quiet -- build "$temp_dir/runtime-budget.hl" -o "$temp_dir/runtime-budget" > /dev/null
+          set +e
+          HACKLANG_MAX_EVAL_STEPS=10 "$temp_dir/runtime-budget" > "$temp_dir/runtime-budget.out" 2> "$temp_dir/runtime-budget.err"
+          budget_status=$?
+          set -e
+          test "$budget_status" -eq 1
+          grep -q "presupuesto de instrucciones de ejecución nativa" "$temp_dir/runtime-budget.err"

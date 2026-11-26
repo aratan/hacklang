@@ -45,7 +45,7 @@ fn usage() -> &'static str {
     "Uso:
   hl [run] [--compact] [--format] [--diagnostics-json] [--max-parse-depth N] [--max-eval-depth N] <archivo.hl>
   hl check [--compact] [--diagnostics-json] [--max-parse-depth N] <archivo.hl>
-  hl build [--compact] [--max-parse-depth N] <archivo.hl> [-o <ejecutable>]
+  hl build [--compact] [--max-parse-depth N] [--diagnostics-json] <archivo.hl> [-o <ejecutable>]
 
 La forma legacy 'hl <archivo.hl>' equivale a 'hl run <archivo.hl>'."
 }
@@ -120,7 +120,7 @@ fn parse_args(args: &[String]) -> Result<Cli, String> {
     if cli.output.is_some() && cli.command != Some(Command::Build) {
         return Err("-o solo se admite con 'build'".to_string());
     }
-    if cli.command == Some(Command::Build) && (cli.format || cli.diagnostics_json) {
+    if cli.command == Some(Command::Build) && cli.format {
         return Err("'build' no admite --format ni --diagnostics-json".to_string());
     }
 
@@ -182,13 +182,17 @@ fn run() -> ExitCode {
 
     if command == Command::Build {
         let output = cli.output.as_deref().map(std::path::Path::new);
-        match native::compile_to_executable_with_spans(&ast, &source_spans, std::path::Path::new(filename), output) {
+        match native::compile_to_executable_with_spans_diagnostic(&ast, &source_spans, std::path::Path::new(filename), output) {
             Ok(executable) => {
                 println!("Ejecutable nativo generado: {}", executable.display());
                 return ExitCode::SUCCESS;
             }
-            Err(error) => {
-                eprintln!("Error de compilación nativa: {error}");
+            Err(diagnostic) => {
+                if cli.diagnostics_json {
+                    println!("[{}]", diagnostic.to_json());
+                } else {
+                    eprintln!("Error de compilación nativa: {diagnostic}");
+                }
                 return ExitCode::from(1);
             }
         }

@@ -804,7 +804,7 @@ static void record_failure_cleanup(void *context) {
     cleanup_order = cleanup_order * 10 + *(int *)context;
 }
 static void verify_failure_cleanup(void) {
-    fprintf(stderr, "cleanup_order=%d\\n", cleanup_order);
+    fprintf(stderr, "cleanup_order=%d\n", cleanup_order);
 }
 int main(void) {
     atexit(verify_failure_cleanup);

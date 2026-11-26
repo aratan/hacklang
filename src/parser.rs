@@ -26,6 +26,8 @@ pub struct Parser {
     expression_depth: usize,
     statement_depth: usize,
     spans: Option<Vec<SourceSpan>>,
+    statement_spans: Vec<Option<SourceSpan>>,
+    expression_spans: Vec<Option<SourceSpan>>,
 }
 
 impl Parser {
@@ -74,21 +76,49 @@ impl Parser {
             expression_depth: 0,
             statement_depth: 0,
             spans: None,
+            statement_spans: Vec::new(),
+            expression_spans: Vec::new(),
         }
     }
 
-    // El método principal que construye el árbol completo.
+    // Legacy API: callers that do not need diagnostics keep the original AST.
     pub fn parse_program(&mut self) -> Result<Program, String> {
+        self.parse_program_with_spans().map(|(program, _)| program)
+    }
+
+    /// Parse the legacy AST and return source locations in a parallel sidecar.
+    /// Statement/expression entries are recorded in pre-order, without changing
+    /// public AST node constructors or their equality semantics.
+    pub fn parse_program_with_spans(&mut self) -> Result<(Program, AstSpanMap), String> {
         match self.parse_program_inner() {
-            Ok(program) => Ok(program),
+            Ok(program) => Ok((program, AstSpanMap {
+                statements: std::mem::take(&mut self.statement_spans),
+                expressions: std::mem::take(&mut self.expression_spans),
+            })),
             Err(error) => {
                 if let Some(span) = self.spans.as_ref().and_then(|items| items.get(self.position)) {
-                    Err(format!("{} (línea {}, columna {})", error, span.line, span.column))
+                    Err(format!("{} (línea {}, columna {}, rango {}..{})",
+                        error, span.line, span.column, span.start, span.end))
                 } else {
                     Err(error)
                 }
             }
         }
+    }
+
+    fn span_for_tokens(&self, start: usize, end: usize) -> Option<SourceSpan> {
+        let spans = self.spans.as_ref()?;
+        let first = *spans.get(start)?;
+        let last_index = if end > start { end - 1 } else { start };
+        let last = *spans.get(last_index)?;
+        Some(SourceSpan {
+            start: first.start,
+            end: last.end,
+            line: first.line,
+            column: first.column,
+            end_line: last.end_line,
+            end_column: last.end_column,
+        })
     }
 
     fn parse_program_inner(&mut self) -> Result<Program, String> {
@@ -107,9 +137,13 @@ impl Parser {
         if self.statement_depth >= MAX_PARSE_DEPTH {
             return Err(format!("Límite de anidamiento de sentencias excedido ({MAX_PARSE_DEPTH})"));
         }
+        let span_slot = self.statement_spans.len();
+        let start = self.position;
+        self.statement_spans.push(None);
         self.statement_depth += 1;
         let result = self.parse_statement_inner();
         self.statement_depth -= 1;
+        self.statement_spans[span_slot] = self.span_for_tokens(start, self.position);
         result
     }
 
@@ -457,9 +491,13 @@ impl Parser {
         if self.expression_depth >= MAX_PARSE_DEPTH {
             return Err(format!("Límite de profundidad de expresiones excedido ({MAX_PARSE_DEPTH})"));
         }
+        let span_slot = self.expression_spans.len();
+        let start = self.position;
+        self.expression_spans.push(None);
         self.expression_depth += 1;
         let result = self.parse_expression_inner(precedence);
         self.expression_depth -= 1;
+        self.expression_spans[span_slot] = self.span_for_tokens(start, self.position);
         result
     }
 

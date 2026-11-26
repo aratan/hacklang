@@ -63,7 +63,7 @@ impl Generator {
             ExprKind::Bool(b) => format!("hl_bool({})", if *b { 1 } else { 0 }),
             ExprKind::String(s) => {
                 let literal = Self::c_string(s);
-                format!("hl_string(env, {literal}, sizeof({literal}) - 1)")
+                format!("hl_string_n(env, {literal}, sizeof({literal}) - 1)")
             },
             ExprKind::Read(id) => match self.inline_slots.get(id) {
                 Some(slot) => format!("hl_frame_read_or_fail(env, &frame, {slot})"),

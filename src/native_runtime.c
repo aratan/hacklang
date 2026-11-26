@@ -1594,7 +1594,7 @@ static HlValue hl_mixed_text(HlEnv *environment, HlValue left, HlValue right) {
     const char *right_text = hl_to_text(environment, right);
     size_t left_length = hl_text_length(left, left_text);
     size_t right_length = hl_text_length(right, right_text);
-    if (left_length > SIZE_MAX - 2 || right_length > SIZE_MAX - left_length - 2)
+    if (left_length > SIZE_MAX - 3 || right_length > SIZE_MAX - left_length - 3)
         hl_fail(environment, "cadena demasiado grande");
     size_t result_length = left_length + right_length + 2;
     char *joined = (char *)hl_alloc(environment, result_length + 1);
@@ -1629,7 +1629,8 @@ static HlValue hl_add(HlEnv *environment, HlValue left, HlValue right) {
     if (left.tag == HL_NUMBER && right.tag == HL_STRING) {
         const char *number = hl_to_text(environment, left);
         size_t number_length = strlen(number);
-        if (number_length > SIZE_MAX - right.string_length - 1)
+        if (right.string_length == SIZE_MAX
+            || number_length > SIZE_MAX - right.string_length - 1)
             hl_fail(environment, "cadena demasiado grande");
         size_t result_length = number_length + right.string_length;
         char *joined = (char *)hl_alloc(environment, result_length + 1);

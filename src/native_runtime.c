@@ -158,6 +158,9 @@ struct HlEnv {
     int closing;
 };
 
+static void hl_lane_init(HlArenaLane *lane);
+static void hl_lane_destroy(HlArenaLane *lane);
+
 /* Binding-owned dynamic storage participates in the same exactly-once
  * cleanup registry as other runtime resources. The binding descriptor stays
  * alive until callbacks have run and its arena is rewound. */
@@ -180,8 +183,6 @@ static void hl_cleanup_binding_aggregate(void *context) {
 }
 
 static void hl_env_free(HlEnv *environment);
-static void hl_lane_init(HlArenaLane *lane);
-static void hl_lane_destroy(HlArenaLane *lane);
 
 static void hl_fail(HlEnv *environment, const char *message) {
     fprintf(stderr, "Error en tiempo de ejecución: %s\n", message);

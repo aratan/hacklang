@@ -331,6 +331,16 @@ mod cli_tests {
     }
 
     #[test]
+    fn evaluation_time_budget_flag_is_parsed_and_validated() {
+        let cli = parse_args(&args(&["run", "--max-eval-millis", "250", "program.hl"])).unwrap();
+        assert_eq!(cli.max_eval_millis, Some(250));
+        assert!(parse_args(&args(&["run", "--max-eval-millis", "0", "program.hl"])).is_err());
+        assert!(parse_args(&args(&["run", "--max-eval-millis", "abc", "program.hl"])).is_err());
+        assert!(parse_args(&args(&["check", "--max-eval-millis", "250", "program.hl"])).is_err());
+        assert!(parse_args(&args(&["build", "--max-eval-millis", "250", "program.hl"])).is_err());
+    }
+
+    #[test]
     fn build_allows_json_diagnostics_but_not_formatting() {
         let cli = parse_args(&args(&["build", "--diagnostics-json", "program.hl"])).unwrap();
         assert_eq!(cli.command, Some(Command::Build));

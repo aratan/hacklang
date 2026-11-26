@@ -162,3 +162,23 @@ jobs:
           set -e
           test "$heap_status" -eq 1
           grep -q "presupuesto de memoria auxiliar del runtime nativo" "$temp_dir/runtime-heap-budget.err"
+
+          small_payload="$(head -c 1024 /dev/zero | tr '\0' 's')"
+          large_payload="$(head -c 4096 /dev/zero | tr '\0' 'l')"
+          {
+            printf 'let payload = "x";\n'
+            printf 'let index = 0;\nwhile (index < 256) (\n'
+            printf 'payload = "%s";\n' "$large_payload"
+            printf 'payload = "%s";\n' "$small_payload"
+            printf 'index = index + 1;\n)\nprint len(payload);\n'
+          } > "$temp_dir/runtime-string-heap-budget.hl"
+          cargo run --quiet -- build "$temp_dir/runtime-string-heap-budget.hl" -o "$temp_dir/runtime-string-heap-budget" > /dev/null
+          set +e
+          HACKLANG_MAX_HEAP_BYTES=4096 "$temp_dir/runtime-string-heap-budget" > "$temp_dir/runtime-string-heap-budget-limited.out" 2> "$temp_dir/runtime-string-heap-budget-limited.err"
+          string_limited_status=$?
+          set -e
+          test "$string_limited_status" -eq 1
+          grep -q "presupuesto de memoria auxiliar del runtime nativo" "$temp_dir/runtime-string-heap-budget-limited.err"
+
+          HACKLANG_MAX_HEAP_BYTES=12288 "$temp_dir/runtime-string-heap-budget" > "$temp_dir/runtime-string-heap-budget.out" 2> "$temp_dir/runtime-string-heap-budget.err"
+          grep -qx "1024" "$temp_dir/runtime-string-heap-budget.out"

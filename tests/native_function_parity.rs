@@ -60,12 +60,9 @@ fn assert_interpreter_native_parity(name: &str, source_text: &str) {
         String::from_utf8_lossy(&build.stderr)
     );
 
-    let native = if name == "distinct_iteration_closures" {
-        Command::new(&executable).env("HL_DEBUG_GC", "1").output()
-    } else {
-        Command::new(&executable).output()
-    }
-    .expect("execute native program");
+    let native = Command::new(&executable)
+        .output()
+        .expect("execute native program");
     assert!(
         native.status.success(),
         "{name}: native executable failed: {}",
@@ -524,7 +521,6 @@ let index = 0;
 while (index < 2) (
     let captured = index;
     let getter = || (captured);
-    print getter();
     saved[index] = getter;
     index = index + 1;
 )

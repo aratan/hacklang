@@ -18,6 +18,9 @@ mod type_checker;
 mod formatter;
 mod native;
 
+#[cfg(test)]
+mod frontend_fuzz;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Command {
     Run,

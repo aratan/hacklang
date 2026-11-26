@@ -1380,6 +1380,7 @@ static void hl_print(HlValue value) {
         case HL_NUMBER: {
             char buffer[512];
             hl_number_text(value.as.number, buffer, sizeof(buffer));
+            if (getenv("HL_DEBUG_GC")) fprintf(stderr, "TEXT number=%g text=%s\\n", value.as.number, buffer);
             puts(buffer);
             break;
         }

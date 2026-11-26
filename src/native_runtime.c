@@ -1110,6 +1110,8 @@ static HlValue hl_store_value(HlBinding *binding, HlValue value, HlStorageClass 
                 hl_fail(binding->owner, "registro de propiedad de cadena inconsistente");
         }
 
+        if (value.string_length == SIZE_MAX)
+            hl_fail(binding->owner, "cadena demasiado grande al almacenar");
         const size_t size = value.string_length + 1;
         char *incoming = (char *)hl_heap_alloc(binding->owner, size);
         if (!incoming) hl_fail(binding->owner, "memoria agotada al copiar una cadena");
@@ -1592,8 +1594,9 @@ static HlValue hl_mixed_text(HlEnv *environment, HlValue left, HlValue right) {
     const char *right_text = hl_to_text(environment, right);
     size_t left_length = hl_text_length(left, left_text);
     size_t right_length = hl_text_length(right, right_text);
+    if (left_length > SIZE_MAX - 2 || right_length > SIZE_MAX - left_length - 2)
+        hl_fail(environment, "cadena demasiado grande");
     size_t result_length = left_length + right_length + 2;
-    if (result_length < left_length) hl_fail(environment, "cadena demasiado grande");
     char *joined = (char *)hl_alloc(environment, result_length + 1);
     memcpy(joined, left_text, left_length);
     joined[left_length] = '(';
@@ -1615,8 +1618,9 @@ static HlValue hl_add(HlEnv *environment, HlValue left, HlValue right) {
     if (left.tag == HL_STRING && right.tag == HL_NUMBER) {
         const char *number = hl_to_text(environment, right);
         size_t number_length = strlen(number);
+        if (left.string_length > SIZE_MAX - number_length - 1)
+            hl_fail(environment, "cadena demasiado grande");
         size_t result_length = left.string_length + number_length;
-        if (result_length < left.string_length) hl_fail(environment, "cadena demasiado grande");
         char *joined = (char *)hl_alloc(environment, result_length + 1);
         memcpy(joined, left.as.string, left.string_length);
         memcpy(joined + left.string_length, number, number_length + 1);
@@ -1625,8 +1629,9 @@ static HlValue hl_add(HlEnv *environment, HlValue left, HlValue right) {
     if (left.tag == HL_NUMBER && right.tag == HL_STRING) {
         const char *number = hl_to_text(environment, left);
         size_t number_length = strlen(number);
+        if (number_length > SIZE_MAX - right.string_length - 1)
+            hl_fail(environment, "cadena demasiado grande");
         size_t result_length = number_length + right.string_length;
-        if (result_length < number_length) hl_fail(environment, "cadena demasiado grande");
         char *joined = (char *)hl_alloc(environment, result_length + 1);
         memcpy(joined, number, number_length);
         memcpy(joined + number_length, right.as.string, right.string_length);

@@ -134,7 +134,7 @@ pub fn emit_numeric_expression_object(
 
 #[cfg(test)]
 mod tests {
-    use super::emit_probe_object;
+    use super::{emit_numeric_expression_object, emit_probe_object};
 
     #[test]
     fn lowers_numeric_hir_expression_to_native_object() {

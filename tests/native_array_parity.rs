@@ -675,11 +675,11 @@ fn repeated_long_string_growth_matches_interpreter() {
 let text = "";
 let index = 0;
 while (index < 4096) (
-    text = text + "x";
+    text = text + index;
     index = index + 1;
 )
 print len(text);
-print text[4095];
+print text[len(text) - 1];
 print text;
 "#;
     assert_interpreter_native_parity("repeated_long_string_growth", source);

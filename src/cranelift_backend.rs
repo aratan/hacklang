@@ -66,6 +66,111 @@ pub fn emit_probe_object(output: &Path) -> Result<(), String> {
 }
 
 
+
+/// Lower a straight-line numeric HIR statement sequence to a native object.
+///
+/// Supported statements: numeric let, assignment to an existing numeric
+/// binding, nested blocks, and return. Every binding is represented by an
+/// SSA Cranelift value; branches, loops, calls and I/O remain unsupported.
+pub fn emit_numeric_statements_object(
+    statements: &[crate::hir::Statement],
+    output: &Path,
+) -> Result<(), String> {
+    use crate::hir::{BindingId, ExprKind, Statement, StmtKind};
+    use std::collections::HashMap;
+
+    fn lower_expr(
+        builder: &mut FunctionBuilder<'_>,
+        expression: &crate::hir::Expression,
+        values: &HashMap<BindingId, cranelift_codegen::ir::Value>,
+    ) -> Result<cranelift_codegen::ir::Value, String> {
+        use crate::hir::BinaryOp;
+        match &expression.kind {
+            ExprKind::Number(value) if value.is_finite() => Ok(builder.ins().f64const(*value)),
+            ExprKind::Number(_) => Err("NaN e infinito no backend Cranelift aún no están soportados".into()),
+            ExprKind::Read(binding) => values.get(binding).copied()
+                .ok_or_else(|| format!("Binding numérico {:?} no inicializado", binding)),
+            ExprKind::Binary { op, left, right } => {
+                let left = lower_expr(builder, left, values)?;
+                let right = lower_expr(builder, right, values)?;
+                match op {
+                    BinaryOp::Add => Ok(builder.ins().fadd(left, right)),
+                    BinaryOp::Sub => Ok(builder.ins().fsub(left, right)),
+                    BinaryOp::Mul => Ok(builder.ins().fmul(left, right)),
+                    BinaryOp::Div => Ok(builder.ins().fdiv(left, right)),
+                    _ => Err("Comparaciones aún no soportadas en el lowering numérico".into()),
+                }
+            }
+            _ => Err("Expresión no soportada en el lowering numérico".into()),
+        }
+    }
+
+    fn lower_statements(
+        builder: &mut FunctionBuilder<'_>,
+        statements: &[Statement],
+        values: &mut HashMap<BindingId, cranelift_codegen::ir::Value>,
+    ) -> Result<Option<cranelift_codegen::ir::Value>, String> {
+        for statement in statements {
+            match &statement.kind {
+                StmtKind::Let { binding, value } => {
+                    let value = lower_expr(builder, value, values)?;
+                    values.insert(*binding, value);
+                }
+                StmtKind::Assign { binding, value } => {
+                    if !values.contains_key(binding) {
+                        return Err(format!("Asignación a binding numérico {:?} no inicializado", binding));
+                    }
+                    let value = lower_expr(builder, value, values)?;
+                    values.insert(*binding, value);
+                }
+                StmtKind::Block { statements, .. } => {
+                    if let Some(value) = lower_statements(builder, statements, values)? {
+                        return Ok(Some(value));
+                    }
+                }
+                StmtKind::Return(expression) => {
+                    return Ok(Some(lower_expr(builder, expression, values)?));
+                }
+                _ => return Err("Sentencia aún no soportada en el backend numérico Cranelift".into()),
+            }
+        }
+        Ok(None)
+    }
+
+    let mut flag_builder = settings::builder();
+    flag_builder.set("is_pic", "true").map_err(|error| error.to_string())?;
+    let flags = settings::Flags::new(flag_builder);
+    let isa_builder = cranelift_native::builder().map_err(|error| error.to_string())?;
+    let isa = isa_builder.finish(flags).map_err(|error| error.to_string())?;
+    let object_builder = ObjectBuilder::new(isa, b"hacklang-hir-statements", default_libcall_names())
+        .map_err(|error| error.to_string())?;
+    let mut module = ObjectModule::new(object_builder);
+
+    let mut signature = module.make_signature();
+    signature.returns.push(AbiParam::new(types::F64));
+    let function_id = module.declare_function("hl_entry", Linkage::Export, &signature)
+        .map_err(|error| error.to_string())?;
+    let frontend_config = module.target_config();
+    let mut context = module.make_context();
+    context.func.signature = signature;
+    let mut builder_context = FunctionBuilderContext::new();
+    {
+        let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
+        let entry = builder.create_block();
+        builder.switch_to_block(entry);
+        builder.seal_block(entry);
+        let mut values = HashMap::new();
+        let result = lower_statements(&mut builder, statements, &mut values)?
+            .unwrap_or_else(|| builder.ins().f64const(0.0));
+        builder.ins().return_(&[result]);
+        builder.finalize(frontend_config);
+    }
+    module.define_function(function_id, &mut context).map_err(|error| error.to_string())?;
+    module.clear_context(&mut context);
+    let object = module.finish().object.write().map_err(|error| error.to_string())?;
+    std::fs::write(output, object).map_err(|error| format!("No se pudo escribir el objeto: {error}"))
+}
+
 /// Lower a numeric HIR expression to a native object exporting
 /// `hl_entry() -> f64`. The initial supported subset is deliberately small:
 /// finite numeric literals and +, -, *, /. It is the first real HIR→Cranelift

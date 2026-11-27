@@ -137,6 +137,30 @@ mod tests {
     use super::emit_probe_object;
 
     #[test]
+    fn lowers_numeric_hir_expression_to_native_object() {
+        use crate::hir::{BinaryOp, ExprId, ExprKind, Expression};
+
+        let expression = Expression {
+            id: ExprId(2),
+            kind: ExprKind::Binary {
+                op: BinaryOp::Mul,
+                left: Box::new(Expression { id: ExprId(0), kind: ExprKind::Number(6.0) }),
+                right: Box::new(Expression { id: ExprId(1), kind: ExprKind::Number(7.0) }),
+            },
+        };
+        let path = std::env::temp_dir().join(format!(
+            "hacklang-cranelift-hir-{}.o", std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        emit_numeric_expression_object(&expression, &path).expect("lower numeric HIR");
+        let bytes = std::fs::read(&path).expect("read HIR object");
+        assert!(!bytes.is_empty());
+        #[cfg(target_os = "linux")]
+        assert!(bytes.starts_with(b"\x7fELF"));
+        std::fs::remove_file(path).expect("remove HIR object");
+    }
+
+    #[test]
     fn emits_native_object_without_a_c_compiler() {
         let path = std::env::temp_dir().join(format!(
             "hacklang-cranelift-probe-{}.o",

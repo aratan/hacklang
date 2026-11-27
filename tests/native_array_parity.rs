@@ -649,6 +649,24 @@ print [control];
 }
 
 #[test]
+fn unicode_nonprinting_debug_matches_interpreter() {
+    // Mn (combining acute), Cf (ZWJ/soft hyphen), and Zl/Zp separators
+    // must use the same Rust Debug escaping in the native runtime.
+    assert_interpreter_native_parity(
+        "unicode_nonprinting_debug",
+        r#"let combining = "é";
+let joined = "👩‍💻";
+let format = "a­b";
+let separators = "a b c";
+print [combining];
+print [joined];
+print [format];
+print [separators];
+"#,
+    );
+}
+
+#[test]
 fn numeric_display_matches_interpreter_at_formatting_boundaries() {
     assert_interpreter_native_parity(
         "numeric_display_boundaries",

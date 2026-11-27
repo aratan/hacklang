@@ -19,6 +19,7 @@ mod evaluador;
 mod type_checker;
 mod formatter;
 mod native;
+mod cranelift_backend;
 
 #[cfg(test)]
 mod frontend_fuzz;

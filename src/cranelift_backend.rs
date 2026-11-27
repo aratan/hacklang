@@ -242,6 +242,39 @@ mod tests {
     use super::{emit_numeric_expression_object, emit_probe_object};
 
     #[test]
+    fn lowers_numeric_hir_bindings_and_assignments_to_object() {
+        use crate::hir::{BindingId, BinaryOp, ExprId, ExprKind, Expression, Statement, StmtId, StmtKind};
+        let number = |id, value| Expression { id: ExprId(id), kind: ExprKind::Number(value) };
+        let read = |id, binding| Expression { id: ExprId(id), kind: ExprKind::Read(BindingId(binding)) };
+        let binary = |id, op, left, right| Expression {
+            id: ExprId(id),
+            kind: ExprKind::Binary { op, left: Box::new(left), right: Box::new(right) },
+        };
+        let statements = vec![
+            Statement { id: StmtId(0), kind: StmtKind::Let { binding: BindingId(0), value: number(0, 6.0) } },
+            Statement { id: StmtId(1), kind: StmtKind::Let {
+                binding: BindingId(1),
+                value: binary(3, BinaryOp::Add, read(1, 0), number(2, 7.0)),
+            }},
+            Statement { id: StmtId(2), kind: StmtKind::Assign {
+                binding: BindingId(0),
+                value: binary(6, BinaryOp::Mul, read(4, 1), number(5, 2.0)),
+            }},
+            Statement { id: StmtId(3), kind: StmtKind::Return(read(7, 0)) },
+        ];
+        let path = std::env::temp_dir().join(format!(
+            "hacklang-cranelift-bindings-{}.o", std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        emit_numeric_statements_object(&statements, &path).expect("lower numeric bindings");
+        let bytes = std::fs::read(&path).expect("read bindings object");
+        assert!(!bytes.is_empty());
+        #[cfg(target_os = "linux")]
+        assert!(bytes.starts_with(b"\x7fELF"));
+        std::fs::remove_file(path).expect("remove bindings object");
+    }
+
+    #[test]
     fn lowers_numeric_hir_expression_to_native_object() {
         use crate::hir::{BinaryOp, ExprId, ExprKind, Expression};
 

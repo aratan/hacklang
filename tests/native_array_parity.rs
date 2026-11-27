@@ -630,6 +630,44 @@ fn type_errors_match_interpreter_error_classification() {
 }
 
 #[test]
+fn unicode_control_debug_and_scalar_indexing_match_interpreter() {
+    // The string contains a combining mark, a ZWJ emoji sequence, and U+0085
+    // (a C1 control that Rust Debug escapes as \\u{85}).
+    assert_interpreter_native_parity(
+        "unicode_control_debug_and_scalar_indexing",
+        r#"let text = "é👩‍💻";
+print len(text);
+print text[0];
+print text[1];
+print text[2];
+print text[3];
+print text[4];
+print text[5];
+print [text];
+"#,
+    );
+}
+
+#[test]
+fn numeric_display_matches_interpreter_at_formatting_boundaries() {
+    assert_interpreter_native_parity(
+        "numeric_display_boundaries",
+        r#"
+print 0.0 - 0.0;
+print 1.0 / 3.0;
+print 1e-300;
+print 1e308;
+print 1.2345678901234567;
+print 0.000001;
+print 1e-7;
+print 9007199254740992;
+print 9007199254740994;
+print 0.0 / (0.0 - 1.0);
+"#,
+    );
+}
+
+#[test]
 fn oversized_integer_indices_match_interpreter_without_native_cast_overflow() {
     assert_interpreter_native_failure(
         "array_index_at_size_t_boundary",

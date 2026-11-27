@@ -239,7 +239,7 @@ pub fn emit_numeric_expression_object(
 
 #[cfg(test)]
 mod tests {
-    use super::{emit_numeric_expression_object, emit_probe_object};
+    use super::{emit_numeric_expression_object, emit_numeric_statements_object, emit_probe_object};
 
     #[test]
     fn lowers_numeric_hir_bindings_and_assignments_to_object() {

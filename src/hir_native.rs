@@ -58,7 +58,7 @@ impl Generator {
     fn expr(&mut self, p: &Program, e: &Expression, out: &mut String) -> Result<String, String> {
         let v = self.temp();
         let rhs = match &e.kind {
-            ExprKind::Number(n) if n.is_finite() => format!("hl_number({n:.17})"),
+            ExprKind::Number(n) if n.is_finite() => format!("hl_number({n:.17e})"),
             ExprKind::Number(_) => return Err("NaN e infinito no backend nativo aún no están soportados".into()),
             ExprKind::Bool(b) => format!("hl_bool({})", if *b { 1 } else { 0 }),
             ExprKind::String(s) => {

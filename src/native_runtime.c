@@ -1494,11 +1494,29 @@ static const char *hl_to_text(HlEnv *environment, HlValue value) {
     hl_number_text(value.as.number, buffer, sizeof(buffer));
     return hl_copy_string(environment, buffer);
 }
+static unsigned int hl_debug_codepoint(const unsigned char *bytes, size_t length, size_t *width) {
+    unsigned char lead = bytes[0];
+    if (lead < 0x80u) { *width = 1; return lead; }
+    size_t count = (lead & 0xE0u) == 0xC0u ? 2u
+        : (lead & 0xF0u) == 0xE0u ? 3u
+        : (lead & 0xF8u) == 0xF0u ? 4u : 1u;
+    if (count == 1u || count > length) { *width = 1; return lead; }
+    unsigned int codepoint = lead & (count == 2u ? 0x1Fu : count == 3u ? 0x0Fu : 0x07u);
+    for (size_t i = 1; i < count; ++i) {
+        unsigned char continuation = bytes[i];
+        if ((continuation & 0xC0u) != 0x80u) { *width = 1; return lead; }
+        codepoint = (codepoint << 6) | (unsigned int)(continuation & 0x3Fu);
+    }
+    *width = count;
+    return codepoint;
+}
 static void hl_debug_string(const char *value, size_t length) {
     putchar('"');
-    for (size_t i = 0; value && i < length; ++i) {
-        unsigned char byte = (unsigned char)value[i];
-        switch (byte) {
+    for (size_t i = 0; value && i < length;) {
+        const unsigned char *bytes = (const unsigned char *)value + i;
+        size_t width = 1;
+        unsigned int codepoint = hl_debug_codepoint(bytes, length - i, &width);
+        switch (codepoint) {
             case 0: fputs("\\0", stdout); break;
             case '"': fputs("\\\"", stdout); break;
             case '\\': fputs("\\\\", stdout); break;
@@ -1506,9 +1524,13 @@ static void hl_debug_string(const char *value, size_t length) {
             case '\r': fputs("\\r", stdout); break;
             case '\t': fputs("\\t", stdout); break;
             default:
-                if (byte < 0x20) printf("\\u{%x}", (unsigned)byte);
-                else putchar(byte);
+                /* Rust Debug escapes every Unicode Cc control, including DEL and C1. */
+                if (codepoint < 0x20u || (codepoint >= 0x7Fu && codepoint <= 0x9Fu))
+                    printf("\\u{%x}", codepoint);
+                else
+                    fwrite(bytes, 1, width, stdout);
         }
+        i += width;
     }
     putchar('"');
 }

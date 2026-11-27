@@ -17,6 +17,10 @@ Usar crates Cranelift alineados en una misma versión estable. La versión consu
 
 Cranelift soporta x86-64, AArch64, s390x y riscv64. La primera implementación se limita al target anfitrión; no añadir cross-compilation en el spike.
 
+## Estado del trabajo
+
+La rama `feat/cranelift-object-backend` contiene el primer spike C0: dependencias Cranelift alineadas en 0.138.0 y una función aislada que emite un objeto nativo con `main() -> i32 { 0 }`. El módulo no está conectado a `hl build`, no consume HIR y no afirma compilar programas HackLang. Su test comprueba que el objeto se genera sin invocar un compilador C y valida el magic ELF en Linux.
+
 ## Fases
 
 ### C0 — Prueba de emisión de objeto

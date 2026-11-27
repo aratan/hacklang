@@ -686,6 +686,27 @@ print text;
 }
 
 #[test]
+fn repeated_unicode_string_growth_preserves_scalar_length_and_content() {
+    // Each append adds four UTF-8 bytes but one Unicode scalar. This stresses
+    // the native owned-string buffer independently of byte length and checks
+    // that indexing/len remain scalar-based after repeated reallocations.
+    let source = r#"
+let text = "🙂";
+let index = 0;
+while (index < 2048) (
+    text = text + index;
+    index = index + 1;
+)
+print len(text);
+print text[0];
+print text[1];
+print text[len(text) - 1];
+print text;
+"#;
+    assert_interpreter_native_parity("repeated_unicode_string_growth", source);
+}
+
+#[test]
 fn numeric_display_matches_interpreter_at_formatting_boundaries() {
     assert_interpreter_native_parity(
         "numeric_display_boundaries",

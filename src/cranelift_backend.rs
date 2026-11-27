@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use cranelift_codegen::ir::{types, AbiParam};
+use cranelift_codegen::ir::{types, AbiParam, InstBuilder};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{default_libcall_names, Linkage, Module};
@@ -40,6 +40,7 @@ pub fn emit_probe_object(output: &Path) -> Result<(), String> {
         .declare_function("main", Linkage::Export, &signature)
         .map_err(|error| format!("No se pudo declarar main: {error}"))?;
 
+    let frontend_config = module.target_config();
     let mut context = module.make_context();
     context.func.signature = signature;
     let mut builder_context = FunctionBuilderContext::new();
@@ -50,7 +51,7 @@ pub fn emit_probe_object(output: &Path) -> Result<(), String> {
         builder.seal_block(entry);
         let zero = builder.ins().iconst(types::I32, 0);
         builder.ins().return_(&[zero]);
-        builder.finalize();
+        builder.finalize(frontend_config);
     }
 
     module

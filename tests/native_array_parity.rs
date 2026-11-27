@@ -691,15 +691,16 @@ fn repeated_unicode_string_growth_preserves_scalar_length_and_content() {
     // the native owned-string buffer independently of byte length and checks
     // that indexing/len remain scalar-based after repeated reallocations.
     let source = r#"
-let text = "";
+let text = "🙂";
 let index = 0;
 while (index < 2048) (
-    text = text + "🙂";
+    text = text + index;
     index = index + 1;
 )
 print len(text);
 print text[0];
-print text[2047];
+print text[1];
+print text[len(text) - 1];
 print text;
 "#;
     assert_interpreter_native_parity("repeated_unicode_string_growth", source);

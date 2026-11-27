@@ -19,12 +19,12 @@ Cranelift soporta x86-64, AArch64, s390x y riscv64. La primera implementación s
 
 ## Estado del trabajo
 
-La rama `feat/cranelift-object-backend` contiene el primer spike C0: dependencias Cranelift alineadas en 0.138.0 y una función aislada que emite un objeto nativo con `main() -> i32 { 0 }`. El módulo no está conectado a `hl build`, no consume HIR y no afirma compilar programas HackLang. Su test comprueba que el objeto se genera sin invocar un compilador C y valida el magic ELF en Linux.
-
-## Estado del trabajo
-
-- C0: implementado como spike de emisión de objeto nativo con `main() -> i32`; CI de GitHub pasó en el commit `6e1ab1b`.
-- C1 parcial: `emit_numeric_expression_object` consume directamente `hir::Expression` y baja literales numéricos finitos y operadores `+`, `-`, `*`, `/` a Cranelift IR. Incluye test de HIR `6 * 7` que verifica la emisión de objeto. Aún no compila un `Program` completo, no evalúa el resultado ni cubre variables, comparaciones o control de flujo. CI del nuevo commit pendiente.
+- C0: spike de emisión de objeto nativo con `main() -> i32`; CI verde en el commit `6e1ab1b`.
+- C1 parcial: lowering de expresiones HIR numéricas (literales finitos y `+`, `-`, `*`, `/`) a `hl_entry() -> f64`.
+- C1 parcial ampliado: lowering de secuencias de sentencias numéricas con `let`, lectura de bindings, asignación, bloques y `return`. Los bindings se representan como valores SSA de Cranelift.
+- Test añadido para la secuencia `let a=6; let b=a+7; a=b*2; return a;`. Comprueba emisión de objeto ELF en Linux; todavía no ejecuta el objeto ni comprueba el valor devuelto.
+- No se soportan aún comparaciones, bool, if/while, funciones, llamadas, impresión ni I/O. Tampoco se compila un `hir::Program` completo ni está conectado a `hl build`.
+- La CI del nuevo lowering de bindings está pendiente en el último commit.
 
 ## Fases
 

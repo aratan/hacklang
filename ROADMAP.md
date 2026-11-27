@@ -88,22 +88,28 @@ HackLang es un lenguaje de programación de propósito general. Debe permitir co
 - JSON: parseo, serialización y acceso seguro a campos.
 - Pruebas de interoperabilidad y límites de tamaño para entradas externas.
 
-### P4 — E/S y capacidades del sistema
+### P4 — E/S, ficheros y capacidades del sistema
 
-Estado: pendiente. No asumir que `read_file()`, `write_file()` o `exec()` existen. Los prototipos históricos no son pruebas de funcionalidad.
+Estado: especificación inicial creada en [STANDARD_LIBRARY_SYSTEM_DESIGN.md](docs/STANDARD_LIBRARY_SYSTEM_DESIGN.md); implementación pendiente. Seguimiento: [issue #48](https://github.com/aratan/hacklang/issues/48). No asumir que las APIs descritas ya existen.
 
-- Archivos/directorios: lectura, escritura, listado, metadatos y rutas.
-- Variables de entorno y argumentos de proceso.
-- Procesos: ejecutar, capturar stdout/stderr, códigos de salida y terminación controlada.
-- Permisos/capabilities: poder ejecutar en modo restringido sin acceso a filesystem, procesos o red salvo autorización explícita.
-- Errores de E/S tipados; evitar exponer secretos en mensajes y logs.
+Orden de implementación:
+1. Consola: `io_read_line()`, EOF y errores explícitos; conservar `print`.
+2. Ficheros: lectura, escritura sin sobrescritura implícita, existencia, metadatos y listado determinista.
+3. Argumentos de proceso y variables de entorno.
+4. Procesos: ejecutar, capturar stdout/stderr, códigos de salida y terminación controlada.
+
+Cada builtin debe tener contrato común en intérprete y runtime nativo, validación de aridad en HIR, límites de bytes/tiempo y pruebas diferenciales. Los ejemplos históricos de `prototypes/unsupported/` no son API funcional. No reabrir memoria/escape analysis.
 
 ### P5 — Redes para automatización y pentesting autorizado
-- DNS y resolución.
-- TCP/UDP y sockets con timeouts, límites y cierre determinista.
-- HTTP/HTTPS: métodos, headers, cuerpos, TLS y gestión de certificados.
-- APIs de bajo nivel para protocolos binarios sobre `bytes`.
-- Límites de concurrencia, tamaño, tiempo y conexiones; no incluir escaneo agresivo por defecto.
+
+Estado: especificación inicial TCP en [STANDARD_LIBRARY_SYSTEM_DESIGN.md](docs/STANDARD_LIBRARY_SYSTEM_DESIGN.md); implementación pendiente.
+
+1. TCP: conexión con timeout, envío, recepción limitada, cierre determinista y errores diferenciados.
+2. DNS y resolución; UDP.
+3. HTTP/HTTPS, TLS y gestión de certificados.
+4. APIs de bajo nivel para protocolos binarios sobre `bytes`.
+
+Los handles son opacos; TCP se trata como flujo; límites de concurrencia, payload, tiempo y conexiones. Red deshabilitable en modo restringido. No incluir escaneo agresivo por defecto.
 
 ### P6 — Módulos, paquetes y errores del lenguaje
 - Sistema de módulos con imports explícitos, resolución determinista y control de versiones.

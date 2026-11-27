@@ -705,6 +705,27 @@ print 0.0 / (0.0 - 1.0);
 }
 
 #[test]
+fn non_finite_number_display_matches_interpreter() {
+    // Overflow creates infinities without relying on unsupported literals;
+    // subtracting equal infinities creates NaN. Display is observable both
+    // directly and when a number is concatenated into a string.
+    assert_interpreter_native_parity(
+        "non_finite_number_display",
+        r#"
+let positive = 1e308 * 1e308;
+let negative = 0.0 - positive;
+let not_a_number = positive - positive;
+print positive;
+print negative;
+print not_a_number;
+print "value=" + positive;
+print "value=" + negative;
+print "value=" + not_a_number;
+"#,
+    );
+}
+
+#[test]
 fn oversized_integer_indices_match_interpreter_without_native_cast_overflow() {
     assert_interpreter_native_failure(
         "array_index_at_size_t_boundary",

@@ -667,6 +667,25 @@ print [separators];
 }
 
 #[test]
+fn repeated_long_string_growth_matches_interpreter() {
+    // Repeated reassignment forces the native binding's owned string buffer
+    // through many growth/reallocation steps. Check byte-independent length,
+    // a scalar near the end, and the complete printed payload.
+    let source = r#"
+let text = "";
+let index = 0;
+while (index < 4096) (
+    text = text + "x";
+    index = index + 1;
+)
+print len(text);
+print text[4095];
+print text;
+"#;
+    assert_interpreter_native_parity("repeated_long_string_growth", source);
+}
+
+#[test]
 fn numeric_display_matches_interpreter_at_formatting_boundaries() {
     assert_interpreter_native_parity(
         "numeric_display_boundaries",

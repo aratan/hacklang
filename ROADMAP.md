@@ -153,6 +153,18 @@ PR #46 (`fa21c12dde388c82334df6bd3a78c951189bde9b`) fusionada. Añade cobertura 
 
 No reutilizar `prototypes/output.c` como backend funcional. No hacer obligatorio el checker estático para compilar. No declarar una característica implementada hasta tener tests y CI que la demuestren.
 
+### P6 — Backend nativo autónomo (prioridad estratégica)
+
+Seguimiento: [issue #undefined — Backend nativo autónomo](https://github.com/aratan/hacklang/issues/undefined). Estado actual: backend C operativo; la ruta autónoma todavía no está implementada.
+
+- Spike AOT con Cranelift para emitir objetos nativos desde Rust, sin generar C ni invocar GCC/Clang.
+- Lowering HIR→Cranelift IR por subconjuntos, con pruebas diferenciales contra intérprete y backend C.
+- Runtime HackLang integrado progresivamente; no reimplementar el modelo de memoria/ownership.
+- Ejecutables: resolver ABI y linker por separado. Generar objetos sin compilador C no equivale todavía a prescindir de un linker externo.
+- Mantener backend C como fallback hasta que el nuevo backend supere CI completa.
+
+Criterio: `hl build --backend cranelift` debe demostrar que no ejecuta cc/GCC/Clang y producir salida nativa reproducible. No declarar autonomía total antes de completar runtime y enlazado.
+
 ### P10 — Rendimiento y optimización
 - Crear benchmarks reproducibles: tiempo, memoria, profundidad máxima y coste de colecciones.
 - Medir coste real de tokens con tokenizadores representativos y comparar legibilidad/tasa de generación correcta (Pass@1).

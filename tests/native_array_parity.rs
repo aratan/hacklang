@@ -511,6 +511,26 @@ fn embedded_nul_strings_match_interpreter_length_index_truthiness_and_printing()
 }
 
 #[test]
+fn utf8_scalar_width_boundaries_match_interpreter() {
+    // Exercise the first/last scalar values around UTF-8 width transitions:
+    // 1→2, 2→3, and 3→4 bytes, plus the maximum Unicode scalar value.
+    assert_interpreter_native_parity(
+        "utf8_scalar_width_boundaries",
+        r#"let text = "A¢߿ࠀ€𐀀􏿿Z";
+print len(text);
+print text[0];
+print text[1];
+print text[2];
+print text[3];
+print text[4];
+print text[5];
+print text[6];
+print text[7];
+"#,
+    );
+}
+
+#[test]
 fn invalid_string_indices_match_interpreter_error_classification() {
     assert_interpreter_native_failure(
         "string_index_out_of_range",

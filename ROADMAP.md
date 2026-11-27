@@ -147,7 +147,9 @@ PR #44 (`9cdb9d46f3255f8fdf35cbefbf9c79e9fc62be1c`) añade una prueba diferencia
 
 PR #46 (`fa21c12dde388c82334df6bd3a78c951189bde9b`) fusionada. Añade cobertura diferencial de crecimiento repetido desde una cadena Unicode inicial, 2.048 concatenaciones numéricas, longitud escalar Unicode, indexación inicial/final y contenido completo. Primer CI detectó correctamente que `String + String` no está soportado; se corrigió la prueba sin ampliar artificialmente el lenguaje. CI del HEAD final `062f97a2392d421b33b307be937af1a21d440d2c` terminó verde en los 10 pasos: type-check, build, 333 tests unitarios, ejemplos y comparación intérprete/nativo.
 
-**Siguiente prioridad:** revisar el contrato de UTF-8 y los límites de longitud de strings en el runtime nativo, identificando primero si hay una discrepancia o riesgo real antes de cambiar implementación. Mantener intactos memoria, escape analysis y ownership ya validados.
+**Revisión UTF-8 (2026-11-27):** el runtime almacena longitudes en bytes y `len`/indexación trabajan sobre escalares Unicode; el intérprete usa `str::chars()`. La inspección no encontró una discrepancia demostrable para cadenas válidas: el lexer Rust y la concatenación preservan UTF-8, y ya existen pruebas para NUL embebido, emoji, marcas combinantes, ZWJ y crecimiento. Se añade en PR de cobertura una matriz diferencial de transiciones de ancho UTF-8 (1→2, 2→3 y 3→4 bytes) y del máximo escalar U+10FFFF. No se modifica el runtime sin una entrada inválida alcanzable o una divergencia reproducible. Mantener intactos memoria, escape analysis y ownership ya validados.
+
+**Siguiente prioridad:** revisar los límites y la aritmética de crecimiento/reasignación de buffers de strings y bindings, buscando una condición de overflow o truncamiento alcanzable y una prueba reproducible antes de tocar implementación.
 
 No reutilizar `prototypes/output.c` como backend funcional. No hacer obligatorio el checker estático para compilar. No declarar una característica implementada hasta tener tests y CI que la demuestren.
 

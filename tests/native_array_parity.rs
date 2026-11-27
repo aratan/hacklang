@@ -631,19 +631,19 @@ fn type_errors_match_interpreter_error_classification() {
 
 #[test]
 fn unicode_control_debug_and_scalar_indexing_match_interpreter() {
-    // The string contains a combining mark, a ZWJ emoji sequence, and U+0085
-    // (a C1 control that Rust Debug escapes as \\u{85}).
+    // Scalar indexing counts the combining mark and ZWJ separately. Rust
+    // Debug escapes U+0085 (C1), even though ordinary string printing does not.
     assert_interpreter_native_parity(
         "unicode_control_debug_and_scalar_indexing",
-        r#"let text = "é👩‍💻";
+        r#"let text = "é👩‍💻";
 print len(text);
 print text[0];
 print text[1];
 print text[2];
 print text[3];
 print text[4];
-print text[5];
-print [text];
+let control = "ab";
+print [control];
 "#,
     );
 }

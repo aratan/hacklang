@@ -145,7 +145,9 @@ Estado real: el backend C ya ejecuta un subconjunto amplio del lenguaje, incluid
 
 PR #44 (`9cdb9d46f3255f8fdf35cbefbf9c79e9fc62be1c`) añade una prueba diferencial de crecimiento repetido de cadenas: 4.096 concatenaciones con comprobación de longitud, último carácter y contenido completo. CI #1410 pasó los 10 pasos: type-check, build, tests unitarios, ejemplos y paridad intérprete/nativo. No cambia el runtime; verifica el allocator/camino de cadenas ya implementado. Mantener intactos los hitos validados de memoria, escapes y paridad de índices/unwinding.
 
-**Siguiente prioridad:** probar la representación numérica de `NaN`, `+Infinity` y `-Infinity` producidos por operaciones aritméticas válidas, comparando intérprete y backend nativo. Después, ampliar casos límite de UTF-8 y revisar longitudes grandes sin crear asignaciones desproporcionadas.
+PR #46 (`fa21c12dde388c82334df6bd3a78c951189bde9b`) fusionada. Añade cobertura diferencial de crecimiento repetido desde una cadena Unicode inicial, 2.048 concatenaciones numéricas, longitud escalar Unicode, indexación inicial/final y contenido completo. Primer CI detectó correctamente que `String + String` no está soportado; se corrigió la prueba sin ampliar artificialmente el lenguaje. CI del HEAD final `062f97a2392d421b33b307be937af1a21d440d2c` terminó verde en los 10 pasos: type-check, build, 333 tests unitarios, ejemplos y comparación intérprete/nativo.
+
+**Siguiente prioridad:** revisar el contrato de UTF-8 y los límites de longitud de strings en el runtime nativo, identificando primero si hay una discrepancia o riesgo real antes de cambiar implementación. Mantener intactos memoria, escape analysis y ownership ya validados.
 
 No reutilizar `prototypes/output.c` como backend funcional. No hacer obligatorio el checker estático para compilar. No declarar una característica implementada hasta tener tests y CI que la demuestren.
 

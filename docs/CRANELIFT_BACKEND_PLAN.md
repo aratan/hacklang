@@ -21,6 +21,11 @@ Cranelift soporta x86-64, AArch64, s390x y riscv64. La primera implementación s
 
 La rama `feat/cranelift-object-backend` contiene el primer spike C0: dependencias Cranelift alineadas en 0.138.0 y una función aislada que emite un objeto nativo con `main() -> i32 { 0 }`. El módulo no está conectado a `hl build`, no consume HIR y no afirma compilar programas HackLang. Su test comprueba que el objeto se genera sin invocar un compilador C y valida el magic ELF en Linux.
 
+## Estado del trabajo
+
+- C0: implementado como spike de emisión de objeto nativo con `main() -> i32`; CI de GitHub pasó en el commit `6e1ab1b`.
+- C1 parcial: `emit_numeric_expression_object` consume directamente `hir::Expression` y baja literales numéricos finitos y operadores `+`, `-`, `*`, `/` a Cranelift IR. Incluye test de HIR `6 * 7` que verifica la emisión de objeto. Aún no compila un `Program` completo, no evalúa el resultado ni cubre variables, comparaciones o control de flujo. CI del nuevo commit pendiente.
+
 ## Fases
 
 ### C0 — Prueba de emisión de objeto
